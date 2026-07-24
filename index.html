@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="pl">
+<head>
+    <title>Twoja marka | Aktualności</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <meta name="description" content="Strona oparta na elastycznym systemie zarządzania treścią.">
+    <meta name="robots" content="index,follow">
+    <link rel="stylesheet" href="assets/css/main.css?v=cms-core-20260721">
+    <link rel="stylesheet" href="assets/css/public-theme.css?v=cms-theme-20260721">
+    <link rel="stylesheet" href="php/site-theme.php?v=cms-theme-20260721">
+    <noscript><link rel="stylesheet" href="assets/css/noscript.css?v=cms-core-20260721"></noscript>
+</head>
+<body class="is-preload menu-page">
+    <div id="wrapper" class="fade-in">
+        <div id="intro">
+            <p data-site-tagline>Miejsce na krótki opis strony</p>
+            <h1 class="intro-brand" data-site-name>Twoja marka</h1>
+        </div>
+
+        <header id="header">
+            <a href="index.html" class="logo" data-site-name>Twoja marka</a>
+        </header>
+
+        <nav id="nav">
+            <ul class="links">
+                <li class="active"><a href="index.html">Aktualności</a></li>
+                <li><a href="#footer" class="nav-footer-jump">Kontakt</a></li>
+            </ul>
+            <ul class="icons" data-social-list></ul>
+        </nav>
+
+        <div id="main">
+            <section class="post featured bueno-newsfeed" data-news-source="php/posts.php" data-news-base="pages/">
+                <p class="news-feed-empty">Ładowanie aktualności…</p>
+            </section>
+        </div>
+
+        <footer id="footer">
+            <section>
+                <form id="contactForm" method="post" action="php/contact.php" data-turnstile-sitekey="">
+                    <div class="fields">
+                        <div class="field">
+                            <label for="name">Imię</label>
+                            <input type="text" name="name" id="name" placeholder="Wpisz swoje imię..." required>
+                        </div>
+                        <div class="field">
+                            <label for="email">E-mail</label>
+                            <input type="email" name="email" id="email" placeholder="Wpisz swój adres e-mail..." required>
+                        </div>
+                        <div class="field">
+                            <label for="subject">Temat</label>
+                            <input type="text" name="subject" id="subject" maxlength="150" placeholder="Wpisz temat wiadomości..." required>
+                        </div>
+                        <div class="field">
+                            <label for="message">Wiadomość</label>
+                            <textarea name="message" id="message" rows="3" required></textarea>
+                        </div>
+                        <div class="field hp-field" aria-hidden="true">
+                            <label for="website">Strona WWW</label>
+                            <input type="text" name="website" id="website" tabindex="-1" autocomplete="off">
+                        </div>
+                    </div>
+                    <ul class="actions">
+                        <li class="contact-action-row">
+                            <input type="submit" value="Wyślij wiadomość">
+                            <div id="contactCaptcha" class="contact-captcha" hidden></div>
+                            <input type="hidden" name="cf-turnstile-response" id="cf-turnstile-response">
+                            <span id="contactStatus" class="contact-status" aria-live="polite"></span>
+                        </li>
+                    </ul>
+                </form>
+            </section>
+            <section class="split contact">
+                <section class="alt" data-contact-field="address" hidden>
+                    <h3>Adres</h3>
+                    <p></p>
+                </section>
+                <section data-contact-field="phone" hidden>
+                    <h3>Telefon</h3>
+                    <p><a href=""></a></p>
+                </section>
+                <section data-contact-field="email" hidden>
+                    <h3>E-mail</h3>
+                    <p><a href=""></a></p>
+                </section>
+                <section data-social-section hidden>
+                    <h3>Social media</h3>
+                    <ul class="icons alt" data-social-list></ul>
+                </section>
+            </section>
+        </footer>
+        <footer id="copyright" class="bueno-copyright">
+            <p>&copy; <span data-site-year></span> <span data-site-name>Twoja marka</span> — <span data-site-copyright>Wszelkie prawa zastrzeżone.</span></p>
+        </footer>
+    </div>
+
+    <script src="assets/js/jquery.min.js?v=cms-core-20260721"></script>
+    <script src="assets/js/jquery.scrollex.min.js?v=cms-core-20260721"></script>
+    <script src="assets/js/jquery.scrolly.min.js?v=cms-core-20260721"></script>
+    <script src="assets/js/browser.min.js?v=cms-core-20260721"></script>
+    <script src="assets/js/breakpoints.min.js?v=cms-core-20260721"></script>
+    <script src="assets/js/util.js?v=cms-core-20260721"></script>
+    <script src="assets/js/main.js?v=cms-core-20260721"></script>
+    <script src="assets/js/main-scrollbar.js?v=cms-core-20260721"></script>
+    <script src="assets/js/news-feed.js?v=cms-core-20260721"></script>
+    <script src="assets/js/contact-form.js?v=cms-core-20260721"></script>
+    <script src="assets/js/site-contact.js?v=cms-core-20260721"></script>
+    <script src="assets/js/parallax.js?v=cms-core-20260721"></script>
+    <script src="assets/js/heading-scroll.js?v=cms-core-20260721"></script>
+    <script src="assets/js/snap.js?v=cms-core-20260721"></script>
+    <script src="assets/js/public-panel.js?v=cms-core-20260721"></script>
+</body>
+</html>

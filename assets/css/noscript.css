@@ -1,0 +1,1 @@
+#wrapper{background:var(--theme-page-background,#e9edf1)}#wrapper.fade-in:before{display:none}body.is-preload #intro{opacity:1}body.is-preload #intro:not(.hidden) + #header + #nav,body.is-preload #intro:not(.hidden) + #header + #nav + #main{transform:none;opacity:1}

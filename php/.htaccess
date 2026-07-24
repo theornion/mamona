@@ -1,0 +1,5 @@
+Options -Indexes
+
+<FilesMatch "^(?:contact-secrets\.php|admin-credentials\.json|.*\.(?:bak|conf|ini|json|log|sql|sqlite|zip))$">
+    Require all denied
+</FilesMatch>
