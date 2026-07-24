@@ -18,7 +18,9 @@ try {
 
     $posts = array_map(static function (array $post): array {
         $imagePath = ltrim(str_replace('\\', '/', (string) $post['image_path']), '/');
-        $image = $imagePath !== '' && is_file(dirname(__DIR__) . '/' . $imagePath) ? '../' . $imagePath : '';
+        $absoluteImagePath = dirname(__DIR__) . '/' . $imagePath;
+        $image = $imagePath !== '' && is_file($absoluteImagePath) ? '../' . $imagePath : '';
+        $imageInfo = $image !== '' ? @getimagesize($absoluteImagePath) : false;
 
         return [
             'id' => (int) $post['id'],
@@ -26,6 +28,9 @@ try {
             'excerpt' => $post['excerpt'],
             'content' => $post['content'],
             'image' => $image,
+            'imageAlt' => trim((string) ($post['image_alt'] ?? '')) ?: (string) $post['title'],
+            'imageWidth' => max(1, (int) ($imageInfo[0] ?? 1280)),
+            'imageHeight' => max(1, (int) ($imageInfo[1] ?? 720)),
             'url' => post_page_filename((string) $post['slug']),
             'category' => $post['category_title'],
             'createdAt' => $post['created_at'],

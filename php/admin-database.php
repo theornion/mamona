@@ -2,6 +2,25 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/app-config.php';
+require_once __DIR__ . '/editorial-schema.php';
+require_once __DIR__ . '/editorial-repository.php';
+require_once __DIR__ . '/publication-service.php';
+require_once __DIR__ . '/discovery-service.php';
+require_once __DIR__ . '/editorial-editor-service.php';
+require_once __DIR__ . '/scheduled-publication-service.php';
+require_once __DIR__ . '/technical-source-repository.php';
+require_once __DIR__ . '/editorial-profile-service.php';
+require_once __DIR__ . '/feed-ingestion-service.php';
+require_once __DIR__ . '/topic-grouping-service.php';
+require_once __DIR__ . '/topic-scoring-service.php';
+require_once __DIR__ . '/generation-service.php';
+require_once __DIR__ . '/research-package-service.php';
+require_once __DIR__ . '/article-draft-service.php';
+require_once __DIR__ . '/quality-check-service.php';
+require_once __DIR__ . '/thumbnail-service.php';
+require_once __DIR__ . '/trust-pages-service.php';
+
 define('CMS_DATABASE_FILE', dirname(__DIR__) . '/data/cms.sqlite');
 
 function bueno_database(): PDO
@@ -22,6 +41,7 @@ function bueno_database(): PDO
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     ]);
+    $database->exec('PRAGMA foreign_keys = ON');
 
     $database->exec(
         'CREATE TABLE IF NOT EXISTS messages (
@@ -123,6 +143,7 @@ function bueno_database(): PDO
     ensure_post_slug_column($database);
     ensure_post_extra_columns($database);
     ensure_content_trash_columns($database);
+    run_schema_migrations($database);
     purge_expired_trashed_content($database);
     seed_contact_settings($database);
     seed_social_media($database);
@@ -318,7 +339,7 @@ function site_style_definitions(): array
             'group' => 'Tożsamość',
             'label' => 'Nazwa strony',
             'type' => 'text',
-            'default' => 'Twoja marka',
+            'default' => (string) app_config('site_name'),
             'max' => 80,
             'help' => 'Wyświetlana w intro, nagłówku i stopce.',
         ],
@@ -1253,9 +1274,16 @@ function post_page_path(string $slug): string
     return dirname(__DIR__) . '/pages/' . post_page_filename($slug);
 }
 
-function list_post_categories(bool $includeDeleted = false): array
+function list_post_categories(bool $includeDeleted = false, bool $includeEditorialOnly = false): array
 {
-    $where = $includeDeleted ? '' : ' WHERE post_categories.deleted_at IS NULL';
+    $conditions = [];
+    if (!$includeDeleted) {
+        $conditions[] = 'post_categories.deleted_at IS NULL';
+    }
+    if (!$includeEditorialOnly && in_array('is_editorial_only', database_table_columns(bueno_database(), 'post_categories'), true)) {
+        $conditions[] = 'post_categories.is_editorial_only = 0';
+    }
+    $where = $conditions === [] ? '' : ' WHERE ' . implode(' AND ', $conditions);
     return bueno_database()->query(
         'SELECT post_categories.*, COUNT(posts.id) AS post_count
          FROM post_categories
@@ -1357,7 +1385,7 @@ function list_posts(?int $categoryId = null, bool $publishedOnly = false, bool $
     }
 
     if ($publishedOnly) {
-        $conditions[] = 'posts.is_published = 1';
+        $conditions[] = "posts.status = 'published'";
     }
 
     if (!$includeDeleted) {
@@ -1369,7 +1397,9 @@ function list_posts(?int $categoryId = null, bool $publishedOnly = false, bool $
         $query .= ' WHERE ' . implode(' AND ', $conditions);
     }
 
-    $query .= ' ORDER BY datetime(posts.created_at) DESC, posts.id DESC';
+    $query .= $publishedOnly
+        ? ' ORDER BY datetime(COALESCE(posts.published_at, posts.created_at)) DESC, posts.id DESC'
+        : ' ORDER BY datetime(posts.created_at) DESC, posts.id DESC';
     $statement = bueno_database()->prepare($query);
     $statement->execute($parameters);
 
@@ -1385,7 +1415,122 @@ function find_post(int $postId, bool $includeDeleted = false): ?array
     return is_array($post) ? $post : null;
 }
 
-function render_cropped_post_image(string $imagePath, array $crop, string $className, bool $lazy = true): string
+function post_meta_description(array $post): string
+{
+    $description = trim((string) ($post['seo_description'] ?? ''));
+    if ($description === '') {
+        $description = trim((string) ($post['excerpt'] ?? ''));
+    }
+    $description = preg_replace('/\s+/u', ' ', strip_tags($description)) ?? '';
+
+    return mb_strlen($description) > 160 ? rtrim(mb_substr($description, 0, 157)) . '...' : $description;
+}
+
+function post_canonical_url(array $post): string
+{
+    $url = trim((string) ($post['canonical_url'] ?? ''));
+    $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+    if ($url !== '' && filter_var($url, FILTER_VALIDATE_URL) && in_array($scheme, ['http', 'https'], true)) {
+        return $url;
+    }
+
+    return app_public_url('pages/' . post_page_filename((string) $post['slug']));
+}
+
+function post_absolute_image_url(array $post): string
+{
+    $path = ltrim(str_replace('\\', '/', (string) ($post['image_path'] ?? '')), '/');
+
+    return $path !== '' && is_file(dirname(__DIR__) . '/' . $path) ? app_public_url($path) : '';
+}
+
+function post_display_datetime(?string $value): array
+{
+    if ($value === null || trim($value) === '') {
+        return ['', ''];
+    }
+    try {
+        $date = (new DateTimeImmutable($value, new DateTimeZone('UTC')))
+            ->setTimezone(new DateTimeZone((string) app_config('timezone')));
+    } catch (Throwable) {
+        return ['', ''];
+    }
+
+    return [$date->format(DateTimeInterface::ATOM), $date->format('d.m.Y, H:i')];
+}
+
+function list_related_published_posts(array $post, int $limit = 3): array
+{
+    $statement = bueno_database()->prepare(
+        "SELECT id, title, slug FROM posts
+         WHERE category_id = :category_id AND id != :post_id
+           AND status = 'published' AND deleted_at IS NULL
+         ORDER BY datetime(COALESCE(published_at, created_at)) DESC, id DESC LIMIT :limit"
+    );
+    $statement->bindValue(':category_id', (int) $post['category_id'], PDO::PARAM_INT);
+    $statement->bindValue(':post_id', (int) $post['id'], PDO::PARAM_INT);
+    $statement->bindValue(':limit', max(1, min(10, $limit)), PDO::PARAM_INT);
+    $statement->execute();
+
+    return $statement->fetchAll();
+}
+
+function render_news_article_json_ld(array $post, array $category): string
+{
+    $canonical = post_canonical_url($post);
+    $image = post_absolute_image_url($post);
+    [$publishedIso] = post_display_datetime((string) ($post['published_at'] ?? $post['created_at'] ?? ''));
+    [$modifiedIso] = post_display_datetime((string) ($post['content_updated_at'] ?? ''));
+    $author = !empty($post['author_id']) ? find_author((int) $post['author_id']) : null;
+
+    $data = [
+        '@context' => 'https://schema.org',
+        '@type' => 'NewsArticle',
+        'headline' => (string) $post['title'],
+        'description' => post_meta_description($post),
+        'mainEntityOfPage' => [
+            '@type' => 'WebPage',
+            '@id' => $canonical,
+        ],
+        'publisher' => [
+            '@type' => 'Organization',
+            'name' => (string) app_config('publisher_name'),
+        ],
+        'inLanguage' => (string) app_config('language'),
+        'articleSection' => (string) $category['title'],
+    ];
+
+    if ($publishedIso !== '') {
+        $data['datePublished'] = $publishedIso;
+        $data['dateModified'] = $modifiedIso !== '' ? $modifiedIso : $publishedIso;
+    }
+    if (is_array($author) && trim((string) ($author['name'] ?? '')) !== '') {
+        $data['author'] = [
+            '@type' => 'Person',
+            'name' => (string) $author['name'],
+            'url' => app_public_url('pages/' . trust_author_filename($author)),
+        ];
+        $profileUrl = trim((string) ($author['profile_url'] ?? ''));
+        if ($profileUrl !== '' && filter_var($profileUrl, FILTER_VALIDATE_URL)) {
+            $data['author']['sameAs'] = $profileUrl;
+        }
+    }
+    if ($image !== '') {
+        $data['image'] = [$image];
+    }
+
+    $json = json_encode(
+        $data,
+        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+    );
+    if (!is_string($json)) {
+        throw new RuntimeException('Nie można zakodować danych strukturalnych artykułu.');
+    }
+
+    return '<script type="application/ld+json">' . $json . '</script>';
+}
+
+function render_cropped_post_image(string $imagePath, array $crop, string $className, bool $lazy = true, string $alt = ''): string
 {
     $normalizedPath = ltrim(str_replace('\\', '/', $imagePath), '/');
     $absolutePath = dirname(__DIR__) . '/' . $normalizedPath;
@@ -1416,12 +1561,14 @@ function render_cropped_post_image(string $imagePath, array $crop, string $class
     );
     $src = '../' . htmlspecialchars($normalizedPath, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $class = htmlspecialchars($className, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-    $loading = $lazy ? ' loading="lazy"' : '';
+    $alt = htmlspecialchars(trim($alt), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $loading = $lazy ? ' loading="lazy"' : ' loading="eager" fetchpriority="high"';
 
-    return '<figure class="' . $class . ' post-cropped-image" style="' . $style . '"><div class="post-cropped-image-frame"><img src="' . $src . '" alt=""' . $loading . '></div></figure>';
+    return '<figure class="' . $class . ' post-cropped-image" style="' . $style . '"><div class="post-cropped-image-frame"><img src="' . $src . '" alt="' . $alt
+        . '" width="' . $imageWidth . '" height="' . $imageHeight . '" decoding="async"' . $loading . '></div></figure>';
 }
 
-function write_post_page(array $post): void
+function render_post_page_html(array $post, bool $preview = false): string
 {
     $category = find_post_category((int) $post['category_id']);
 
@@ -1438,13 +1585,39 @@ function write_post_page(array $post): void
 
     $title = htmlspecialchars((string) $post['title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $excerpt = htmlspecialchars((string) $post['excerpt'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $siteName = htmlspecialchars((string) app_config('site_name'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $description = htmlspecialchars(post_meta_description($post), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $canonical = htmlspecialchars(post_canonical_url($post), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $absoluteImage = htmlspecialchars(post_absolute_image_url($post), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $template = preg_replace('/\s*<meta name="description" content="[^"]*"\s*\/?>/i', '', $template, 1) ?? $template;
+    $template = preg_replace('/\s*<meta name="robots" content="[^"]*"\s*\/?>/i', '', $template, 1) ?? $template;
+    $head = '<title>' . $title . ' | ' . $siteName . '</title>'
+        . '<meta name="description" content="' . $description . '">'
+        . '<meta name="robots" content="' . ($preview ? 'noindex,nofollow,noarchive' : 'index,follow,max-image-preview:large') . '">';
+    if (!$preview) {
+        $head .= '<link rel="canonical" href="' . $canonical . '">'
+            . '<meta property="og:type" content="article">'
+            . '<meta property="og:title" content="' . $title . '">'
+            . '<meta property="og:description" content="' . $description . '">'
+            . '<meta property="og:url" content="' . $canonical . '">'
+            . ($absoluteImage !== '' ? '<meta property="og:image" content="' . $absoluteImage . '">' : '')
+            . '<meta name="twitter:card" content="' . ($absoluteImage !== '' ? 'summary_large_image' : 'summary') . '">'
+            . '<meta name="twitter:title" content="' . $title . '">'
+            . '<meta name="twitter:description" content="' . $description . '">'
+            . ($absoluteImage !== '' ? '<meta name="twitter:image" content="' . $absoluteImage . '">' : '')
+            . render_news_article_json_ld($post, $category);
+    }
+    $template = preg_replace('/<title>.*?<\/title>/s', $head, $template, 1) ?? $template;
     $content = nl2br(htmlspecialchars((string) $post['content'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
     $contentImages = post_content_image_items($post);
+    $hasMainImage = trim((string) ($post['image_path'] ?? '')) !== ''
+        && is_file(app_path((string) $post['image_path']));
     foreach ($contentImages as $index => $contentImageItem) {
         $contentImage = render_cropped_post_image(
             (string) $contentImageItem['path'],
             (array) $contentImageItem['crop'],
-            'post-content-image'
+            'post-content-image',
+            $hasMainImage || $index > 0
         );
         if ($contentImage === '') {
             continue;
@@ -1453,6 +1626,21 @@ function write_post_page(array $post): void
         if ($index === 0) {
             $content = str_replace('[[ZDJECIE]]', $contentImage, $content);
         }
+    }
+    if (!$hasMainImage) {
+        $priorityImageSeen = false;
+        $content = preg_replace_callback(
+            '/<img\b[^>]*\bfetchpriority="high"[^>]*>/i',
+            static function (array $match) use (&$priorityImageSeen): string {
+                if (!$priorityImageSeen) {
+                    $priorityImageSeen = true;
+                    return $match[0];
+                }
+
+                return str_replace(' loading="eager" fetchpriority="high"', ' loading="lazy"', $match[0]);
+            },
+            $content
+        ) ?? $content;
     }
     $galleryLink = '';
     if (!empty($post['gallery_id'])) {
@@ -1464,11 +1652,53 @@ function write_post_page(array $post): void
         }
     }
     $categoryTitle = htmlspecialchars((string) $category['title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $author = !empty($post['author_id']) ? find_author((int) $post['author_id']) : null;
+    $authorName = is_array($author)
+        ? htmlspecialchars((string) $author['name'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+        : '';
+    [$publishedIso, $publishedLabel] = post_display_datetime((string) ($post['published_at'] ?? $post['created_at'] ?? ''));
+    [$updatedIso, $updatedLabel] = post_display_datetime((string) ($post['content_updated_at'] ?? ''));
+    $byline = '<div class="post-byline">';
+    if ($authorName !== '') {
+        $byline .= '<span>Autor: <a href="' . trust_escape(trust_author_filename($author)) . '">' . $authorName . '</a></span>';
+    }
+    if ($publishedIso !== '') {
+        $byline .= '<span>Opublikowano: <time datetime="' . htmlspecialchars($publishedIso, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($publishedLabel, ENT_QUOTES, 'UTF-8') . '</time></span>';
+    }
+    if ($updatedIso !== '' && $updatedIso !== $publishedIso) {
+        $byline .= '<span>Aktualizacja: <time datetime="' . htmlspecialchars($updatedIso, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($updatedLabel, ENT_QUOTES, 'UTF-8') . '</time></span>';
+    }
+    $byline .= '<span><a href="polityka-redakcyjna.html">Polityka redakcyjna</a></span>';
+    $byline .= '</div>';
+    $sourceItems = [];
+    foreach (list_post_sources((int) $post['id']) as $source) {
+        $sourceUrl = htmlspecialchars((string) $source['source_url'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $sourceLabel = trim((string) ($source['source_title'] ?? ''))
+            ?: trim((string) ($source['publisher_name'] ?? ''))
+            ?: (string) (parse_url((string) $source['source_url'], PHP_URL_HOST) ?: $source['source_url']);
+        $sourceItems[] = '<li><a href="' . $sourceUrl . '" target="_blank" rel="noopener noreferrer">'
+            . htmlspecialchars($sourceLabel, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</a></li>';
+    }
+    $sourcesHtml = $sourceItems === [] ? '' : '<section class="post-sources" aria-labelledby="post-sources-title"><h2 id="post-sources-title">Źródła</h2><ul>' . implode('', $sourceItems) . '</ul></section>';
+    $relatedItems = [];
+    foreach (list_related_published_posts($post) as $related) {
+        $relatedItems[] = '<li><a href="' . htmlspecialchars(post_page_filename((string) $related['slug']), ENT_QUOTES, 'UTF-8') . '">'
+            . htmlspecialchars((string) $related['title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</a></li>';
+    }
+    $relatedHtml = $relatedItems === [] ? '' : '<aside class="post-related" aria-labelledby="post-related-title"><h2 id="post-related-title">Powiązane artykuły</h2><ul>' . implode('', $relatedItems) . '</ul></aside>';
+    $aiHtml = '';
+    if (!empty($post['ai_assisted'])) {
+        $disclosure = trim((string) ($post['ai_disclosure'] ?? ''));
+        $aiHtml = '<aside class="post-ai-disclosure"><strong>Jak powstał ten materiał?</strong> '
+            . htmlspecialchars($disclosure !== '' ? $disclosure : 'Materiał przygotowano z pomocą narzędzi automatycznych i zweryfikowano redakcyjnie.', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+            . '</aside>';
+    }
     $imageBlock = render_cropped_post_image(
         (string) ($post['image_path'] ?? ''),
         post_main_image_crop($post),
         'post-page-image',
-        false
+        false,
+        trim((string) ($post['image_alt'] ?? '')) ?: (string) $post['title']
     );
     if ($imageBlock !== '') {
         $imageBlock = "\t\t\t\t\t\t\t{$imageBlock}\n";
@@ -1480,9 +1710,13 @@ function write_post_page(array $post): void
 								<p class="news-feed-kicker">{$categoryTitle}</p>
 								<h1>{$title}</h1>
 								<p>{$excerpt}</p>
+								{$byline}
 							</header>
 							<div class="post-page-body">{$content}</div>
 							{$galleryLink}
+							{$sourcesHtml}
+							{$aiHtml}
+							{$relatedHtml}
 							<ul class="actions special"><li><a class="button" href="{$categoryUrl}">Wróć do aktualności</a></li></ul>
 						</article>
 HTML;
@@ -1496,41 +1730,80 @@ HTML;
 
     if ($galleryLink !== '') {
         $template = preg_replace(
-            '/(<script src="\.\.\/assets\/js\/news-feed\.js\?v=[^"]+"><\/script>)/',
-            '$1' . "\n\t\t\t<script src=\"../assets/js/cat-gallery.js?v=cms-core-20260721\"></script>",
+            '/<script defer src="\.\.\/assets\/js\/news-feed\.js\?v=[^"]+"><\/script>/',
+            '<script defer src="../assets/js/cat-gallery.js?v=cms-core-20260721"></script>',
+            $template,
+            1
+        ) ?? $template;
+    } else {
+        $template = preg_replace(
+            '/\s*<script defer src="\.\.\/assets\/js\/news-feed\.js\?v=[^"]+"><\/script>/',
+            '',
             $template,
             1
         ) ?? $template;
     }
 
-    if (file_put_contents(post_page_path((string) $post['slug']), $template, LOCK_EX) === false) {
-        throw new RuntimeException('Nie można utworzyć strony postu.');
-    }
+    return $template;
 }
 
-function create_post(int $categoryId, string $title, string $excerpt, string $content, string $imagePath = '', string $contentImagePath = '', ?int $galleryId = null, array $contentImages = [], string $imageFit = 'cover', array $imageCrop = []): int
+function write_post_page(array $post): void
+{
+    $pagePath = post_page_path((string) $post['slug']);
+
+    if (!post_is_public($post)) {
+        remove_public_file($pagePath);
+        return;
+    }
+
+    write_public_file_atomically($pagePath, render_post_page_html($post));
+}
+
+function create_post(int $categoryId, string $title, string $excerpt, string $content, string $imagePath = '', string $contentImagePath = '', ?int $galleryId = null, array $contentImages = [], string $imageFit = 'cover', array $imageCrop = [], bool $isPublished = false): int
 {
     $database = bueno_database();
     $slug = unique_post_slug($database, $title);
+    $status = post_publication_status($isPublished);
     $statement = $database->prepare(
-        'INSERT INTO posts (category_id, title, excerpt, content, image_path, content_image_path, content_images, image_fit, image_crop, gallery_id, slug)
-         VALUES (:category_id, :title, :excerpt, :content, :image_path, :content_image_path, :content_images, :image_fit, :image_crop, :gallery_id, :slug)'
+        'INSERT INTO posts (
+            category_id, title, excerpt, content, image_path, content_image_path,
+            content_images, image_fit, image_crop, gallery_id, slug,
+            status, is_published, published_at, content_updated_at, author_id
+         ) VALUES (
+            :category_id, :title, :excerpt, :content, :image_path, :content_image_path,
+            :content_images, :image_fit, :image_crop, :gallery_id, :slug,
+            :status, :is_published, :published_at, CURRENT_TIMESTAMP, :author_id
+         )'
     );
-    $statement->execute([
-        ':category_id' => $categoryId,
-        ':title' => $title,
-        ':excerpt' => $excerpt,
-        ':content' => $content,
-        ':image_path' => $imagePath,
-        ':content_image_path' => $contentImagePath,
-        ':content_images' => json_encode(array_values($contentImages), JSON_UNESCAPED_SLASHES),
-        ':image_fit' => $imageFit === 'contain' ? 'contain' : 'cover',
-        ':image_crop' => json_encode(normalize_post_crop($imageCrop), JSON_UNESCAPED_SLASHES),
-        ':gallery_id' => $galleryId,
-        ':slug' => $slug,
-    ]);
+    $database->beginTransaction();
+    try {
+        $statement->execute([
+            ':category_id' => $categoryId,
+            ':title' => $title,
+            ':excerpt' => $excerpt,
+            ':content' => $content,
+            ':image_path' => $imagePath,
+            ':content_image_path' => $contentImagePath,
+            ':content_images' => json_encode(array_values($contentImages), JSON_UNESCAPED_SLASHES),
+            ':image_fit' => $imageFit === 'contain' ? 'contain' : 'cover',
+            ':image_crop' => json_encode(normalize_post_crop($imageCrop), JSON_UNESCAPED_SLASHES),
+            ':gallery_id' => $galleryId,
+            ':slug' => $slug,
+            ':status' => $status,
+            ':is_published' => post_legacy_publication_flag($status),
+            ':published_at' => $isPublished ? gmdate('Y-m-d H:i:s') : null,
+            ':author_id' => default_author_id(),
+        ]);
+        $postId = (int) $database->lastInsertId();
+        record_post_status_change($postId, null, $status, 'Utworzenie artykułu', 'admin');
+        $database->commit();
+    } catch (Throwable $exception) {
+        if ($database->inTransaction()) {
+            $database->rollBack();
+        }
+        throw $exception;
+    }
 
-    $postId = (int) $database->lastInsertId();
     $post = find_post($postId);
 
     if ($post === null) {
@@ -1543,7 +1816,7 @@ function create_post(int $categoryId, string $title, string $excerpt, string $co
     return $postId;
 }
 
-function update_post(int $postId, string $title, string $excerpt, string $content, string $imagePath, bool $isPublished, string $contentImagePath = '', ?int $galleryId = null, array $contentImages = [], string $imageFit = 'cover', array $imageCrop = []): void
+function update_post(int $postId, string $title, string $excerpt, string $content, string $imagePath, bool $isPublished, string $contentImagePath = '', ?int $galleryId = null, array $contentImages = [], string $imageFit = 'cover', array $imageCrop = [], ?string $editorialStatus = null): void
 {
     $database = bueno_database();
     $currentPost = find_post($postId);
@@ -1553,41 +1826,145 @@ function update_post(int $postId, string $title, string $excerpt, string $conten
     }
 
     $slug = $title === $currentPost['title'] ? $currentPost['slug'] : unique_post_slug($database, $title, $postId);
-    $statement = bueno_database()->prepare(
+    $currentStatus = normalize_editorial_status((string) $currentPost['status']);
+    $newStatus = $editorialStatus !== null
+        ? normalize_editorial_status($editorialStatus)
+        : post_publication_status($isPublished);
+    if ($currentStatus !== $newStatus && in_array($newStatus, ['scheduled', 'published'], true)) {
+        assert_post_quality_allows_publication($postId);
+    }
+    $statement = $database->prepare(
         'UPDATE posts
          SET title = :title, excerpt = :excerpt, content = :content, image_path = :image_path, content_image_path = :content_image_path, content_images = :content_images, image_fit = :image_fit, image_crop = :image_crop, gallery_id = :gallery_id, slug = :slug,
-             is_published = :is_published, updated_at = CURRENT_TIMESTAMP
+             status = :status,
+             is_published = :is_published,
+             published_at = CASE
+                WHEN :status = "published" THEN COALESCE(published_at, CURRENT_TIMESTAMP)
+                ELSE published_at
+             END,
+             content_updated_at = CURRENT_TIMESTAMP,
+             updated_at = CURRENT_TIMESTAMP
          WHERE id = :id'
     );
-    $statement->execute([
-        ':id' => $postId,
-        ':title' => $title,
-        ':excerpt' => $excerpt,
-        ':content' => $content,
-        ':image_path' => $imagePath,
-        ':content_image_path' => $contentImagePath,
-        ':content_images' => json_encode(array_values($contentImages), JSON_UNESCAPED_SLASHES),
-        ':image_fit' => $imageFit === 'contain' ? 'contain' : 'cover',
-        ':image_crop' => json_encode(normalize_post_crop($imageCrop), JSON_UNESCAPED_SLASHES),
-        ':gallery_id' => $galleryId,
-        ':slug' => $slug,
-        ':is_published' => $isPublished ? 1 : 0,
-    ]);
+    $database->beginTransaction();
+    try {
+        $statement->execute([
+            ':id' => $postId,
+            ':title' => $title,
+            ':excerpt' => $excerpt,
+            ':content' => $content,
+            ':image_path' => $imagePath,
+            ':content_image_path' => $contentImagePath,
+            ':content_images' => json_encode(array_values($contentImages), JSON_UNESCAPED_SLASHES),
+            ':image_fit' => $imageFit === 'contain' ? 'contain' : 'cover',
+            ':image_crop' => json_encode(normalize_post_crop($imageCrop), JSON_UNESCAPED_SLASHES),
+            ':gallery_id' => $galleryId,
+            ':slug' => $slug,
+            ':status' => $newStatus,
+            ':is_published' => post_legacy_publication_flag($newStatus),
+        ]);
+        if ($currentStatus !== $newStatus) {
+            record_post_status_change($postId, $currentStatus, $newStatus, 'Zmiana publikacji w edytorze', 'admin');
+        }
+        $database->commit();
+    } catch (Throwable $exception) {
+        if ($database->inTransaction()) {
+            $database->rollBack();
+        }
+        throw $exception;
+    }
 
     $updatedPost = find_post($postId);
+
+    if ($currentPost['slug'] !== $slug) {
+        remove_public_file(post_page_path((string) $currentPost['slug']));
+    }
 
     if ($updatedPost !== null) {
         write_post_page($updatedPost);
     }
 
-    if ($currentPost['slug'] !== $slug) {
-        $oldPath = post_page_path((string) $currentPost['slug']);
+    sync_public_navigation();
+}
 
-        if (is_file($oldPath)) {
-            unlink($oldPath);
-        }
+function change_post_editorial_status(int $postId, string $newStatus, string $reason = '', string $actor = 'admin', ?string $publicationTimestamp = null): void
+{
+    $newStatus = normalize_editorial_status($newStatus);
+    $reason = trim($reason);
+    $post = find_post($postId);
+    if ($post === null) {
+        throw new RuntimeException('Nie znaleziono materiału.');
     }
 
+    $currentStatus = normalize_editorial_status((string) $post['status']);
+    if ($currentStatus === $newStatus) {
+        throw new InvalidArgumentException(
+            $newStatus === 'published'
+                ? 'Materiał jest już opublikowany i nie może zostać opublikowany ponownie.'
+                : 'Materiał ma już wybrany status.'
+        );
+    }
+    if ($currentStatus === 'published' && $newStatus === 'scheduled') {
+        throw new InvalidArgumentException('Opublikowanego materiału nie można ponownie zaplanować.');
+    }
+    if ($newStatus === 'rejected' && $reason === '') {
+        throw new InvalidArgumentException('Odrzucenie materiału wymaga podania przyczyny.');
+    }
+    if (mb_strlen($reason) > 1000) {
+        throw new InvalidArgumentException('Przyczyna zmiany statusu jest zbyt długa.');
+    }
+    if (in_array($newStatus, ['scheduled', 'published'], true)) {
+        assert_post_quality_allows_publication($postId);
+        assert_trust_configuration_allows_publication();
+    }
+
+    $database = bueno_database();
+    $database->beginTransaction();
+    try {
+        $statement = $database->prepare(
+            "UPDATE posts
+             SET status = :status,
+                 is_published = :is_published,
+                 published_at = CASE
+                    WHEN :status = 'published' THEN COALESCE(published_at, :publication_timestamp, CURRENT_TIMESTAMP)
+                    ELSE published_at
+                 END,
+                 rejection_reason = CASE
+                    WHEN :status = 'rejected' THEN :rejection_reason
+                    ELSE ''
+                 END,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = :id AND deleted_at IS NULL"
+        );
+        $statement->execute([
+            ':status' => $newStatus,
+            ':is_published' => post_legacy_publication_flag($newStatus),
+            ':publication_timestamp' => $publicationTimestamp,
+            ':rejection_reason' => $reason,
+            ':id' => $postId,
+        ]);
+        if ($statement->rowCount() !== 1) {
+            throw new RuntimeException('Nie udało się zmienić statusu materiału.');
+        }
+        record_post_status_change(
+            $postId,
+            $currentStatus,
+            $newStatus,
+            $reason !== '' ? $reason : 'Zmiana statusu w kolejce redakcyjnej',
+            $actor
+        );
+        $database->commit();
+    } catch (Throwable $exception) {
+        if ($database->inTransaction()) {
+            $database->rollBack();
+        }
+        throw $exception;
+    }
+
+    $updated = find_post($postId);
+    if ($updated !== null) {
+        write_post_page($updated);
+    }
     sync_public_navigation();
 }
 
@@ -1603,10 +1980,7 @@ function delete_post(int $postId): ?array
     $statement = $database->prepare('UPDATE posts SET deleted_at = CURRENT_TIMESTAMP, is_published = 0 WHERE id = :id');
     $statement->execute([':id' => $postId]);
 
-    $pagePath = post_page_path((string) $post['slug']);
-    if (is_file($pagePath)) {
-        unlink($pagePath);
-    }
+    remove_public_file(post_page_path((string) $post['slug']));
 
     sync_public_navigation();
 
@@ -1637,8 +2011,7 @@ function delete_post_category(int $categoryId): ?array
     }
 
     foreach ($posts as $post) {
-        $pagePath = post_page_path((string) $post['slug']);
-        if (is_file($pagePath)) unlink($pagePath);
+        remove_public_file(post_page_path((string) $post['slug']));
     }
 
     sync_public_navigation();
@@ -1650,8 +2023,16 @@ function restore_post(int $postId): void
 {
     $post = find_post($postId, true);
     if ($post === null || $post['deleted_at'] === null) return;
-    $statement = bueno_database()->prepare('UPDATE posts SET deleted_at = NULL, is_published = 1 WHERE id = :id');
-    $statement->execute([':id' => $postId]);
+    $status = normalize_editorial_status((string) $post['status']);
+    $statement = bueno_database()->prepare(
+        'UPDATE posts
+         SET deleted_at = NULL, is_published = :is_published
+         WHERE id = :id'
+    );
+    $statement->execute([
+        ':id' => $postId,
+        ':is_published' => post_legacy_publication_flag($status),
+    ]);
     $restored = find_post($postId, true);
     if ($restored !== null) write_post_page($restored);
     sync_public_navigation();
@@ -1666,7 +2047,12 @@ function restore_post_category(int $categoryId): void
     try {
         $statement = $database->prepare('UPDATE post_categories SET deleted_at = NULL WHERE id = :id');
         $statement->execute([':id' => $categoryId]);
-        $statement = $database->prepare('UPDATE posts SET deleted_at = NULL, is_published = 1 WHERE category_id = :id');
+        $statement = $database->prepare(
+            'UPDATE posts
+             SET deleted_at = NULL,
+                 is_published = CASE WHEN status = "published" THEN 1 ELSE 0 END
+             WHERE category_id = :id'
+        );
         $statement->execute([':id' => $categoryId]);
         $database->commit();
     } catch (Throwable $exception) {
@@ -1684,16 +2070,15 @@ function permanently_delete_post(int $postId): void
     $post = find_post($postId, true);
     if ($post === null || $post['deleted_at'] === null) return;
     bueno_database()->prepare('DELETE FROM posts WHERE id = :id AND deleted_at IS NOT NULL')->execute([':id' => $postId]);
-    $pagePath = post_page_path((string) $post['slug']);
-    if (is_file($pagePath)) unlink($pagePath);
+    remove_public_file(post_page_path((string) $post['slug']));
     $imagePath = (string) ($post['image_path'] ?? '');
-    if (str_starts_with($imagePath, 'images/posts/')) {
-        $filePath = dirname(__DIR__) . '/' . $imagePath;
+    if (str_starts_with($imagePath, app_post_image_directory() . '/')) {
+        $filePath = app_path($imagePath);
         if (is_file($filePath)) unlink($filePath);
     }
     foreach (post_content_images($post) as $contentImagePath) {
-        if (str_starts_with($contentImagePath, 'images/posts/')) {
-            $contentFilePath = dirname(__DIR__) . '/' . $contentImagePath;
+        if (str_starts_with($contentImagePath, app_post_image_directory() . '/')) {
+            $contentFilePath = app_path($contentImagePath);
             if (is_file($contentFilePath)) unlink($contentFilePath);
         }
     }
@@ -1780,11 +2165,22 @@ HTML;
 
 function sync_public_navigation(): void
 {
+    if (getenv('CMS_SKIP_PUBLIC_SYNC') === '1') {
+        return;
+    }
+
     write_gallery_overview_page();
+    write_trust_pages();
     $galleries = list_galleries();
     $postCategories = list_post_categories();
-    $posts = list_posts();
-    $filenames = ['index.html', 'galerie.html'];
+    $posts = list_posts(null, true);
+    $filenames = array_merge(['index.html', 'galerie.html'], trust_public_page_filenames());
+
+    foreach (list_posts(null, false, true) as $post) {
+        if (!post_is_public($post)) {
+            remove_public_file(post_page_path((string) $post['slug']));
+        }
+    }
 
     foreach ($posts as $post) {
         write_post_page($post);
@@ -1815,7 +2211,7 @@ function sync_public_navigation(): void
 
         foreach ($postCategories as $category) {
             $title = htmlspecialchars((string) $category['title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-            $newsLinks[] = '<li><a href="../index.html?category=' . rawurlencode((string) $category['slug']) . '">' . $title . '</a></li>';
+            $newsLinks[] = '<li><a href="kategoria-' . rawurlencode((string) $category['slug']) . '.html">' . $title . '</a></li>';
         }
 
         $isNewsActive = $currentPage === 'index' || str_starts_with($currentPage, 'post-');
@@ -1852,7 +2248,6 @@ function sync_public_navigation(): void
                 1
             ) ?? $updatedPage;
             $updatedPage = preg_replace('/\s*<article class="post featured legacy-index-content">.*?<\/article>/s', '', $updatedPage, 1) ?? $updatedPage;
-            $updatedPage = preg_replace('/\s*<link rel="canonical" href=".*?" \/>/s', '', $updatedPage, 1) ?? $updatedPage;
         }
 
         if ($updatedPage === null || file_put_contents($path, $updatedPage, LOCK_EX) === false) {
@@ -1861,6 +2256,152 @@ function sync_public_navigation(): void
     }
 
     write_root_index_page();
+    write_discovery_files();
+}
+
+function news_feed_plain_text(string $value): string
+{
+    $value = preg_replace('/\[\[\s*(?:Z\d+|ZDJECIE)\s*\]\]/iu', ' ', $value) ?? $value;
+
+    return trim(preg_replace('/\s+/u', ' ', strip_tags($value)) ?? '');
+}
+
+function render_server_news_feed(array $posts, ?array $category, int $page, string $pagePattern): string
+{
+    $perPage = 5;
+    $pageCount = max(1, (int) ceil(count($posts) / $perPage));
+    $page = max(1, min($pageCount, $page));
+    $visible = array_slice($posts, ($page - 1) * $perPage, $perPage);
+    $heading = htmlspecialchars((string) ($category['title'] ?? 'Aktualności'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $description = htmlspecialchars(
+        trim((string) ($category['description'] ?? '')) ?: 'Najnowsze informacje opublikowane na stronie.',
+        ENT_QUOTES | ENT_SUBSTITUTE,
+        'UTF-8'
+    );
+    $categorySlug = htmlspecialchars((string) ($category['slug'] ?? ''), ENT_QUOTES, 'UTF-8');
+    $html = '<section class="post featured bueno-newsfeed" data-news-source="../php/posts.php" data-news-rendered="server"'
+        . ($categorySlug !== '' ? ' data-news-category="' . $categorySlug . '"' : '')
+        . ' data-news-page="' . $page . '">';
+    $html .= '<header class="major news-feed-heading"><p class="news-feed-kicker">Najnowsze</p><h1>'
+        . $heading . '</h1><p>' . $description . '</p></header><div class="news-feed-list">';
+
+    if ($visible === []) {
+        $html .= '<p class="news-feed-empty">W tej kategorii nie ma jeszcze opublikowanych aktualności.</p>';
+    }
+    foreach ($visible as $index => $post) {
+        $title = htmlspecialchars((string) $post['title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $excerpt = htmlspecialchars(
+            news_feed_plain_text((string) $post['excerpt']) ?: news_feed_plain_text((string) $post['content']),
+            ENT_QUOTES | ENT_SUBSTITUTE,
+            'UTF-8'
+        );
+        [$dateIso, $dateLabel] = post_display_datetime((string) ($post['published_at'] ?? $post['created_at'] ?? ''));
+        $imagePath = ltrim(str_replace('\\', '/', (string) ($post['image_path'] ?? '')), '/');
+        $absoluteImagePath = app_path($imagePath);
+        $visual = '';
+        $hasImage = $imagePath !== '' && is_file($absoluteImagePath);
+        if ($hasImage) {
+            $info = @getimagesize($absoluteImagePath);
+            $width = max(1, (int) ($info[0] ?? 1));
+            $height = max(1, (int) ($info[1] ?? 1));
+            $alt = htmlspecialchars(trim((string) ($post['image_alt'] ?? '')) ?: (string) $post['title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $loading = $index === 0 && $page === 1
+                ? ' loading="eager" fetchpriority="high"'
+                : ' loading="lazy"';
+            $visual = '<div class="news-feed-visual"><img src="../' . htmlspecialchars($imagePath, ENT_QUOTES, 'UTF-8')
+                . '" alt="' . $alt . '" width="' . $width . '" height="' . $height . '" decoding="async"' . $loading . '></div>';
+        }
+        $html .= '<article class="news-feed-item"><a class="news-feed-card news-feed-post-link'
+            . ($hasImage ? ' has-news-feed-visual' : '') . '" href="'
+            . htmlspecialchars(post_page_filename((string) $post['slug']), ENT_QUOTES, 'UTF-8') . '">'
+            . $visual . '<div class="news-feed-content"><p class="news-feed-category">'
+            . htmlspecialchars((string) $post['category_title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+            . '</p><h2>' . $title . '</h2><p class="news-feed-excerpt">' . $excerpt . '</p>'
+            . ($dateIso !== '' ? '<time datetime="' . htmlspecialchars($dateIso, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($dateLabel, ENT_QUOTES, 'UTF-8') . '</time>' : '')
+            . '</div></a></article>';
+    }
+    $html .= '</div>';
+    if ($pageCount > 1) {
+        $html .= '<nav class="news-feed-pagination" aria-label="Strony aktualności">';
+        for ($number = 1; $number <= $pageCount; $number++) {
+            $href = sprintf($pagePattern, $number);
+            $html .= '<a href="' . htmlspecialchars($href, ENT_QUOTES, 'UTF-8') . '"'
+                . ($number === $page ? ' class="is-active" aria-current="page"' : '')
+                . ' aria-label="Strona ' . $number . '">' . $number . '</a>';
+        }
+        $html .= '</nav>';
+    }
+
+    return $html . '</section>';
+}
+
+function replace_news_feed_section(string $template, string $section): string
+{
+    return preg_replace(
+        '/<section class="post featured bueno-newsfeed"[^>]*>.*?<\/section>/s',
+        $section,
+        $template,
+        1
+    ) ?? $template;
+}
+
+function write_server_rendered_news_pages(string $template): string
+{
+    $allPosts = list_posts(null, true);
+    $generatedFiles = [];
+    foreach (list_post_categories() as $category) {
+        $slug = rawurlencode((string) $category['slug']);
+        $template = str_replace(
+            ['href="../index.html?category=' . $slug . '"', 'href="index.html?category=' . $slug . '"'],
+            'href="kategoria-' . $slug . '.html"',
+            $template
+        );
+    }
+    $rootSection = render_server_news_feed($allPosts, null, 1, 'aktualnosci-%d.html');
+    $rootSection = str_replace('href="aktualnosci-1.html"', 'href="../index.html"', $rootSection);
+    $rootTemplate = replace_news_feed_section($template, $rootSection);
+
+    $writePages = static function (array $posts, ?array $category, string $baseName) use ($template, &$generatedFiles): void {
+        $pageCount = max(1, (int) ceil(count($posts) / 5));
+        for ($page = 1; $page <= $pageCount; $page++) {
+            if ($category === null && $page === 1) {
+                continue;
+            }
+            $pattern = $category === null ? 'aktualnosci-%d.html' : $baseName . '-%d.html';
+            $section = render_server_news_feed($posts, $category, $page, $pattern);
+            if ($category !== null) {
+                $section = str_replace('href="' . $baseName . '-1.html"', 'href="' . $baseName . '.html"', $section);
+            }
+            $pageHtml = replace_news_feed_section($template, $section);
+            $filename = $category !== null && $page === 1 ? $baseName . '.html' : sprintf($pattern, $page);
+            write_public_file_atomically(app_path('pages/' . $filename), $pageHtml);
+            $generatedFiles[] = $filename;
+        }
+    };
+    $writePages($allPosts, null, 'aktualnosci');
+    foreach (list_post_categories() as $category) {
+        $writePages(list_posts((int) $category['id'], true), $category, 'kategoria-' . $category['slug']);
+    }
+
+    $manifestPath = app_path('data/generated-news-pages.json');
+    $previousFiles = [];
+    if (is_file($manifestPath)) {
+        $decoded = json_decode((string) file_get_contents($manifestPath), true);
+        $previousFiles = is_array($decoded) ? $decoded : [];
+    }
+    foreach (array_diff($previousFiles, $generatedFiles) as $obsoleteFile) {
+        if (is_string($obsoleteFile)
+            && preg_match('/^(?:aktualnosci-[0-9]+|kategoria-[a-z0-9-]+(?:-[0-9]+)?)\.html$/', $obsoleteFile) === 1) {
+            remove_public_file(app_path('pages/' . $obsoleteFile));
+        }
+    }
+    sort($generatedFiles, SORT_NATURAL);
+    write_public_file_atomically(
+        $manifestPath,
+        json_encode($generatedFiles, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . PHP_EOL
+    );
+
+    return $rootTemplate;
 }
 
 /**
@@ -1877,19 +2418,29 @@ function write_root_index_page(): void
         throw new RuntimeException('Nie można odczytać szablonu strony głównej.');
     }
 
+    $template = write_server_rendered_news_pages($template);
     $root = str_replace(
         ['../assets/', '../images/', '../php/'],
         ['assets/', 'images/', 'php/'],
         $template
     );
     $root = str_replace('href="../index.html', 'href="index.html', $root);
+    $root = str_replace('href="post-', 'href="pages/post-', $root);
     $root = str_replace('data-news-source="php/posts.php"', 'data-news-source="php/posts.php" data-news-base="pages/"', $root);
     $root = str_replace('href="galerie.html"', 'href="pages/galerie.html"', $root);
+    foreach (array_keys(TRUST_PUBLIC_PAGES) as $trustFilename) {
+        $root = str_replace('href="' . $trustFilename . '"', 'href="pages/' . $trustFilename . '"', $root);
+    }
 
     foreach (list_galleries() as $gallery) {
         $slug = rawurlencode((string) $gallery['slug']);
         $root = str_replace('href="' . $slug . '.html"', 'href="pages/' . $slug . '.html"', $root);
     }
+    foreach (list_post_categories() as $category) {
+        $slug = rawurlencode((string) $category['slug']);
+        $root = str_replace('href="kategoria-' . $slug, 'href="pages/kategoria-' . $slug, $root);
+    }
+    $root = str_replace('href="aktualnosci-', 'href="pages/aktualnosci-', $root);
 
     if (file_put_contents($rootPath, $root, LOCK_EX) === false) {
         throw new RuntimeException('Nie można zapisać głównej strony wejściowej.');
@@ -1942,11 +2493,17 @@ HTML;
     $template = preg_replace('/<meta name="description" content=".*?" \/>/s', '<meta name="description" content="' . $description . '" />', $template, 1) ?? $template;
     $template = preg_replace('/\s*<link rel="canonical" href=".*?" \/>/s', '', $template, 1) ?? $template;
     $template = preg_replace(
-        '/<script src="\.\.\/assets\/js\/news-feed\.js\?v=[^"]+"><\/script>/',
-        '<script src="../assets/js/cat-gallery.js?v=cms-core-20260721"></script>',
+        '/<script defer src="\.\.\/assets\/js\/news-feed\.js\?v=[^"]+"><\/script>/',
+        '<script defer src="../assets/js/cat-gallery.js?v=cms-core-20260721"></script>',
         $template,
         1
     ) ?? $template;
+    $template = str_replace(
+        '<script defer src="../assets/js/public-panel.js?v=cms-core-20260721"></script>',
+        '<script defer src="../assets/js/snap.js?v=cms-core-20260721"></script>' . "\n"
+        . '    <script defer src="../assets/js/public-panel.js?v=cms-core-20260721"></script>',
+        $template
+    );
 
     if (file_put_contents(gallery_page_path($slug), $template, LOCK_EX) === false) {
         throw new RuntimeException('Nie można utworzyć pliku strony galerii.');

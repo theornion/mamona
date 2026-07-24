@@ -420,3 +420,38 @@
     window.buenoInitPostEditor = initializePostEditorPage;
     initializePostEditorPage();
 }());
+
+(function () {
+    const list = document.querySelector('[data-source-list]');
+    const addButton = document.querySelector('[data-add-source]');
+    if (!list || !addButton) return;
+
+    function wireRemove(button) {
+        button.addEventListener('click', function () {
+            const row = button.closest('[data-source-row]');
+            if (!row) return;
+            const rows = list.querySelectorAll('[data-source-row]');
+            if (rows.length === 1) {
+                row.querySelectorAll('input').forEach((input) => { input.value = ''; });
+                return;
+            }
+            row.remove();
+        });
+    }
+
+    list.querySelectorAll('[data-remove-source]').forEach(wireRemove);
+    addButton.addEventListener('click', function () {
+        const row = document.createElement('div');
+        row.className = 'admin-source-row';
+        row.dataset.sourceRow = '';
+        row.innerHTML = [
+            '<input type="url" name="source_url[]" placeholder="https://…">',
+            '<input name="source_title[]" maxlength="500" placeholder="Tytuł źródła">',
+            '<input name="source_publisher[]" maxlength="200" placeholder="Wydawca">',
+            '<button type="button" class="admin-danger-action" data-remove-source>Usuń</button>'
+        ].join('');
+        list.appendChild(row);
+        wireRemove(row.querySelector('[data-remove-source]'));
+        row.querySelector('input').focus();
+    });
+}());

@@ -1,3 +1,14 @@
 contact-secrets.php
+php/contact-secrets.php
+.env
+.env.*
+!.env.example
+/data/admin-credentials.json
 /data/sessions/
 /data/cms.sqlite*
+/data/*.log
+/data/*.lock
+/data/backups/
+/data/thumbnails/
+/images/posts/thumbnails/
+/logs/

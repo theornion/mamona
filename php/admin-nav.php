@@ -13,6 +13,10 @@ function admin_nav_class(string $page, string $active): string
     <a class="admin-nav-brand" href="admin-posts.php">CMS <span>Panel</span></a>
     <ul class="links admin-nav-links">
         <li><a href="admin-posts.php"<?php echo admin_nav_class('posts', $adminActive); ?>>Posty</a></li>
+        <li><a href="admin-editorial-queue.php"<?php echo admin_nav_class('editorial', $adminActive); ?>>Kolejka</a></li>
+        <li><a href="admin-editorial-topics.php"<?php echo admin_nav_class('topics', $adminActive); ?>>Tematy</a></li>
+        <li><a href="admin-generation.php"<?php echo admin_nav_class('generation', $adminActive); ?>>Generowanie</a></li>
+        <li><a href="admin-technical-sources.php"<?php echo admin_nav_class('sources', $adminActive); ?>>Źródła</a></li>
         <li><a href="admin-gallery.php"<?php echo admin_nav_class('gallery', $adminActive); ?>>Galerie</a></li>
         <li><a href="admin-messages.php"<?php echo admin_nav_class('messages', $adminActive); ?>>Wiadomości</a></li>
         <li><a href="admin-styles.php"<?php echo admin_nav_class('styles', $adminActive); ?>>Wygląd strony</a></li>

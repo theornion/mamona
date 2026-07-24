@@ -5,7 +5,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/admin-database.php';
 
 header('Content-Type: text/css; charset=UTF-8');
-header('Cache-Control: no-store, no-cache, must-revalidate');
+header('Cache-Control: public, max-age=60, stale-while-revalidate=300');
 
 function theme_css_string(string $value): string
 {

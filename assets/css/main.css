@@ -2,6 +2,7 @@
 @font-face {
 	font-family:'Fraunces Black';
 	src:url('../../fonts/Grenze-Black.ttf') format('truetype');
+	font-display:swap;
 	font-weight:normal;
 	font-style:normal
 }
@@ -9,6 +10,7 @@
 @font-face {
 	font-family:'Grenze SemiBold';
 	src:url('../../fonts/Grenze-SemiBold.ttf') format('truetype');
+	font-display:swap;
 	font-weight:600;
 	font-style:normal
 }
@@ -16,6 +18,7 @@
 @font-face {
 	font-family:'Grenze Regular';
 	src:url('../../fonts/Grenze-Regular.ttf') format('truetype');
+	font-display:swap;
 	font-weight:400;
 	font-style:normal
 }
@@ -23,6 +26,7 @@
 @font-face {
 	font-family:'Grenze Medium';
 	src:url('../../fonts/Grenze-Medium.ttf') format('truetype');
+	font-display:swap;
 	font-weight:500;
 	font-style:normal
 }
@@ -30,6 +34,7 @@
 @font-face {
 	font-family:'Grenze Bold';
 	src:url('../../fonts/Grenze-Bold.ttf') format('truetype');
+	font-display:swap;
 	font-weight:700;
 	font-style:normal
 }
@@ -37,6 +42,7 @@
 @font-face {
 	font-family:'Grenze Black';
 	src:url('../../fonts/Grenze-Black.ttf') format('truetype');
+	font-display:swap;
 	font-weight:900;
 	font-style:normal
 }
@@ -45,6 +51,7 @@
 @font-face {
 	font-family:'Merriweather';
 	src:url('../../fonts/Grenze-Regular.ttf') format('truetype');
+	font-display:swap;
 	font-weight:300 500;
 	font-style:normal
 }
@@ -52,6 +59,7 @@
 @font-face {
 	font-family:'Merriweather';
 	src:url('../../fonts/Grenze-SemiBold.ttf') format('truetype');
+	font-display:swap;
 	font-weight:600 900;
 	font-style:normal
 }
@@ -59,6 +67,7 @@
 @font-face {
 	font-family:'Source Sans Pro';
 	src:url('../../fonts/Grenze-Regular.ttf') format('truetype');
+	font-display:swap;
 	font-weight:300 500;
 	font-style:normal
 }
@@ -66,6 +75,7 @@
 @font-face {
 	font-family:'Source Sans Pro';
 	src:url('../../fonts/Grenze-SemiBold.ttf') format('truetype');
+	font-display:swap;
 	font-weight:600 800;
 	font-style:normal
 }
@@ -73,6 +83,7 @@
 @font-face {
 	font-family:'Source Sans Pro';
 	src:url('../../fonts/Grenze-Black.ttf') format('truetype');
+	font-display:swap;
 	font-weight:900;
 	font-style:normal
 }
@@ -6539,6 +6550,7 @@ body.admin-page .admin-editor-close {
 body.admin-page .admin-card input[type="text"],
 body.admin-page .admin-card input[type="password"],
 body.admin-page .admin-card input[type="email"],
+body.admin-page .admin-card input[type="datetime-local"],
 body.admin-page .admin-card textarea,
 body.admin-page .admin-card select {
 	background:rgba(0,12,9,0.72);
@@ -6549,6 +6561,331 @@ body.admin-page .admin-card input:focus,
 body.admin-page .admin-card textarea:focus,
 body.admin-page .admin-card select:focus {
 	border-color:#7fffd4;
+}
+
+body.admin-page .editorial-filters {
+	display:flex;
+	flex-wrap:wrap;
+	gap:0.55rem;
+	margin:0 0 2rem;
+}
+
+body.admin-page .editorial-filters a {
+	display:inline-flex;
+	align-items:center;
+	gap:0.45rem;
+	padding:0.55rem 0.85rem;
+	border:1px solid rgba(255,255,255,0.24);
+	border-radius:999px;
+	text-decoration:none;
+}
+
+body.admin-page .editorial-filters a.is-active {
+	background:#fff;
+	color:#17211f !important;
+}
+
+body.admin-page .editorial-filters span {
+	min-width:1.5rem;
+	padding:0.05rem 0.4rem;
+	border-radius:999px;
+	background:rgba(0,0,0,0.18);
+	text-align:center;
+	font-size:0.78rem;
+}
+
+body.admin-page .editorial-queue-list {
+	display:grid;
+	gap:1.25rem;
+}
+
+body.admin-page .editorial-item {
+	padding:1.35rem;
+	border:1px solid rgba(255,255,255,0.2);
+	border-radius:0.6rem;
+	background:rgba(0,12,10,0.55);
+}
+
+body.admin-page .editorial-item > header {
+	display:flex;
+	align-items:flex-start;
+	justify-content:space-between;
+	gap:1rem;
+}
+
+body.admin-page .editorial-item h2 {
+	margin:0.35rem 0 1rem;
+	font-size:1.45rem;
+}
+
+body.admin-page .editorial-status {
+	display:inline-block;
+	padding:0.25rem 0.55rem;
+	border-radius:0.25rem;
+	background:rgba(255,255,255,0.14);
+	font-size:0.75rem;
+	font-weight:700;
+	letter-spacing:0.06em;
+	text-transform:uppercase;
+}
+
+body.admin-page .editorial-status.status-published { background:#246b4c; }
+body.admin-page .editorial-status.status-rejected { background:#8a3030; }
+body.admin-page .editorial-status.status-review { background:#8a641f; }
+body.admin-page .editorial-status.status-scheduled { background:#315f8c; }
+
+body.admin-page .editorial-meta {
+	display:grid;
+	grid-template-columns:repeat(3,minmax(0,1fr));
+	gap:0.75rem;
+	margin:0;
+}
+
+body.admin-page .editorial-meta div {
+	min-width:0;
+	padding:0.75rem;
+	border-radius:0.35rem;
+	background:rgba(255,255,255,0.07);
+}
+
+body.admin-page .editorial-meta dt {
+	margin-bottom:0.25rem;
+	font-size:0.72rem;
+	font-weight:700;
+	letter-spacing:0.06em;
+	text-transform:uppercase;
+	opacity:0.7;
+}
+
+body.admin-page .editorial-meta dd {
+	margin:0;
+	overflow-wrap:anywhere;
+}
+
+body.admin-page .editorial-error,
+body.admin-page .editorial-rejection {
+	margin:1rem 0 0;
+	padding:0.85rem;
+	border-left:0.25rem solid #d86b62;
+	background:rgba(120,20,20,0.22);
+}
+
+body.admin-page .editorial-actions {
+	display:grid;
+	grid-template-columns:repeat(2,minmax(0,1fr));
+	gap:1rem;
+	margin-top:1.25rem;
+}
+
+body.admin-page .editorial-actions form {
+	margin:0;
+}
+
+body.admin-page .editorial-action-row {
+	display:flex;
+	gap:0.6rem;
+}
+
+body.admin-page .editorial-action-row select {
+	flex:1;
+}
+
+body.admin-page .editorial-reject-form textarea {
+	min-height:5rem;
+	margin-bottom:0.6rem;
+}
+
+body.admin-page .editorial-history {
+	margin-top:1rem;
+}
+
+body.admin-page .editorial-history summary {
+	cursor:pointer;
+	font-weight:700;
+}
+
+body.admin-page .editorial-history ol {
+	margin:0.75rem 0 0;
+}
+
+body.admin-page .editorial-history small {
+	display:block;
+	opacity:0.7;
+}
+
+body.admin-page .admin-editorial-warnings {
+	margin:0 0 1.5rem;
+	padding:1rem 1.2rem;
+	border-left:0.3rem solid #e2aa45;
+	background:rgba(117,72,7,0.3);
+}
+
+body.admin-page .admin-editorial-warnings ul {
+	margin:0.5rem 0 0;
+}
+
+body.admin-page .admin-editorial-fields {
+	margin:1.5rem 0;
+	padding:1.2rem;
+	border:1px solid rgba(255,255,255,0.2);
+	border-radius:0.5rem;
+	background:rgba(0,12,10,0.38);
+}
+
+body.admin-page .admin-editorial-fields h2 {
+	margin-bottom:1rem;
+}
+
+body.admin-page .admin-editorial-grid {
+	display:grid;
+	grid-template-columns:repeat(3,minmax(0,1fr));
+	gap:1rem;
+}
+
+body.admin-page .admin-editorial-current-status {
+	min-height:2.75rem;
+	margin:0;
+	padding:0.7rem;
+	border-radius:0.25rem;
+	background:rgba(255,255,255,0.08);
+}
+
+body.admin-page .admin-source-list {
+	display:grid;
+	gap:0.7rem;
+	margin-bottom:0.8rem;
+}
+
+body.admin-page .admin-source-row {
+	display:grid;
+	grid-template-columns:2fr 1.4fr 1fr auto;
+	gap:0.6rem;
+	align-items:end;
+}
+
+body.admin-page .admin-ai-components {
+	display:flex;
+	flex-wrap:wrap;
+	gap:0.75rem 1.25rem;
+	margin-bottom:1rem;
+}
+
+body.admin-page .admin-ai-components label {
+	display:flex;
+	align-items:center;
+	gap:0.4rem;
+}
+
+body.admin-page .admin-workflow-actions {
+	display:flex;
+	flex-wrap:wrap;
+	align-items:flex-end;
+	gap:0.75rem;
+	margin-top:1.5rem;
+}
+
+body.admin-page .admin-workflow-actions label,
+body.admin-page .admin-workflow-actions textarea {
+	flex-basis:100%;
+}
+
+body.admin-page .admin-publish-action {
+	background:#24724e;
+}
+
+body.admin-page .technical-source-add {
+	margin-bottom:1.5rem;
+	padding:1rem;
+	border:1px solid rgba(255,255,255,0.2);
+	border-radius:0.5rem;
+}
+
+body.admin-page .technical-source-add summary,
+body.admin-page .technical-source-card summary {
+	cursor:pointer;
+	font-weight:700;
+}
+
+body.admin-page .technical-source-list {
+	display:grid;
+	gap:1.25rem;
+}
+
+body.admin-page .technical-source-card {
+	padding:1.25rem;
+	border:1px solid rgba(255,255,255,0.2);
+	border-radius:0.55rem;
+	background:rgba(0,12,10,0.5);
+}
+
+body.admin-page .technical-source-card.is-disabled {
+	opacity:0.65;
+}
+
+body.admin-page .technical-source-card > header {
+	display:flex;
+	justify-content:space-between;
+	align-items:flex-start;
+	gap:1rem;
+}
+
+body.admin-page .technical-source-card h2 {
+	margin:0.35rem 0 0;
+}
+
+body.admin-page .technical-source-form {
+	margin:1rem 0 0;
+}
+
+body.admin-page .technical-source-grid {
+	display:grid;
+	grid-template-columns:repeat(2,minmax(0,1fr));
+	gap:0.8rem;
+}
+
+body.admin-page .technical-source-flags {
+	display:flex;
+	flex-wrap:wrap;
+	gap:1rem;
+	margin:1rem 0;
+}
+
+@media screen and (max-width:736px) {
+	body.admin-page .editorial-item {
+		padding:1rem;
+	}
+
+	body.admin-page .editorial-item > header,
+	body.admin-page .editorial-action-row {
+		flex-direction:column;
+	}
+
+	body.admin-page .editorial-item > header .button,
+	body.admin-page .editorial-action-row select,
+	body.admin-page .editorial-action-row button,
+	body.admin-page .editorial-reject-form button {
+		width:100%;
+	}
+
+	body.admin-page .editorial-meta,
+	body.admin-page .editorial-actions {
+		grid-template-columns:1fr;
+	}
+
+	body.admin-page .admin-editorial-grid,
+	body.admin-page .admin-source-row,
+	body.admin-page .technical-source-grid {
+		grid-template-columns:1fr;
+	}
+
+	body.admin-page .technical-source-card > header {
+		flex-direction:column;
+	}
+
+	body.admin-page .admin-workflow-actions > button,
+	body.admin-page .admin-workflow-actions > .button {
+		width:100%;
+	}
 }
 body.admin-page .admin-nav,
 body.admin-page .admin-placeholder,
@@ -6625,6 +6962,36 @@ body.admin-page .admin-preview-action:focus-visible {
 	border-color:#ffe88f !important;
 	background:rgba(151,111,0,0.68) !important;
 	color:#fff0a6 !important;
+}
+
+/* TASK-21: panel controls remain finger-friendly without changing desktop density. */
+@media (hover:none), (pointer:coarse), (max-width:980px) {
+	body.admin-page {
+		min-width:0;
+		overflow-wrap:anywhere
+	}
+
+	body.admin-page .admin-card input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),
+	body.admin-page .admin-card select,
+	body.admin-page .admin-card textarea,
+	body.admin-page .admin-card button,
+	body.admin-page .admin-card .button,
+	body.admin-page .admin-nav a,
+	body.admin-page input[type="submit"],
+	body.admin-page input[type="reset"],
+	body.admin-page input[type="button"] {
+		min-height:44px;
+		font-size:max(1rem,16px)
+	}
+
+	body.admin-page :where(a,button,input,select,textarea):focus-visible {
+		outline:3px solid #7fffd4;
+		outline-offset:3px
+	}
+
+	body.admin-page :where(a,button,input,select,textarea) {
+		touch-action:manipulation
+	}
 }
 
 .admin-post-card-actions {

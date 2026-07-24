@@ -1,0 +1,1254 @@
+# Sprint 1 — fundament automatycznej redakcji technologicznej
+
+## Cel sprintu
+
+W ciągu 10 dni roboczych przekształcić obecny CMS w system, który:
+
+- przechowuje kompletne dane redakcyjne i SEO artykułów,
+- generuje strony gotowe do indeksowania i Google Discover,
+- automatycznie aktualizuje sitemapę i RSS,
+- posiada kolejkę szkiców oraz planowanie publikacji,
+- zbiera źródła techniczne,
+- tworzy na ich podstawie szkic artykułu przez OpenAI API,
+- generuje lub przygotowuje miniaturę,
+- wymaga ręcznego zatwierdzenia przed publikacją,
+- zapisuje historię generowania i wykorzystane źródła.
+
+## Warunki zakończenia sprintu
+
+Sprint uznajemy za zakończony, jeżeli można wykonać cały proces:
+
+1. System pobiera nowe informacje z co najmniej pięciu źródeł RSS.
+2. Łączy wpisy dotyczące tego samego wydarzenia.
+3. Administrator wybiera temat i uruchamia generowanie.
+4. Powstaje szkic artykułu wraz ze źródłami.
+5. Powstaje miniatura w prawidłowym formacie.
+6. Administrator poprawia lub zatwierdza materiał.
+7. Artykuł jest publikowany pod własnym adresem.
+8. Strona zawiera komplet metadanych SEO i Discover.
+9. Artykuł trafia do strony głównej, RSS i sitemapy.
+10. System zapisuje, skąd pochodziły informacje i kiedy artykuł został wygenerowany.
+
+---
+
+# Etap A — fundament publikacji
+
+## TASK-01: Audyt repozytorium i plan zmian
+
+### Cel
+
+Sprawdzić aktualną architekturę CMS-a przed modyfikacją bazy danych i generatora stron.
+
+### Polecenie dla Codexa
+
+Przeanalizuj istniejący CMS PHP + SQLite. Zidentyfikuj:
+
+- sposób tworzenia i aktualizowania tabel,
+- funkcje tworzenia, aktualizacji i publikowania artykułów,
+- sposób generowania statycznych stron artykułów,
+- sposób wyświetlania strony głównej,
+- obsługę obrazów,
+- miejsca, w których najlepiej dodać nowe moduły.
+
+Nie zmieniaj jeszcze zachowania aplikacji. Przygotuj krótki raport oraz proponowany podział nowych modułów. Zachowaj zgodność z istniejącym stylem kodu i nie ruszaj niezwiązanych zmian użytkownika.
+
+### Kryteria akceptacji
+
+- Powstała lista plików wymagających modyfikacji.
+- Zostały wskazane istniejące zależności między bazą, panelem i stronami publicznymi.
+- Jest określony sposób bezpiecznej migracji istniejącej bazy.
+- Nie zostały wprowadzone zmiany funkcjonalne.
+
+### Zależności
+
+Brak.
+
+---
+
+## TASK-02: Centralna konfiguracja witryny
+
+### Cel
+
+Usunąć konieczność wpisywania domeny, ścieżek i ustawień publikacji bezpośrednio w wielu plikach.
+
+### Polecenie dla Codexa
+
+Dodaj centralną konfigurację aplikacji obsługującą:
+
+- publiczny bazowy URL strony,
+- nazwę witryny,
+- domyślny język `pl-PL`,
+- strefę czasową `Europe/Warsaw`,
+- nazwę wydawcy,
+- domyślnego autora,
+- katalog obrazów artykułów,
+- włączenie lub wyłączenie automatycznej publikacji,
+- maksymalną liczbę artykułów publikowanych dziennie.
+
+Sekrety i klucze API nie mogą być przechowywane w repozytorium. Dodaj przykład konfiguracji środowiskowej bez prawdziwych danych dostępowych. Aplikacja powinna zgłaszać czytelny błąd, kiedy brakuje wymaganej konfiguracji.
+
+### Kryteria akceptacji
+
+- Domena jest definiowana w jednym miejscu.
+- Kod potrafi budować absolutne adresy artykułów i obrazów.
+- Klucze API nie trafiają do bazy ani plików wersjonowanych.
+- Istnieje przykładowa konfiguracja środowiska.
+- Brak konfiguracji nie powoduje pustej strony lub nieczytelnego błędu PHP.
+
+### Zależności
+
+TASK-01.
+
+---
+
+## TASK-03: Rozszerzenie modelu danych artykułu
+
+### Cel
+
+Przygotować bazę pod SEO, źródła, harmonogram i treści generowane automatycznie.
+
+### Polecenie dla Codexa
+
+Rozszerz tabelę artykułów za pomocą bezpiecznej, wielokrotnie wykonywalnej migracji. Dodaj pola lub powiązane tabele dla:
+
+- statusu: `idea`, `research`, `draft`, `review`, `scheduled`, `published`, `rejected`,
+- daty pierwszej publikacji,
+- daty ostatniej istotnej aktualizacji,
+- planowanej daty publikacji,
+- autora,
+- opisu SEO,
+- alternatywnego opisu głównego obrazu,
+- canonical URL,
+- informacji o użyciu AI,
+- wyniku automatycznej kontroli jakości,
+- przyczyny odrzucenia,
+- źródeł artykułu,
+- historii zmian statusu,
+- danych o wygenerowaniu tekstu i obrazu.
+
+Nie przechowuj źródeł wyłącznie jako nieprzeszukiwalnego tekstu. Utwórz osobną tabelę powiązań artykuł–źródło.
+
+Zachowaj kompatybilność ze wszystkimi istniejącymi artykułami.
+
+### Kryteria akceptacji
+
+- Migrację można uruchomić wielokrotnie.
+- Istniejące artykuły nadal się wyświetlają.
+- Istniejące wpisy otrzymują logiczne wartości domyślne.
+- Data utworzenia nie jest automatycznie zastępowana datą publikacji.
+- Każdy artykuł może mieć wiele źródeł.
+- Zmiany statusów mogą być audytowane.
+- Operacje bazodanowe używają przygotowanych zapytań.
+
+### Zależności
+
+TASK-01 i TASK-02.
+
+---
+
+## TASK-04: Przebudowa generatora stron artykułów
+
+### Cel
+
+Generować kompletną, semantyczną i indeksowalną stronę dla każdego artykułu.
+
+### Polecenie dla Codexa
+
+Przebuduj generator strony artykułu tak, aby każdy opublikowany materiał zawierał:
+
+- unikalny `<title>`,
+- meta description,
+- canonical URL,
+- `robots` z `index,follow,max-image-preview:large`,
+- Open Graph: tytuł, opis, typ, URL i obraz,
+- metadane udostępniania społecznościowego,
+- poprawny element `<article>`,
+- widocznego autora,
+- widoczną datę publikacji,
+- datę aktualizacji, jeśli jest inna,
+- główny nagłówek H1,
+- źródła pod artykułem,
+- opis alternatywny obrazu,
+- linki do powiązanych artykułów,
+- informację o metodzie przygotowania treści, jeśli użyto automatyzacji.
+
+Nie publikuj canonicala ani obrazów jako ścieżek względnych. Wszystkie publiczne adresy w metadanych muszą być absolutne.
+
+### Kryteria akceptacji
+
+- Dwa różne artykuły mają różne title, description i canonical.
+- Źródła są widoczne i klikalne.
+- Nieopublikowany szkic nie jest publicznie indeksowalny.
+- Tytuł i opis są prawidłowo kodowane.
+- Obraz główny ma sensowny alt.
+- Strona działa bez JavaScriptu.
+
+### Zależności
+
+TASK-02 i TASK-03.
+
+---
+
+## TASK-05: Dane strukturalne Article
+
+### Cel
+
+Dostarczyć Google jednoznaczne informacje o artykule.
+
+### Polecenie dla Codexa
+
+Dodaj do stron artykułów poprawny JSON-LD typu `Article` lub `NewsArticle`. Uwzględnij:
+
+- headline,
+- description,
+- datePublished,
+- dateModified,
+- author,
+- publisher,
+- mainEntityOfPage,
+- image,
+- inLanguage,
+- articleSection.
+
+JSON-LD musi korzystać z tych samych danych, które są widoczne na stronie. Nie dodawaj fikcyjnego autora ani dat. Zabezpiecz generowanie JSON przed uszkodzeniem przez cudzysłowy i znaki specjalne w tytułach.
+
+### Kryteria akceptacji
+
+- JSON jest poprawny składniowo.
+- Adres strony oraz obraz są absolutne.
+- Daty zawierają strefę czasową.
+- Dane JSON-LD są zgodne z zawartością strony.
+- Brak obrazu lub autora nie powoduje błędu strony.
+
+### Zależności
+
+TASK-04.
+
+---
+
+## TASK-06: Automatyczna sitemap, RSS i robots.txt
+
+### Cel
+
+Zapewnić szybkie odkrywanie nowych publikacji.
+
+### Polecenie dla Codexa
+
+Dodaj automatyczne generowanie:
+
+- `sitemap.xml`,
+- kanału `feed.xml` lub `rss.xml`,
+- wpisu prowadzącego do sitemapy w `robots.txt`.
+
+Sitemap powinna zawierać wyłącznie opublikowane, kanoniczne artykuły i publiczne strony. `lastmod` ma odzwierciedlać ostatnią istotną zmianę treści, a nie każde techniczne zapisanie rekordu.
+
+RSS powinien zawierać najnowsze publikacje, pełne adresy, datę publikacji, opis, kategorię oraz główny obraz, jeśli istnieje.
+
+Aktualizuj oba pliki po publikacji, aktualizacji, wycofaniu lub usunięciu artykułu.
+
+### Kryteria akceptacji
+
+- Nie ma szkiców ani odrzuconych treści w sitemapie.
+- Wszystkie adresy są absolutne.
+- XML jest poprawny i zakodowany w UTF-8.
+- Wycofanie artykułu usuwa go z sitemapy i RSS.
+- `robots.txt` wskazuje sitemapę.
+- Błąd zapisu sitemapy nie pozostawia uszkodzonego, częściowego pliku.
+
+### Zależności
+
+TASK-02, TASK-03 i TASK-04.
+
+---
+
+## TASK-07: Renderowanie strony głównej po stronie serwera
+
+### Cel
+
+Poprawić pierwszy render, wydajność mobilną i dostępność treści bez JavaScriptu.
+
+### Polecenie dla Codexa
+
+Zmień stronę główną tak, aby lista najnowszych artykułów była obecna już w odpowiedzi HTML. JavaScript może obsługiwać późniejsze filtrowanie lub paginację, ale podstawowa lista i linki nie mogą wymagać wywołania API po załadowaniu strony.
+
+Zachowaj istniejący wygląd. Dodaj:
+
+- semantyczne elementy artykułów,
+- normalne linki `<a>`,
+- wymiary obrazów ograniczające przesunięcia układu,
+- lazy loading poza pierwszym obrazem,
+- paginację działającą również bez JavaScriptu.
+
+### Kryteria akceptacji
+
+- Po wyłączeniu JavaScriptu widoczna jest lista artykułów.
+- Linki można normalnie otworzyć.
+- Pierwszy obraz nie jest ładowany leniwie.
+- Pozostałe obrazy mogą korzystać z lazy loadingu.
+- Układ mobilny nie wykonuje widocznych przeskoków podczas ładowania.
+- Dotychczasowe kategorie nadal działają.
+
+### Zależności
+
+TASK-03 i TASK-04.
+
+---
+
+# Etap B — panel redakcyjny
+
+## TASK-08: Kolejka materiałów i statusy redakcyjne
+
+### Cel
+
+Oddzielić pomysły, szkice, materiały do sprawdzenia i publikacje.
+
+### Polecenie dla Codexa
+
+Dodaj w panelu administratora widok kolejki redakcyjnej. Widok powinien obsługiwać statusy:
+
+- pomysł,
+- research,
+- szkic,
+- do sprawdzenia,
+- zaplanowany,
+- opublikowany,
+- odrzucony.
+
+Dla każdego materiału pokaż:
+
+- tytuł roboczy,
+- kategorię,
+- źródła,
+- datę wykrycia,
+- wynik jakości,
+- pochodzenie: ręczne lub automatyczne,
+- planowaną datę publikacji,
+- ostatni błąd automatyzacji.
+
+Dodaj filtrowanie, zmianę statusu i możliwość odrzucenia z podaniem przyczyny. Wszystkie operacje mutujące muszą korzystać z CSRF i istniejącego systemu autoryzacji.
+
+### Kryteria akceptacji
+
+- Administrator może filtrować materiały po statusie.
+- Można odrzucić materiał bez jego trwałego usuwania.
+- Opublikowanego artykułu nie można przypadkowo opublikować ponownie.
+- Każda zmiana statusu trafia do historii.
+- Kolejka jest używalna na telefonie.
+
+### Zależności
+
+TASK-03.
+
+---
+
+## TASK-09: Rozbudowa edytora artykułu
+
+### Cel
+
+Umożliwić szybką kontrolę szkicu przed publikacją.
+
+### Polecenie dla Codexa
+
+Rozbuduj formularz edycji artykułu o:
+
+- autora,
+- datę publikacji,
+- planowaną datę publikacji,
+- opis SEO,
+- alt obrazu,
+- listę źródeł,
+- widoczny status,
+- wynik kontroli jakości,
+- informację, które elementy wygenerowało AI,
+- przyciski: zapisz szkic, przekaż do sprawdzenia, zaplanuj, opublikuj, odrzuć.
+
+Pokaż ostrzeżenia, jeśli:
+
+- brak źródeł,
+- tytuł jest bardzo długi,
+- opis SEO jest pusty,
+- brak głównego obrazu,
+- obraz jest mniejszy niż wymagany,
+- artykuł zawiera niedozwolone znaczniki,
+- istnieje bardzo podobny opublikowany materiał.
+
+### Kryteria akceptacji
+
+- Sam zapis formularza nie publikuje artykułu.
+- Publikacja wymaga osobnej, jednoznacznej czynności.
+- Walidacja działa również po stronie serwera.
+- Źródła można dodawać i usuwać.
+- Istniejące obrazy i kadrowanie nadal działają.
+- Nie można ustawić daty aktualizacji wcześniejszej od daty publikacji.
+
+### Zależności
+
+TASK-03 i TASK-08.
+
+---
+
+## TASK-10: Planowanie publikacji
+
+### Cel
+
+Pozwolić przygotować kilka tekstów wcześniej i publikować je w kontrolowanym tempie.
+
+### Polecenie dla Codexa
+
+Dodaj mechanizm publikowania zaplanowanych artykułów uruchamiany przez bezpieczny proces cykliczny. Proces powinien:
+
+- wybierać tylko materiały ze statusem `scheduled`,
+- publikować tylko po osiągnięciu zaplanowanego czasu,
+- respektować dzienny limit publikacji,
+- używać blokady zapobiegającej równoległemu uruchomieniu,
+- nie publikować tego samego artykułu dwukrotnie,
+- zapisywać wynik i błędy,
+- regenerować stronę, sitemapę i RSS po sukcesie.
+
+Dodaj tryb testowy, który pokazuje, co zostałoby opublikowane, ale niczego nie zmienia.
+
+### Kryteria akceptacji
+
+- Dwukrotne uruchomienie procesu nie tworzy dwóch publikacji.
+- Błąd jednego materiału nie blokuje kolejnych.
+- Istnieje czytelny log.
+- Można uruchomić tryb testowy.
+- Proces nie jest dostępny publicznie bez autoryzacji.
+
+### Zależności
+
+TASK-06, TASK-08 i TASK-09.
+
+---
+
+# Etap C — zbieranie nowości
+
+## TASK-11: Rejestr źródeł technicznych
+
+### Cel
+
+Stworzyć kontrolowaną listę miejsc, z których system może pobierać informacje.
+
+### Polecenie dla Codexa
+
+Dodaj tabelę oraz panel zarządzania źródłami. Źródło powinno posiadać:
+
+- nazwę,
+- URL strony,
+- URL kanału RSS lub endpointu,
+- typ źródła,
+- kategorię tematyczną,
+- język,
+- poziom wiarygodności,
+- informację, czy jest źródłem pierwotnym,
+- status aktywności,
+- datę ostatniego poprawnego pobrania,
+- ostatni błąd.
+
+Dodaj na start co najmniej pięć przykładowych źródeł oficjalnych, ale nie wpisuj źródeł wymagających scrapowania lub obchodzenia zabezpieczeń.
+
+### Kryteria akceptacji
+
+- Źródła można włączać i wyłączać.
+- Błędne źródło nie zatrzymuje całego procesu.
+- System odróżnia źródła pierwotne od publikacji wtórnych.
+- Adresy są walidowane.
+- Interfejs nie pozwala przypadkowo zapisać klucza API jako publicznego URL-a.
+
+### Zależności
+
+TASK-03 i TASK-08.
+
+---
+
+## TASK-12: Pobieranie i normalizacja RSS
+
+### Cel
+
+Automatycznie wykrywać nowe tematy bez kopiowania całych cudzych artykułów.
+
+### Polecenie dla Codexa
+
+Zaimplementuj moduł pobierania RSS i Atom. Dla każdego wpisu zapisuj:
+
+- tytuł,
+- adres źródłowy,
+- nazwę źródła,
+- datę publikacji,
+- krótki opis udostępniony przez feed,
+- identyfikator wpisu,
+- datę pierwszego wykrycia,
+- kategorię,
+- skrót treści używany do deduplikacji.
+
+Nie pobieraj i nie przechowuj pełnych artykułów, jeżeli feed ich nie udostępnia lub warunki źródła tego nie przewidują. Dodaj limity czasu, maksymalny rozmiar odpowiedzi oraz ochronę przed pobieraniem adresów lokalnych i prywatnych.
+
+### Kryteria akceptacji
+
+- Ponowne pobranie feedu nie tworzy duplikatów.
+- Uszkodzony XML jest obsługiwany jako błąd źródła.
+- Proces ma limit czasu.
+- Nie można wykorzystać modułu do odczytywania lokalnych zasobów serwera.
+- Wpisy trafiają do kolejki jako pomysły, a nie jako opublikowane artykuły.
+
+### Zależności
+
+TASK-11.
+
+---
+
+## TASK-13: Deduplikacja i grupowanie wydarzeń
+
+### Cel
+
+Nie tworzyć kilku artykułów o tej samej premierze lub aktualizacji.
+
+### Polecenie dla Codexa
+
+Dodaj mechanizm grupujący podobne wpisy źródłowe w jeden temat redakcyjny. W pierwszej wersji użyj:
+
+- normalizacji tytułów,
+- usuwania nazw źródeł i typowych dopisków,
+- podobieństwa wyrazów,
+- rozpoznawania wspólnych nazw produktów i firm,
+- ograniczenia czasowego, np. wydarzenia z ostatnich 72 godzin.
+
+Zapisuj pewność dopasowania. Przy niepewnym wyniku pozostaw możliwość ręcznego połączenia lub rozdzielenia tematów.
+
+### Kryteria akceptacji
+
+- Identyczne URL-e nie tworzą wielu tematów.
+- Podobne nagłówki z różnych serwisów są grupowane.
+- Niezwiązane aktualizacje tej samej firmy nie są automatycznie łączone wyłącznie na podstawie nazwy firmy.
+- Administrator może cofnąć błędne grupowanie.
+- Algorytm ma testy na przygotowanym zestawie przykładowych tytułów.
+
+### Zależności
+
+TASK-12.
+
+---
+
+## TASK-14: Punktacja tematów
+
+### Cel
+
+Wyświetlać administratorowi najciekawsze tematy jako pierwsze.
+
+### Polecenie dla Codexa
+
+Dodaj punktację tematów w skali 0–100. Uwzględnij:
+
+- świeżość,
+- obecność źródła pierwotnego,
+- liczbę niezależnych potwierdzeń,
+- dopasowanie do wybranych kategorii,
+- znaczenie dla polskiego użytkownika,
+- możliwość stworzenia wartości własnej,
+- potencjał atrakcyjnej grafiki,
+- podobieństwo do już opublikowanych artykułów,
+- ryzyko tematyczne.
+
+Pokaż administratorowi nie tylko wynik, ale również jego uzasadnienie. Nie pozwalaj automatycznie wybierać tematów wyłącznie na podstawie sensacyjnego tytułu.
+
+### Kryteria akceptacji
+
+- Wynik jest deterministyczny dla tych samych danych.
+- Administrator widzi składowe punktacji.
+- Podobieństwo do istniejącego artykułu obniża wynik.
+- Brak źródła pierwotnego jest wyraźnie oznaczony.
+- Tematy wysokiego ryzyka nie mogą przejść do automatycznej publikacji.
+
+### Zależności
+
+TASK-13.
+
+---
+
+# Etap D — OpenAI i tworzenie materiału
+
+## TASK-15: Ręczne generowanie i bezpieczna integracja z OpenAI API
+
+### Cel
+
+Dodać wspólną warstwę generowania treści obsługującą zarówno pracę ręczną
+z ChatGPT Plus, jak i późniejszą automatyzację przez OpenAI API.
+
+### Polecenie dla Codexa
+
+Zaimplementuj dwa przełączalne tryby generowania:
+
+1. `manual` — bez wywołań API. System przygotowuje kompletny prompt oraz dane
+   wejściowe, pozwala skopiować je do ChatGPT Plus, a następnie wkleić albo
+   zaimportować odpowiedź do Mamony;
+2. `api` — system wykonuje te same operacje automatycznie przez OpenAI API,
+   używając klucza ze zmiennej środowiskowej.
+
+Tryb ma być ustawiany centralnie. Zmiana trybu nie może wymagać przebudowy
+pipeline'u ani powodować utraty zapisanych researchów, szkiców, kontroli jakości
+lub obrazów. Oba tryby muszą korzystać z tego samego formatu danych wejściowych
+i wyjściowych oraz tej samej walidacji odpowiedzi.
+
+W trybie `manual` dodaj:
+
+- podgląd gotowego promptu,
+- przycisk kopiowania promptu,
+- eksport danych wejściowych do pliku tekstowego lub JSON,
+- formularz wklejenia odpowiedzi,
+- import odpowiedzi z pliku,
+- walidację przed zapisem,
+- oznaczenie operacji jako wykonanej ręcznie przez ChatGPT,
+- instrukcję, że abonament ChatGPT Plus nie jest połączeniem API i wymaga
+  ręcznego przeniesienia danych.
+
+W trybie `api` zaimplementuj klienta OpenAI API używającego klucza ze zmiennej środowiskowej. Dodaj:
+
+- kontrolowane limity czasu,
+- ponawianie tylko błędów przejściowych,
+- limity liczby prób,
+- logowanie identyfikatora operacji bez zapisywania sekretów,
+- rejestrowanie użytego modelu,
+- przybliżony koszt lub wykorzystanie tokenów, jeśli API zwraca te dane,
+- obsługę błędnej odpowiedzi,
+- tryb testowy z lokalną atrapą odpowiedzi.
+
+Nie umieszczaj wywołań API bezpośrednio w plikach odpowiedzialnych za HTML panelu.
+
+### Kryteria akceptacji
+
+- Brak klucza daje czytelny błąd administracyjny.
+- W trybie `manual` brak klucza API nie blokuje przygotowania promptu ani importu odpowiedzi.
+- Administrator może przełączyć `manual` i `api` w centralnej konfiguracji.
+- Prompt wyeksportowany ręcznie zawiera komplet danych potrzebnych do wykonania operacji.
+- Odpowiedź wklejona lub zaimportowana ręcznie przechodzi tę samą walidację co odpowiedź API.
+- Każda operacja zapisuje sposób wykonania: `manual` albo `api`.
+- Klucz nie pojawia się w logach.
+- Można testować pipeline bez płatnego wywołania API.
+- Odpowiedzi API są walidowane przed zapisaniem.
+- Ponowienie nie prowadzi do niekontrolowanego wielokrotnego naliczania kosztów.
+
+### Zależności
+
+TASK-02.
+
+---
+
+## TASK-15A: Zmiana profilu redakcyjnego na popularnonaukowy
+
+### Cel
+
+Naprawić profil źródeł i selekcję tematów przed rozpoczęciem generowania
+researchu. Serwis ma być kierowany do zwykłego, ciekawego świata czytelnika,
+a nie do programistów, administratorów chmury lub odbiorców changelogów.
+
+Główny profil redakcyjny:
+
+> Newsy popularnonaukowe ze szczególnym naciskiem na nowe technologie, sposób
+> ich działania, rozwój wynalazków oraz wpływ odkryć na człowieka i świat.
+
+Po ukończeniu tego zadania TASK-16 i wszystkie dalsze zadania mają korzystać
+z nowego profilu.
+
+### Polecenie dla Codexa
+
+Przeanalizuj skutki wykonanych TASK-11–15 i popraw źródła, kategorie,
+grupowanie, punktację oraz kolejkę tak, aby dominowały tematy w rodzaju:
+
+- wynaleziono nowy typ kamery — jak działa i co pozwala zobaczyć,
+- powstał materiał o niezwykłych właściwościach — skąd one się biorą,
+- naukowcy obserwują aktywny wulkan — co potrafią przewidzieć, a czego nie,
+- nowy instrument zmienia sposób badania kosmosu, Ziemi lub organizmów,
+- eksperyment podważa intuicyjne wyjaśnienie znanego zjawiska,
+- rozwój robotyki, energetyki, transportu, medycyny technicznej, sensorów,
+  optyki, elektroniki, materiałów i technologii kosmicznych,
+- trwająca zagadka naukowa, nad którą pracuje kilka zespołów.
+
+Nie traktuj jako priorytetowych:
+
+- changelogów,
+- aktualizacji bibliotek, frameworków i SDK,
+- nowych opcji usług chmurowych,
+- komunikatów przeznaczonych wyłącznie dla programistów lub administratorów,
+- drobnych premier produktowych bez ciekawego mechanizmu lub znaczenia,
+- marketingowych zapowiedzi bez danych i źródła pierwotnego.
+
+#### 1. Zmień zestaw źródeł
+
+Wyłącz domyślne źródła stricte deweloperskie, w szczególności kanały nastawione
+na changelogi GitHub, AWS, Google Developers i Microsoft DevBlogs. Nie usuwaj
+ich trwale — pozostaw możliwość ponownego włączenia.
+
+Dodaj i aktywuj co najmniej osiem sprawdzonych kanałów RSS/Atom związanych z:
+
+- NASA Technology i NASA Science,
+- NASA Jet Propulsion Laboratory,
+- ESA Science & Technology,
+- NASA Earth Observatory,
+- USGS: geologia, trzęsienia ziemi, wulkany i zagrożenia naturalne,
+- CERN,
+- wiadomościami badawczymi renomowanych uczelni lub instytutów technicznych,
+- jednym lub kilkoma wiarygodnymi źródłami wtórnymi popularyzującymi naukę,
+  używanymi do potwierdzeń i wyszukiwania kontekstu.
+
+Przed zapisaniem każdego kanału sprawdź, czy:
+
+- jest nadal aktywny i zwraca poprawny RSS lub Atom,
+- korzystanie z niego nie wymaga scrapowania ani obchodzenia zabezpieczeń,
+- wskazany wydawca rzeczywiście odpowiada za domenę,
+- kategoria i informacja o źródle pierwotnym są poprawne,
+- kanał nie publikuje głównie treści dla programistów.
+
+Preferuj źródła pierwotne. Źródło wtórne nie może być jedyną podstawą
+ryzykownego lub sensacyjnego twierdzenia.
+
+#### 2. Zmień kategorie
+
+Dodaj lub uporządkuj kategorie co najmniej dla:
+
+- nowe technologie,
+- jak to działa,
+- kosmos,
+- Ziemia i natura,
+- energia i klimat,
+- robotyka i transport,
+- materiały i wynalazki,
+- człowiek i technologia.
+
+Zachowaj kompatybilność istniejących artykułów i nie usuwaj starych kategorii,
+jeżeli są już używane.
+
+#### 3. Zmień punktację tematów
+
+Zaktualizuj TASK-14 w kodzie tak, aby wysoko punktowane były:
+
+- prawdziwe pytanie, zagadka lub paradoks możliwy do wyjaśnienia,
+- nowy mechanizm, urządzenie, materiał, instrument albo metoda badawcza,
+- możliwość przystępnego pokazania, jak coś działa,
+- znaczenie dla zwykłego człowieka,
+- wpływ na przyszłość technologii lub rozumienie świata,
+- zderzenie intuicji z rzeczywistym mechanizmem,
+- kilka niezależnych potwierdzeń,
+- dobre źródło pierwotne,
+- możliwość zbudowania wartościowego kontekstu i narracji
+  `problem_discovery_return`,
+- potencjał uczciwej, reprezentatywnej grafiki.
+
+Obniżaj wynik za:
+
+- changelog lub drobną aktualizację techniczną,
+- temat zrozumiały wyłącznie dla wąskiej grupy programistów,
+- czysty marketing,
+- brak możliwego do wyjaśnienia mechanizmu,
+- sensacyjność niepopartą źródłem,
+- podobieństwo do istniejącego artykułu,
+- twierdzenia wykraczające poza pewność źródła.
+
+Punktacja nie może nagradzać clickbaitu. Przykładowo komunikat o podwyższonej
+aktywności wulkanu nie może zostać zamieniony w twierdzenie „wulkan niedługo
+wybuchnie”, jeżeli źródło nie pozwala określić czasu erupcji.
+
+#### 4. Uporządkuj dotychczasową kolejkę
+
+Nie usuwaj bezpowrotnie 110 wpisów pobranych wcześniej. Dodaj bezpieczną,
+audytowalną operację zbiorczą, która:
+
+- odrzuci lub zarchiwizuje nieprzetworzone pomysły pochodzące wyłącznie
+  z wyłączonych źródeł deweloperskich,
+- zapisze powód: „zmiana profilu redakcyjnego”,
+- nie zmieni opublikowanych artykułów,
+- nie usunie źródeł, historii statusów ani danych audytowych,
+- pozwoli administratorowi wcześniej zobaczyć liczbę i listę materiałów,
+  których dotknie operacja,
+- wymaga jednoznacznego potwierdzenia i ochrony CSRF.
+
+Następnie pobierz nowe kanały, przelicz grupowanie i punktację. Panel „Tematy”
+ma domyślnie pokazywać aktywne tematy nowego profilu, posortowane od
+najciekawszych. Materiały odrzucone lub archiwalne nie powinny zaśmiecać
+domyślnego widoku, ale muszą pozostać dostępne przez filtr.
+
+### Kryteria akceptacji
+
+- Co najmniej osiem aktywnych kanałów dotyczy nauki i rozwoju technologii.
+- Domyślne źródła deweloperskie są wyłączone, a nie bezpowrotnie usunięte.
+- Ponowne pobranie dostarcza tematy zrozumiałe i ciekawe dla osoby
+  niebędącej programistą.
+- W pierwszych 20 najwyżej ocenionych tematach nie dominują changelogi,
+  frameworki, SDK ani usługi chmurowe.
+- Każdy wysoko oceniony temat pokazuje uzasadnienie związane z mechanizmem,
+  odkryciem, znaczeniem lub pytaniem badawczym.
+- Sensacyjne twierdzenia są obniżane lub blokowane, jeśli źródło ich nie wspiera.
+- Stare 110 wpisów nie zostaje bezpowrotnie usunięte.
+- Operacja porządkująca kolejkę ma podgląd, potwierdzenie, CSRF i zapis historii.
+- Po porządkowaniu domyślny widok nie jest zaśmiecony starymi pomysłami
+  deweloperskimi.
+- Grupowanie i punktacja zostały ponownie uruchomione dla nowych wpisów.
+- Istniejące opublikowane artykuły nadal działają.
+- Testy TASK-11–15 oraz testy nowego profilu przechodzą.
+
+### Zależności
+
+TASK-11, TASK-12, TASK-13, TASK-14 i TASK-15.
+
+---
+
+## TASK-16: Generowanie paczki researchowej
+
+### Cel
+
+Najpierw uporządkować fakty, a dopiero później pisać artykuł.
+
+### Polecenie dla Codexa
+
+Na podstawie grupy źródeł wygeneruj ustrukturyzowaną paczkę researchową w JSON. Powinna zawierać:
+
+- krótkie streszczenie wydarzenia,
+- najważniejsze twierdzenia,
+- przypisanie każdego twierdzenia do źródła,
+- informacje wspólne dla kilku źródeł,
+- sprzeczności pomiędzy źródłami,
+- czego jeszcze nie wiadomo,
+- możliwy polski kontekst,
+- potencjalne porównania,
+- poziom pewności każdego twierdzenia,
+- sugestię odrzucenia tematu, jeśli materiał jest zbyt słaby.
+
+Model nie może dodawać twierdzeń, których nie da się przypisać do przekazanego materiału.
+
+W trybie `manual` pokaż administratorowi gotowy prompt researchowy wraz z
+ponumerowanymi źródłami. Pozwól skopiować lub wyeksportować prompt, a następnie
+wkleić albo zaimportować odpowiedź JSON otrzymaną w ChatGPT Plus. W trybie
+`api` wykonaj tę samą operację automatycznie. Oba tryby muszą używać identycznego
+schematu JSON i walidacji.
+
+### Kryteria akceptacji
+
+- Każdy istotny fakt ma identyfikator źródła.
+- Odpowiedź jest walidowana jako JSON.
+- Sprzeczne informacje nie są przedstawiane jako pewnik.
+- Brak wystarczających danych może zakończyć się rekomendacją odrzucenia.
+- Paczka researchowa jest zapisywana oddzielnie od finalnego artykułu.
+- Research można ukończyć w trybie `manual` bez skonfigurowanego klucza API.
+- System zapisuje, czy research powstał w trybie `manual`, czy `api`.
+
+### Zależności
+
+TASK-13, TASK-14, TASK-15 i TASK-15A.
+
+---
+
+## TASK-17: Generowanie szkicu artykułu
+
+### Cel
+
+Tworzyć tekst w powtarzalnej, mobilnej formule redakcyjnej.
+
+### Polecenie dla Codexa
+
+Na podstawie zatwierdzonej paczki researchowej generuj szkic artykułu zawierający:
+
+- precyzyjny tytuł,
+- krótki lead odpowiadający, co się wydarzyło,
+- sekcję „Dlaczego to ważne”,
+- najważniejsze fakty,
+- porównanie lub kontekst,
+- sekcję „Czego jeszcze nie wiadomo”,
+- praktyczny wniosek dla czytelnika,
+- propozycję opisu SEO,
+- propozycję kategorii,
+- propozycję altu obrazu,
+- listę wykorzystanych źródeł.
+
+Przed generowaniem wybierz jeden z dwóch trybów kompozycji:
+
+1. `informational` — dla krótkich wiadomości, aktualizacji i tematów, w których
+   czytelnik powinien otrzymać najważniejszą odpowiedź od razu;
+2. `problem_discovery_return` — dla analiz, wyjaśnień, paradoksów i tematów
+   odpowiadających na pytanie „dlaczego?” lub „jak to działa?”.
+
+W trybie `problem_discovery_return` zastosuj strukturę:
+
+1. Pytanie bez oczywistej odpowiedzi — rozpocznij od prawdziwego problemu,
+   paradoksu albo obserwacji wynikającej z paczki researchowej.
+2. Dążenie do odpowiedzi — przedstaw intuicyjne wyjaśnienie i fakty, które
+   początkowo wydają się prowadzić do rozwiązania.
+3. Powiązany temat B — wprowadź technologię, mechanizm, historię lub porównanie
+   niezbędne do zrozumienia głównego tematu A.
+4. Pozorna ślepa uliczka — pokaż ograniczenie tematu B albo moment, w którym
+   samo to wyjaśnienie nadal nie odpowiada na pytanie początkowe.
+5. Powrót do tematu A — połącz zdobyty kontekst z głównym problemem.
+6. Domknięcie tematu B — wyjaśnij do końca, dlaczego dygresja była potrzebna
+   i co wnosi do odpowiedzi.
+7. Odpowiedź i puenta — podaj jasny wniosek, znaczenie dla czytelnika oraz
+   istotne niewiadome.
+
+Pytanie otwierające musi wynikać z przekazanych źródeł. Temat B musi realnie
+pomagać zrozumieć temat A i nie może zajmować większości artykułu. Nie buduj
+napięcia przez ukrywanie podstawowej informacji z leadu, przeinaczanie faktów,
+tworzenie fałszywego konfliktu ani sztuczne przeciąganie odpowiedzi. Jeżeli
+materiał nie uzasadnia narracji problem–odkrycie–powrót, zastosuj tryb
+`informational`. Zapisz wybrany tryb kompozycji wraz z wygenerowaną wersją.
+
+Tekst powinien być napisany po polsku, naturalnie i bez charakterystycznego nadmiaru podsumowań AI. Zabroń:
+
+- zmyślonych testów,
+- zmyślonych cytatów,
+- podawania plotek jako faktów,
+- kopiowania zdań ze źródeł,
+- sensacyjnych obietnic nieobecnych w treści,
+- zwrotów sugerujących osobiste doświadczenie bez danych.
+
+W trybie `manual` przygotuj kompletny prompt zawierający zatwierdzoną paczkę
+researchową, wymagany format odpowiedzi i wybrany tryb kompozycji. Administrator
+może skopiować prompt do ChatGPT Plus, a następnie wkleić lub zaimportować
+wygenerowany szkic. W trybie `api` ten sam prompt jest wykonywany automatycznie.
+Ręczny import nie może omijać walidacji, wersjonowania ani zachowania źródeł.
+
+### Kryteria akceptacji
+
+- Szkic powstaje wyłącznie ze zweryfikowanej paczki researchowej.
+- Artykuł zachowuje źródła.
+- Tytuł odpowiada treści.
+- Tekst nie publikuje się automatycznie.
+- Administrator może porównać szkic z paczką faktów.
+- Ponowne generowanie nie nadpisuje bezpowrotnie wcześniejszej wersji.
+- Tryb kompozycji jest zapisany i widoczny przy wersji szkicu.
+- Krótka wiadomość nie jest sztucznie rozciągana do struktury narracyjnej.
+- W trybie narracyjnym pytanie początkowe, temat B i puenta wynikają wyłącznie
+  ze zweryfikowanej paczki researchowej.
+- Temat B zostaje domknięty i ma czytelny związek z tematem A.
+- Szkic można wygenerować i zaimportować w trybie `manual` bez klucza API.
+- System zapisuje sposób wygenerowania każdej wersji szkicu.
+
+### Zależności
+
+TASK-16.
+
+---
+
+## TASK-18: Automatyczna kontrola jakości
+
+### Cel
+
+Zatrzymywać słabe lub ryzykowne szkice przed publikacją.
+
+### Polecenie dla Codexa
+
+Dodaj kontrolę jakości przyznającą maksymalnie 100 punktów. Sprawdź:
+
+- zgodność faktów ze źródłami,
+- kompletność artykułu,
+- obecność źródła pierwotnego,
+- obecność wartości własnej,
+- podobieństwo do istniejących tekstów,
+- jakość tytułu,
+- clickbait,
+- niepewne lub nieprzypisane twierdzenia,
+- język i czytelność,
+- obecność wymaganych pól SEO,
+- ryzyko prawne, finansowe, medyczne lub bezpieczeństwa.
+
+Zdefiniuj twarde blokady niezależne od wyniku:
+
+- brak źródeł,
+- niewsparty fakt w tytule,
+- fałszywe przypisanie cytatu,
+- twierdzenie o wykonanym teście bez dowodu,
+- duże podobieństwo do cudzej publikacji,
+- treść wysokiego ryzyka bez zatwierdzenia człowieka.
+
+Kontrola powinna działać w obu trybach generowania. W trybie `manual` system
+przygotowuje prompt zawierający szkic, paczkę faktów i schemat oczekiwanego
+wyniku, a administrator wkleja lub importuje odpowiedź z ChatGPT Plus. W trybie
+`api` kontrola jest wykonywana automatycznie. Niezależnie od trybu twarde blokady
+muszą być również egzekwowane po stronie aplikacji tam, gdzie można je sprawdzić
+deterministycznie.
+
+### Kryteria akceptacji
+
+- Wynik zawiera uzasadnienie.
+- Twarda blokada uniemożliwia publikację.
+- Administrator może poprawić szkic i ponowić kontrolę.
+- Nie można ręcznie ukryć błędu bez zapisania uzasadnienia.
+- Wyniki kolejnych kontroli są przechowywane.
+- Ręcznie zaimportowany wynik kontroli przechodzi walidację i nie omija blokad.
+- System zapisuje sposób wykonania każdej kontroli.
+
+### Zależności
+
+TASK-17.
+
+---
+
+## TASK-19: Generowanie miniatury
+
+### Cel
+
+Tworzyć reprezentatywny obraz dla strony, social mediów i Discover.
+
+### Polecenie dla Codexa
+
+Dodaj dwa tryby przygotowania miniatury:
+
+1. `manual` — Mamona tworzy gotowy prompt do skopiowania do generatora obrazów
+   dostępnego w ChatGPT Plus, a administrator pobiera obraz i wgrywa go do panelu;
+2. `api` — Mamona wysyła ten sam prompt automatycznie do OpenAI Images API.
+
+Na podstawie paczki researchowej i tytułu twórz prompt opisujący scenę, ale unikaj:
+
+- logotypów użytych w sposób sugerujący oficjalną grafikę,
+- wizerunków prawdziwych osób, jeśli nie są konieczne,
+- tekstu umieszczonego na obrazie,
+- fałszywych zrzutów interfejsów,
+- przedstawiania niepotwierdzonego produktu jako rzeczywistego.
+
+Po wygenerowaniu:
+
+- zapisz oryginał,
+- utwórz wariant 16:9,
+- przygotuj co najmniej 1280×720,
+- skonwertuj wariant publiczny do WebP,
+- zachowaj ważny element w bezpiecznym centrum kadru,
+- zapisz prompt, model i datę generowania,
+- pozwól administratorowi odrzucić i wygenerować nową wersję.
+
+W obu trybach generuj obraz dopiero dla szkicu, który przeszedł kontrolę jakości
+i nie ma twardej blokady. Ręcznie wgrany obraz musi przejść tę samą walidację,
+kadrowanie, konwersję i zapis metadanych co obraz pobrany przez API. Zapisuj
+prompt, tryb `manual` lub `api`, model — jeżeli użytkownik go poda — oraz datę.
+
+### Kryteria akceptacji
+
+- Publiczny obraz ma minimum 1200 px szerokości.
+- Wariant ma poprawne proporcje dla Discover.
+- Obraz jest przypisany do właściwego artykułu.
+- Nieudane generowanie nie usuwa poprzedniej wersji.
+- Administrator widzi podgląd przed publikacją.
+- Alt obrazu opisuje zawartość, a nie zaczyna się od „obraz przedstawia”.
+- Miniaturę można przygotować w trybie `manual` bez klucza API.
+- Ręcznie wgrany obraz przechodzi te same wymagania rozmiaru i formatu.
+- Odrzucony lub zablokowany szkic nie uruchamia automatycznego generowania obrazu.
+
+### Zależności
+
+TASK-15, TASK-16 i TASK-17.
+
+---
+
+# Etap E — bezpieczeństwo, jakość i odbiór sprintu
+
+## TASK-20: Strony zaufania i transparentność redakcyjna
+
+### Cel
+
+Pokazać użytkownikom i wyszukiwarkom, kto odpowiada za treści.
+
+### Polecenie dla Codexa
+
+Dodaj publiczne strony:
+
+- O serwisie,
+- Autorzy,
+- Polityka redakcyjna,
+- Jak używamy AI,
+- Korekty i aktualizacje,
+- Kontakt,
+- Polityka prywatności.
+
+Dodaj linki do nich w stopce. Nie twórz fikcyjnych życiorysów ani kompetencji. Treść może zawierać placeholdery wyraźnie oznaczone do uzupełnienia przed uruchomieniem produkcyjnym.
+
+### Kryteria akceptacji
+
+- Wszystkie strony są dostępne z nawigacji lub stopki.
+- Nie zawierają fikcyjnych danych.
+- Artykuł linkuje do profilu autora i zasad redakcyjnych.
+- Istnieje jasna procedura zgłaszania błędów.
+- Placeholdery są widoczne w panelu jako blokada produkcyjnego uruchomienia.
+
+### Zależności
+
+TASK-04.
+
+---
+
+## TASK-21: Optymalizacja mobilna i Core Web Vitals
+
+### Cel
+
+Zapewnić szybkie doświadczenie na telefonach.
+
+### Polecenie dla Codexa
+
+Przeprowadź audyt mobilny strony głównej i artykułu. Popraw:
+
+- rozmiary i kompresję obrazów,
+- rezerwowanie miejsca na obrazy,
+- ładowanie fontów,
+- nieużywane skrypty,
+- zasoby blokujące renderowanie,
+- rozmiary elementów dotykowych,
+- czytelność tekstu,
+- stabilność layoutu,
+- zachowanie menu,
+- kontrast i focus.
+
+Dąż do:
+
+- LCP poniżej 2,5 s,
+- INP poniżej 200 ms,
+- CLS poniżej 0,1.
+
+Nie zmieniaj całkowicie identyfikacji wizualnej bez wyraźnej potrzeby.
+
+### Kryteria akceptacji
+
+- Strona działa przy szerokości 320 px.
+- Nie występuje poziome przewijanie.
+- Obrazy mają zadeklarowane wymiary lub proporcje.
+- Najważniejszy obraz jest traktowany priorytetowo.
+- Formularze panelu są używalne dotykowo.
+- Został zapisany wynik audytu przed i po zmianach.
+
+### Zależności
+
+TASK-07, TASK-09 i TASK-19.
+
+---
+
+## TASK-22: Test pełnego procesu i dokumentacja operacyjna
+
+### Cel
+
+Potwierdzić, że cały sprint daje działający proces redakcyjny.
+
+### Polecenie dla Codexa
+
+Przetestuj pełny scenariusz:
+
+1. Pobranie nowych wpisów RSS.
+2. Deduplikacja.
+3. Utworzenie tematu.
+4. Punktacja.
+5. Wygenerowanie researchu.
+6. Wygenerowanie szkicu.
+7. Kontrola jakości.
+8. Wygenerowanie miniatury.
+9. Ręczna edycja.
+10. Zaplanowanie publikacji.
+11. Publikacja.
+12. Aktualizacja HTML, sitemapy i RSS.
+
+Dodaj dokumentację opisującą:
+
+- konfigurację,
+- wymagane zmienne środowiskowe,
+- uruchamianie pobierania źródeł,
+- uruchamianie schedulera,
+- procedurę zatwierdzania,
+- lokalizację logów,
+- odzyskanie procesu po błędzie,
+- sposób wyłączenia automatyzacji,
+- podstawowe koszty i limity API.
+
+Udokumentuj również:
+
+- wybór trybu `manual` lub `api`,
+- pełny proces kopiowania promptu i importowania odpowiedzi z ChatGPT Plus,
+- ręczne przygotowanie oraz wgranie miniatury,
+- przełączenie z trybu `manual` na `api` bez utraty istniejących materiałów,
+- miejsca, w których ustawiane są limity wydatków i modeli API.
+
+### Kryteria akceptacji
+
+- Scenariusz przechodzi od początku do końca.
+- Pełny scenariusz można przejść w trybie `manual` bez klucza API.
+- Po skonfigurowaniu atrapy API ten sam scenariusz przechodzi w trybie `api`.
+- Zmiana trybu nie uszkadza ani nie ukrywa wcześniej utworzonych materiałów.
+- Testowy artykuł nie wymaga ręcznej edycji plików.
+- Nie ma duplikatu publikacji.
+- Sitemap i RSS zawierają opublikowany artykuł.
+- Dokumentacja pozwala uruchomić system na czystym środowisku.
+- Wszystkie pliki PHP przechodzą kontrolę składni.
+- Nie ma sekretów w repozytorium.
+
+### Zależności
+
+Wszystkie wcześniejsze zadania.
+
+---
+
+# Kolejność realizacji
+
+## Dni 1–2
+
+- TASK-01
+- TASK-02
+- TASK-03
+
+## Dni 3–4
+
+- TASK-04
+- TASK-05
+- TASK-06
+- TASK-07
+
+## Dzień 5
+
+- TASK-08
+- TASK-09
+- TASK-10
+
+## Dni 6–7
+
+- TASK-11
+- TASK-12
+- TASK-13
+- TASK-14
+
+## Dni 8–9
+
+- TASK-15
+- TASK-15A — wykonać bezpośrednio po TASK-15 i przed rozpoczęciem TASK-16
+- TASK-16
+- TASK-17
+- TASK-18
+- TASK-19
+
+## Dzień 10
+
+- TASK-20
+- TASK-21
+- TASK-22
+
+---
+
+# Co świadomie pozostaje poza sprintem
+
+Nie dodawaj jeszcze:
+
+- automatycznej publikacji bez kontroli człowieka,
+- AdSense,
+- płatnego promowania ruchu,
+- scrapowania stron wyników Google,
+- automatycznego pisania o dowolnym temacie,
+- komentarzy użytkowników,
+- aplikacji mobilnej,
+- powiadomień push,
+- personalizacji feedu,
+- rozbudowanych testów A/B,
+- wielu modeli AI i skomplikowanego routingu.
+
+Te elementy należy rozpocząć dopiero po publikacji pierwszych 25–40 wartościowych artykułów i zebraniu danych z Search Console.
+
+# Definition of Done całego sprintu
+
+- Funkcja jest dostępna z panelu lub udokumentowanego procesu.
+- Dane wejściowe są walidowane po stronie serwera.
+- Operacje administracyjne wymagają autoryzacji i CSRF.
+- Sekrety nie są przechowywane w repozytorium.
+- Błędy trafiają do czytelnego logu.
+- Procesy cykliczne są idempotentne.
+- Istniejące artykuły nadal działają.
+- Zostały wykonane testy składni PHP.
+- Został sprawdzony widok mobilny.
+- Nieopublikowane materiały nie trafiają do indeksu, RSS ani sitemapy.
+- Każdy opublikowany artykuł ma autora, datę, obraz, źródła, canonical i dane strukturalne.

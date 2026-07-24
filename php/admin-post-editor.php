@@ -26,29 +26,30 @@ function save_uploaded_post_image(array $upload): string
         throw new RuntimeException('Zdjęcie musi być plikiem JPG, PNG lub WEBP o wielkości do 8 MB.');
     }
 
-    $directory = dirname(__DIR__) . '/images/posts';
+    $directory = app_post_image_directory();
+    $absoluteDirectory = app_path($directory);
 
-    if (!is_dir($directory) && !mkdir($directory, 0755, true) && !is_dir($directory)) {
+    if (!is_dir($absoluteDirectory) && !mkdir($absoluteDirectory, 0755, true) && !is_dir($absoluteDirectory)) {
         throw new RuntimeException('Nie można utworzyć katalogu na zdjęcia postów.');
     }
 
     $filename = bin2hex(random_bytes(16)) . '.' . $extensions[$mime];
 
-    if (!move_uploaded_file($upload['tmp_name'], $directory . '/' . $filename)) {
+    if (!move_uploaded_file($upload['tmp_name'], $absoluteDirectory . '/' . $filename)) {
         throw new RuntimeException('Nie udało się zapisać zdjęcia postu.');
     }
 
-    return 'images/posts/' . $filename;
+    return $directory . '/' . $filename;
 }
 
 function remove_uploaded_post_image(string $imagePath): void
 {
     $normalizedPath = ltrim(str_replace('\\', '/', trim($imagePath)), '/');
-    if (!str_starts_with($normalizedPath, 'images/posts/')) {
+    if (!str_starts_with($normalizedPath, app_post_image_directory() . '/')) {
         return;
     }
 
-    $filePath = dirname(__DIR__) . '/' . $normalizedPath;
+    $filePath = app_path($normalizedPath);
     if (is_file($filePath)) {
         unlink($filePath);
     }
@@ -98,6 +99,7 @@ if ($post !== null) {
 
 $category = $categoryId > 0 ? find_post_category($categoryId) : null;
 $galleries = list_galleries();
+$authors = list_authors(true);
 
 if ($category === null) {
     header('Location: admin-posts.php', true, 303);
@@ -130,14 +132,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $excerpt = trim((string) ($_POST['excerpt'] ?? ''));
     $content = trim((string) ($_POST['content'] ?? ''));
     $galleryId = filter_input(INPUT_POST, 'gallery_id', FILTER_VALIDATE_INT) ?: null;
-    $isPublished = isset($_POST['is_published']);
+    $workflowAction = trim((string) ($_POST['workflow_action'] ?? 'save_draft'));
+    $workflowStatuses = [
+        'save_draft' => 'draft',
+        'submit_review' => 'review',
+        'schedule' => 'scheduled',
+        'publish' => 'published',
+        'reject' => 'rejected',
+        'save_current' => (string) ($post['status'] ?? 'draft'),
+    ];
+    $editorialFields = [
+        'author_id' => $_POST['author_id'] ?? null,
+        'published_at' => $_POST['published_at'] ?? '',
+        'scheduled_at' => $_POST['scheduled_at'] ?? '',
+        'content_updated_at' => $_POST['content_updated_at'] ?? '',
+        'seo_description' => $_POST['seo_description'] ?? '',
+        'image_alt' => $_POST['image_alt'] ?? '',
+        'ai_components' => is_array($_POST['ai_components'] ?? null) ? $_POST['ai_components'] : [],
+        'ai_disclosure' => $_POST['ai_disclosure'] ?? '',
+    ];
+    $sources = parse_editorial_sources($_POST);
 
     if (!admin_valid_csrf()) {
         $error = 'Sesja formularza wygasła. Odśwież stronę i spróbuj ponownie.';
+    } elseif (!array_key_exists($workflowAction, $workflowStatuses)) {
+        $error = 'Wybierz prawidłową akcję redakcyjną.';
     } elseif ($title === '' || $excerpt === '' || $content === '' || mb_strlen($title) > 160 || mb_strlen($excerpt) > 500 || mb_strlen($content) > 8000) {
         $error = 'Uzupełnij tytuł, skrót i treść. Tytuł może mieć do 160 znaków, a treść do 8000.';
     } else {
         try {
+            $targetStatus = $workflowStatuses[$workflowAction];
+            if ($workflowAction === 'publish' && $post !== null && $post['status'] === 'published') {
+                throw new InvalidArgumentException('Artykuł jest już opublikowany. Użyj „Zapisz zmiany”, aby go zaktualizować.');
+            }
+            if ($workflowAction === 'save_current' && ($post === null || $post['status'] !== 'published')) {
+                throw new InvalidArgumentException('Ta akcja jest dostępna wyłącznie dla opublikowanego artykułu.');
+            }
+            if ($workflowAction === 'schedule' && trim((string) $editorialFields['scheduled_at']) === '') {
+                throw new InvalidArgumentException('Zaplanowanie wymaga podania daty publikacji.');
+            }
+            $statusReason = $workflowAction === 'reject' ? trim((string) ($_POST['rejection_reason'] ?? '')) : '';
+            if ($workflowAction === 'reject' && $statusReason === '') {
+                throw new InvalidArgumentException('Odrzucenie wymaga podania przyczyny.');
+            }
+            validate_post_editorial_fields_input($editorialFields, $sources);
             $newImagePath = save_uploaded_post_image($_FILES['image'] ?? []);
             $oldImagePath = (string) ($post['image_path'] ?? '');
             $removeMainImage = isset($_POST['remove_main_image']) && (string) $_POST['remove_main_image'] === '1';
@@ -174,11 +212,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ) ?? $content;
             $contentImagePath = (string) ($contentImages[0]['path'] ?? '');
             if ($post === null) {
-                $newPostId = create_post($categoryId, $title, $excerpt, $content, $imagePath, $contentImagePath, $galleryId, $contentImages, 'cover', $imageCrop);
-                update_post($newPostId, $title, $excerpt, $content, $imagePath, $isPublished, $contentImagePath, $galleryId, $contentImages, 'cover', $imageCrop);
+                $newPostId = create_post($categoryId, $title, $excerpt, $content, $imagePath, $contentImagePath, $galleryId, $contentImages, 'cover', $imageCrop, false);
+                update_post_editorial_fields($newPostId, $editorialFields, $sources);
+                if ($targetStatus !== 'draft') {
+                    change_post_editorial_status($newPostId, $targetStatus, $statusReason);
+                }
                 header('Location: admin-post-editor.php?post=' . $newPostId . '&saved=1', true, 303);
             } else {
-                update_post($postId, $title, $excerpt, $content, $imagePath, $isPublished, $contentImagePath, $galleryId, $contentImages, 'cover', $imageCrop);
+                $contentStatus = $workflowAction === 'save_draft' ? 'draft' : (string) $post['status'];
+                update_post($postId, $title, $excerpt, $content, $imagePath, $contentStatus === 'published', $contentImagePath, $galleryId, $contentImages, 'cover', $imageCrop, $contentStatus);
+                update_post_editorial_fields($postId, $editorialFields, $sources);
+                if ($targetStatus !== $contentStatus) {
+                    change_post_editorial_status($postId, $targetStatus, $statusReason);
+                } else {
+                    $savedPost = find_post($postId);
+                    if ($savedPost !== null) {
+                        write_post_page($savedPost);
+                    }
+                    sync_public_navigation();
+                }
                 foreach (array_diff($allowedPaths, array_column($contentImages, 'path')) as $removedContentImagePath) {
                     remove_uploaded_post_image((string) $removedContentImagePath);
                 }
@@ -199,6 +251,11 @@ $post = $postId > 0 ? (find_post($postId) ?? $post) : $post;
 $notice = (string) ($_GET['saved'] ?? '') !== '' ? 'Post został zapisany.' : '';
 $contentImageItems = post_content_image_items($post ?? []);
 $mainImageCrop = post_main_image_crop($post ?? []);
+$postSources = $post !== null ? list_post_sources((int) $post['id']) : [];
+$aiComponents = json_decode((string) ($post['ai_components'] ?? '[]'), true);
+$aiComponents = is_array($aiComponents) ? normalize_ai_components($aiComponents) : [];
+$editorialWarnings = $post !== null ? editorial_post_warnings($post, $postSources) : [];
+$statusLabels = editorial_status_labels();
 
 admin_page_open($post === null ? 'Dodaj post' : 'Edytuj post', 'posts');
 ?>
@@ -210,9 +267,52 @@ admin_page_open($post === null ? 'Dodaj post' : 'Edytuj post', 'posts');
     </header>
     <?php if ($notice !== ''): ?><p class="admin-notice is-success" role="status"><?php echo $notice; ?></p><?php endif; ?>
     <?php if ($error !== ''): ?><p class="admin-notice is-error" role="alert"><?php echo escape_html($error); ?></p><?php endif; ?>
+    <?php if ($editorialWarnings !== []): ?>
+        <aside class="admin-editorial-warnings" role="status">
+            <strong>Kontrola redakcyjna:</strong>
+            <ul><?php foreach ($editorialWarnings as $warning): ?><li><?php echo escape_html($warning); ?></li><?php endforeach; ?></ul>
+        </aside>
+    <?php endif; ?>
 
     <form method="post" enctype="multipart/form-data" class="admin-form">
         <input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>">
+        <section class="admin-editorial-fields">
+            <h2>Dane redakcyjne</h2>
+            <div class="admin-editorial-grid">
+                <div>
+                    <label>Status</label>
+                    <p class="admin-editorial-current-status"><?php echo escape_html($statusLabels[$post['status'] ?? 'draft'] ?? 'Szkic'); ?></p>
+                </div>
+                <div>
+                    <label>Wynik jakości</label>
+                    <p class="admin-editorial-current-status"><?php echo isset($post['quality_score']) ? (int) $post['quality_score'] . '/100' : 'Nie oceniono'; ?></p>
+                </div>
+                <div>
+                    <label for="author_id">Autor</label>
+                    <select id="author_id" name="author_id" required>
+                        <?php foreach ($authors as $author): ?>
+                            <option value="<?php echo (int) $author['id']; ?>"<?php echo (int) ($post['author_id'] ?? default_author_id()) === (int) $author['id'] ? ' selected' : ''; ?>><?php echo escape_html((string) $author['name']); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div>
+                    <label for="published_at">Data publikacji</label>
+                    <input id="published_at" type="datetime-local" name="published_at" value="<?php echo escape_html(editorial_datetime_for_input($post['published_at'] ?? null)); ?>">
+                </div>
+                <div>
+                    <label for="scheduled_at">Planowana publikacja</label>
+                    <input id="scheduled_at" type="datetime-local" name="scheduled_at" value="<?php echo escape_html(editorial_datetime_for_input($post['scheduled_at'] ?? null)); ?>">
+                </div>
+                <div>
+                    <label for="content_updated_at">Data aktualizacji treści</label>
+                    <input id="content_updated_at" type="datetime-local" name="content_updated_at" value="<?php echo escape_html(editorial_datetime_for_input($post['content_updated_at'] ?? null)); ?>">
+                </div>
+            </div>
+            <label for="seo_description">Opis SEO</label>
+            <textarea id="seo_description" name="seo_description" rows="3" maxlength="160"><?php echo escape_html((string) ($post['seo_description'] ?? '')); ?></textarea>
+            <label for="image_alt">Opis alternatywny głównego obrazu</label>
+            <input id="image_alt" name="image_alt" maxlength="250" value="<?php echo escape_html((string) ($post['image_alt'] ?? '')); ?>">
+        </section>
         <label for="title">Tytuł</label>
         <input id="title" name="title" maxlength="160" value="<?php echo escape_html((string) ($post['title'] ?? '')); ?>" required>
         <label for="excerpt">Krótki opis</label>
@@ -282,10 +382,51 @@ admin_page_open($post === null ? 'Dodaj post' : 'Edytuj post', 'posts');
             </div>
             <p class="admin-post-image-drag-hint">Przesuń ramkę lub złap za jej uchwyty, aby ustawić dokładny kadr.</p>
         </div>
+        <section class="admin-editorial-fields">
+            <h2>Źródła</h2>
+            <p class="admin-form-help">Dodaj bezpośrednie adresy materiałów wykorzystanych przy przygotowaniu artykułu.</p>
+            <div class="admin-source-list" data-source-list>
+                <?php $sourceRows = $postSources !== [] ? $postSources : [['source_url' => '', 'source_title' => '', 'publisher_name' => '']]; ?>
+                <?php foreach ($sourceRows as $source): ?>
+                    <div class="admin-source-row" data-source-row>
+                        <input type="url" name="source_url[]" placeholder="https://…" value="<?php echo escape_html((string) $source['source_url']); ?>">
+                        <input name="source_title[]" maxlength="500" placeholder="Tytuł źródła" value="<?php echo escape_html((string) $source['source_title']); ?>">
+                        <input name="source_publisher[]" maxlength="200" placeholder="Wydawca" value="<?php echo escape_html((string) $source['publisher_name']); ?>">
+                        <button type="button" class="admin-danger-action" data-remove-source>Usuń</button>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+            <button type="button" data-add-source>Dodaj źródło</button>
+        </section>
+
+        <section class="admin-editorial-fields">
+            <h2>Wsparcie AI</h2>
+            <div class="admin-ai-components">
+                <?php foreach (['research' => 'Research', 'text' => 'Tekst', 'seo' => 'SEO', 'image' => 'Obraz'] as $component => $label): ?>
+                    <label><input type="checkbox" name="ai_components[]" value="<?php echo $component; ?>"<?php echo in_array($component, $aiComponents, true) ? ' checked' : ''; ?>> <?php echo $label; ?></label>
+                <?php endforeach; ?>
+            </div>
+            <label for="ai_disclosure">Informacja o sposobie przygotowania materiału</label>
+            <textarea id="ai_disclosure" name="ai_disclosure" rows="3" maxlength="1000"><?php echo escape_html((string) ($post['ai_disclosure'] ?? '')); ?></textarea>
+        </section>
+
         <label for="gallery_id">Galeria do podlinkowania (opcjonalnie)</label>
         <select id="gallery_id" name="gallery_id"><option value="">Bez galerii</option><?php foreach ($galleries as $galleryOption): ?><option value="<?php echo (int) $galleryOption['id']; ?>"<?php echo (int) ($post['gallery_id'] ?? 0) === (int) $galleryOption['id'] ? ' selected' : ''; ?>><?php echo escape_html($galleryOption['title']); ?></option><?php endforeach; ?></select>
-        <label class="admin-post-published"><input type="checkbox" name="is_published"<?php echo $post === null || (int) $post['is_published'] === 1 ? ' checked' : ''; ?>> <span>Opublikuj post na stronie</span></label>
-        <ul class="actions"><li><button type="submit">Zapisz post</button></li><li><a class="button" href="admin-post-category-editor.php?category=<?php echo $categoryId; ?>">Wróć do kategorii</a></li><?php if ($post !== null): ?><li><button class="admin-danger-action" type="submit" name="action" value="delete_post" form="delete-post-form">Usuń post</button></li><?php endif; ?></ul>
+        <section class="admin-workflow-actions" aria-label="Akcje redakcyjne">
+            <?php if ($post !== null && $post['status'] === 'published'): ?>
+                <button type="submit" name="workflow_action" value="save_current">Zapisz zmiany w publikacji</button>
+            <?php else: ?>
+                <button type="submit" name="workflow_action" value="save_draft">Zapisz szkic</button>
+                <button type="submit" name="workflow_action" value="submit_review">Przekaż do sprawdzenia</button>
+                <button type="submit" name="workflow_action" value="schedule">Zaplanuj</button>
+                <button type="submit" name="workflow_action" value="publish" class="admin-publish-action" onclick="return confirm('Opublikować ten materiał publicznie?');">Opublikuj</button>
+                <label for="rejection_reason">Przyczyna odrzucenia</label>
+                <textarea id="rejection_reason" name="rejection_reason" rows="2" maxlength="1000"></textarea>
+                <button type="submit" name="workflow_action" value="reject" class="admin-danger-action">Odrzuć</button>
+            <?php endif; ?>
+            <a class="button" href="admin-post-category-editor.php?category=<?php echo $categoryId; ?>">Wróć do kategorii</a>
+            <?php if ($post !== null): ?><button class="admin-danger-action" type="submit" name="action" value="delete_post" form="delete-post-form">Usuń post</button><?php endif; ?>
+        </section>
     </form>
     <?php if ($post !== null): ?><form id="delete-post-form" method="post" action="admin-post-editor.php?post=<?php echo $postId; ?>" onsubmit="return confirm('Usunąć ten post?');"><input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>"><input type="hidden" name="action" value="delete_post"></form><?php endif; ?>
 </section>

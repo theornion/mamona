@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/app-config.php';
+
 define('ADMIN_CREDENTIALS_FILE', dirname(__DIR__) . '/data/admin-credentials.json');
 
 function start_admin_session(): void

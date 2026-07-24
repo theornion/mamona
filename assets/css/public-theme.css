@@ -379,6 +379,69 @@ body:not(.admin-page) #copyright p {
     text-shadow: none;
 }
 
+body:not(.admin-page) .trust-footer-links {
+    margin: 0 0 1rem;
+}
+
+body:not(.admin-page) .trust-footer-links ul {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.45rem 1rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+body:not(.admin-page) .trust-footer-links a,
+body:not(.admin-page) .contact-privacy-note a {
+    color: inherit;
+    text-decoration: underline;
+    text-underline-offset: 0.18em;
+}
+
+body:not(.admin-page) .trust-page {
+    text-align: left;
+}
+
+body:not(.admin-page) .trust-page-body {
+    max-width: 52rem;
+    margin: 0 auto;
+}
+
+body:not(.admin-page) .trust-page-body h2 {
+    margin-top: 2rem;
+}
+
+body:not(.admin-page) .trust-placeholder {
+    margin: 1.25rem 0;
+    padding: 1rem 1.15rem;
+    border: 2px solid #b45309;
+    border-radius: var(--theme-radius);
+    background: #fff7ed;
+    color: #7c2d12;
+}
+
+body:not(.admin-page) .trust-author-card,
+body:not(.admin-page) .trust-contact-item {
+    margin-top: 1.25rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--theme-border);
+}
+
+body:not(.admin-page) .contact-privacy-note {
+    margin: 0.75rem 0 0;
+    font-size: 0.85rem;
+}
+
+@media screen and (max-width: 736px) {
+    body:not(.admin-page) .trust-footer-links ul {
+        flex-direction: column;
+        align-items: center;
+        gap: 0.6rem;
+    }
+}
+
 body:not(.admin-page) #navPanel {
     background: var(--theme-nav-background);
     color: var(--theme-nav-text);
@@ -387,6 +450,59 @@ body:not(.admin-page) #navPanel {
 body:not(.admin-page) #navPanel a,
 body:not(.admin-page) #navPanel .close {
     color: var(--theme-nav-text) !important;
+}
+
+body:not(.admin-page) .post-byline {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.4rem 1.2rem;
+    margin-top: 1.25rem;
+    color: var(--theme-muted);
+    font-size: 0.85rem;
+}
+
+body:not(.admin-page) .post-sources,
+body:not(.admin-page) .post-related,
+body:not(.admin-page) .post-ai-disclosure {
+    margin-top: 2rem;
+    padding: 1.25rem;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--theme-radius);
+    background: var(--theme-surface-alt);
+    text-align: left;
+}
+
+body:not(.admin-page) .post-sources h2,
+body:not(.admin-page) .post-related h2 {
+    margin-bottom: 0.75rem;
+    font-size: 1.1rem;
+}
+
+body:not(.admin-page) .post-sources ul,
+body:not(.admin-page) .post-related ul {
+    margin-bottom: 0;
+}
+
+body:not(.admin-page) .post-ai-disclosure {
+    color: var(--theme-muted);
+    font-size: 0.9rem;
+}
+
+body:not(.admin-page) .news-feed-item {
+    min-width: 0;
+}
+
+body:not(.admin-page) .news-feed-visual {
+    overflow: hidden;
+    aspect-ratio: 16 / 9;
+}
+
+body:not(.admin-page) .news-feed-visual img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
 }
 
 body:not(.admin-page) .cat-slide,
@@ -424,5 +540,75 @@ body:not(.admin-page) .burger-section {
     body:not(.admin-page) *::after {
         animation: none !important;
         transition-duration: 0ms !important;
+    }
+}
+
+/* TASK-21: mobile stability, readable controls and keyboard visibility. */
+body:not(.admin-page) :where(p, li, h1, h2, h3, h4, a, label) {
+    overflow-wrap: anywhere;
+}
+
+body:not(.admin-page) :where(a, button, input, select, textarea):focus-visible {
+    outline: 3px solid var(--theme-accent);
+    outline-offset: 3px;
+}
+
+body:not(.admin-page) :where(a, button, input, select, textarea) {
+    touch-action: manipulation;
+}
+
+@media (hover: none), (pointer: coarse), (max-width: 980px) {
+    body:not(.admin-page) #navPanelToggle,
+    body:not(.admin-page) #navPanel .close,
+    body:not(.admin-page) #navPanel .links a,
+    body:not(.admin-page) .button,
+    body:not(.admin-page) button,
+    body:not(.admin-page) input[type="submit"],
+    body:not(.admin-page) input[type="reset"],
+    body:not(.admin-page) input[type="button"],
+    body:not(.admin-page) select {
+        min-width: 44px;
+        min-height: 44px;
+    }
+
+    body:not(.admin-page) input[type="text"],
+    body:not(.admin-page) input[type="password"],
+    body:not(.admin-page) input[type="email"],
+    body:not(.admin-page) input[type="tel"],
+    body:not(.admin-page) input[type="url"],
+    body:not(.admin-page) textarea {
+        min-height: 44px;
+        font-size: 1rem;
+    }
+
+    body:not(.admin-page) .post-byline,
+    body:not(.admin-page) .contact-privacy-note {
+        font-size: 0.9375rem;
+    }
+}
+
+@media screen and (max-width: 360px) {
+    html,
+    body:not(.admin-page) {
+        min-width: 0;
+        width: 100%;
+        max-width: 100%;
+    }
+
+    body:not(.admin-page) #intro {
+        min-height: 24rem;
+        padding-inline: 1rem;
+    }
+
+    body:not(.admin-page) #header,
+    body:not(.admin-page) #main > *,
+    body:not(.admin-page) #main > .post,
+    body:not(.admin-page) #footer > section,
+    body:not(.admin-page) #footer > section:first-child {
+        padding-inline: 1rem;
+    }
+
+    body:not(.admin-page) .news-feed-content {
+        padding-inline: 1rem;
     }
 }

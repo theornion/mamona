@@ -5,10 +5,16 @@
         return;
     }
 
+    // The generated entry and category pages already contain the complete feed.
+    // Keeping it avoids a second API request and a layout replacement after paint.
+    if (feed.getAttribute('data-news-rendered') === 'server') {
+        return;
+    }
+
     const params = new URLSearchParams(window.location.search);
-    const category = params.get('category');
+    const category = params.get('category') || feed.dataset.newsCategory || '';
     const postsPerPage = 5;
-    const requestedPage = Math.max(1, Number.parseInt(params.get('page') || '1', 10) || 1);
+    const requestedPage = Math.max(1, Number.parseInt(params.get('page') || feed.dataset.newsPage || '1', 10) || 1);
     const source = new URL(feed.dataset.newsSource, window.location.href);
     const pageBase = feed.dataset.newsBase || '';
 
@@ -44,13 +50,20 @@
         article.className = 'news-feed-card news-feed-post-link';
         article.href = new URL(pageBase + post.url, window.location.href).href;
 
-        const visual = document.createElement('div');
-        visual.className = 'news-feed-visual';
-
         if (post.image) {
+            const visual = document.createElement('div');
+            const image = document.createElement('img');
             const imageUrl = new URL(post.image, source).href;
-            visual.style.backgroundImage = `url("${encodeURI(imageUrl).replace(/"/g, '%22')}")`;
+            visual.className = 'news-feed-visual';
+            image.src = imageUrl;
+            image.alt = post.imageAlt || post.title;
+            image.width = Math.max(1, Number(post.imageWidth) || 1280);
+            image.height = Math.max(1, Number(post.imageHeight) || 720);
+            image.loading = 'lazy';
+            image.decoding = 'async';
+            visual.appendChild(image);
             article.classList.add('has-news-feed-visual');
+            article.appendChild(visual);
         }
 
         const content = document.createElement('div');
@@ -72,10 +85,6 @@
         body.textContent = previewContent;
 
         content.append(categoryLabel, title, excerpt, body, date);
-        if (post.image) {
-            article.appendChild(visual);
-        }
-
         article.appendChild(content);
 
         return article;
