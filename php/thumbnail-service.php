@@ -447,6 +447,25 @@ function openai_image_curl_transport(array $payload, string $apiKey, string $ope
     ];
 }
 
+function thumbnail_mock_png_chunk(string $type, string $data): string
+{
+    return pack('N', strlen($data)) . $type . $data . pack('N', crc32($type . $data));
+}
+
+function thumbnail_mock_image_bytes(): string
+{
+    $width = 1600;
+    $height = 900;
+    $pixel = chr(28) . chr(92) . chr(148);
+    $row = "\x00" . str_repeat($pixel, $width);
+    $raw = str_repeat($row, $height);
+
+    return "\x89PNG\r\n\x1a\n"
+        . thumbnail_mock_png_chunk('IHDR', pack('NNCCCCC', $width, $height, 8, 2, 0, 0, 0))
+        . thumbnail_mock_png_chunk('IDAT', gzcompress($raw, 9))
+        . thumbnail_mock_png_chunk('IEND', '');
+}
+
 function execute_thumbnail_api(
     int $thumbnailId,
     ?callable $transport = null,
@@ -456,9 +475,24 @@ function execute_thumbnail_api(
     if ($thumbnail === null || $thumbnail['execution_mode'] !== 'api' || $thumbnail['status'] !== 'prepared') {
         throw new RuntimeException('Miniatura API nie jest gotowa do wygenerowania.');
     }
+    $useBuiltInMock = (bool) app_config('openai_mock') && $transport === null;
     $apiKey = $apiKey ?? app_environment_value('OPENAI_API_KEY');
-    if ($transport === null && $apiKey === null) {
+    if (!$useBuiltInMock && $transport === null && $apiKey === null) {
         throw new RuntimeException('Brakuje OPENAI_API_KEY dla OpenAI Images API.');
+    }
+    if ($useBuiltInMock) {
+        $mockBytes = thumbnail_mock_image_bytes();
+        $transport = static fn (): array => [
+            'status' => 200,
+            'body' => generation_json([
+                'id' => 'img_local_mock',
+                'data' => [['b64_json' => base64_encode($mockBytes)]],
+                'usage' => ['input_tokens' => 0, 'output_tokens' => 0, 'total_tokens' => 0],
+            ]),
+            'headers' => ['x-request-id' => 'img_local_mock'],
+            'network_error' => '',
+        ];
+        $apiKey = 'local-mock-not-a-secret';
     }
     $transport ??= 'openai_image_curl_transport';
     $payload = [

@@ -57,7 +57,7 @@ function thumbnail_smoke_draft(string $suffix): array
 {
     $empty = ['text' => '', 'claim_ids' => [], 'source_ids' => []];
 
-    return [
+    $draft = [
         'composition_mode' => 'informational',
         'title' => 'Laboratorium opisuje kontrolowany pomiar ' . $suffix,
         'lead' => thumbnail_smoke_section('Laboratorium przedstawiło kontrolowany wynik ' . $suffix . '.'),
@@ -83,6 +83,14 @@ function thumbnail_smoke_draft(string $suffix): array
             'answer_and_punchline' => $empty,
         ],
     ];
+    $index = 1;
+    while (article_draft_main_content_length($draft) < ARTICLE_MAIN_CONTENT_MIN_LENGTH) {
+        $draft['practical_takeaway']['text'] .= ' Kontekst miniatury ' . $index
+            . ' opisuje znaczenie wyniku, ograniczenia materiału, sposób ostrożnej interpretacji oraz elementy istotne dla czytelnika.';
+        $index++;
+    }
+
+    return $draft;
 }
 
 function thumbnail_smoke_quality_result(): array

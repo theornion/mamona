@@ -151,6 +151,8 @@ function prepare_quality_check_operation(int $draftVersionId): int
             'Suma dziewięciu pól scores musi być równa total_score i nie może przekroczyć 100.',
             'Zgłoś każdy fakt bez podstawy, fałszywy cytat, deklarowany test bez dowodu, clickbait i ryzyko.',
             'Wysokie podobieństwo oznacza kopiowanie lub bardzo bliską parafrazę cudzej publikacji.',
+            'Sprawdź, czy długość treści głównej jest zgodna z polityką szkicu oraz czy tekst nie osiąga jej przez lanie wody, powtórzenia lub sztuczne rozwlekanie.',
+            'W złożonym trybie 3000 znaków jest dolną granicą, nie celem; pełne, wartościowe wyjaśnienie może i powinno być dłuższe.',
             'Nie ukrywaj problemu tylko po to, aby wynik przekroczył próg.',
         ],
     ];
@@ -262,6 +264,24 @@ function deterministic_quality_checks(array $operation): array
     $warnings = [];
     $deduction = 0;
     $usedSourceIds = array_values(array_unique((array) ($draft['used_source_ids'] ?? [])));
+    $compositionMode = (string) ($draft['composition_mode'] ?? 'informational');
+    $lengthPolicy = article_draft_length_policy($compositionMode);
+    $contentLength = article_draft_main_content_length($draft);
+    if ($contentLength < $lengthPolicy['minimum_characters'] || $contentLength > $lengthPolicy['maximum_characters']) {
+        $blocks['invalid_content_length'] = [
+            'code' => 'invalid_content_length',
+            'message' => 'Treść główna ma ' . $contentLength . ' znaków; wymagany zakres to '
+                . $lengthPolicy['minimum_characters'] . '–' . $lengthPolicy['maximum_characters'] . '.',
+            'reviewable' => false,
+        ];
+    }
+    if (article_draft_repeated_sentence($draft) !== null) {
+        $blocks['repeated_content'] = [
+            'code' => 'repeated_content',
+            'message' => 'Treść główna zawiera powtórzone długie zdanie.',
+            'reviewable' => false,
+        ];
+    }
     if ($usedSourceIds === []) {
         $blocks['missing_sources'] = [
             'code' => 'missing_sources',
@@ -409,6 +429,9 @@ function deterministic_quality_checks(array $operation): array
         'deduction' => min(100, $deduction),
         'has_primary_source' => $hasPrimary,
         'used_source_count' => count($usedSourceIds),
+        'main_content_character_count' => $contentLength,
+        'main_content_minimum' => $lengthPolicy['minimum_characters'],
+        'main_content_maximum' => $lengthPolicy['maximum_characters'],
     ];
 }
 

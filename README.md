@@ -102,7 +102,8 @@ Testy mutujące bazę wymagają zmiennych `CMS_ALLOW_*` i sprzątają dane:
 - `tests/quality-check-smoke.php`,
 - `tests/thumbnail-smoke.php`,
 - `tests/trust-pages-smoke.php`,
-- `tests/mobile-performance-smoke.php`.
+- `tests/mobile-performance-smoke.php`,
+- `tests/editorial-pipeline-e2e.php`.
 
 W testach używane są `CMS_PUBLIC_URL=https://example.test` i
 `CMS_SKIP_PUBLIC_SYNC=1`. Druga zmienna jest wyłącznie bezpiecznikiem testowym
@@ -207,7 +208,13 @@ ustawiać jej w produkcji.
   na stronach galerii. Apache otrzymał kompresję oraz cache zasobów.
   Wyniki przed/po i ograniczenia pomiaru są w `AUDYT-TASK-21.md`; rzeczywiste
   LCP/INP/CLS trzeba potwierdzić po wdrożeniu na publicznym adresie.
-- **TASK-22:** test procesu end-to-end i dokumentacja operacyjna.
+- **TASK-22 — test E2E i dokumentacja operacyjna:** wykonany. Test
+  `tests/editorial-pipeline-e2e.php` przechodzi pełny proces w trybie `manual`
+  oraz `api` z lokalną atrapą, weryfikuje brak duplikatu publikacji i obecność
+  artykułu w HTML, sitemapie oraz RSS, a następnie sprząta własne dane i
+  przywraca pliki publiczne. Runbook konfiguracji, obsługi, odzyskiwania,
+  wyłączania automatyzacji, testów oraz kosztów znajduje się w
+  `OPERATIONS.md`.
 
 Nie wdrażać automatycznej publikacji bez kontroli człowieka ani reklam przed
 ukończeniem odpowiednich zadań i zebraniem danych z pierwszych 25–40
@@ -325,6 +332,15 @@ nowego szkicu. Administrator wybiera tryb `informational` albo
 najmniej dwóch udokumentowanych twierdzeń, żądanie narracyjne jest bezpiecznie
 sprowadzane do `informational`.
 
+Treść główna szkicu `informational` musi mieć 2000–4000 znaków. Wariant
+`problem_discovery_return`, używany do tematów wymagających szerszego
+wyjaśnienia i uzupełniającego tematu B, musi mieć 3000–4000 znaków. Dla tego
+wariantu 3000 jest wyłącznie dolną granicą: gdy research zawiera dość
+wartościowego materiału, tekst powinien naturalnie ją przekraczać. Do pomiaru
+wchodzą pola treści artykułu, ale nie tytuł, SEO, kategoria, alt ani metadane.
+Prompt i kontrola jakości zabraniają osiągania zakresu przez powtórzenia, lanie
+wody lub sztuczne rozwlekanie.
+
 Każda próba generowania tworzy rekord w `article_draft_versions` z numerem
 wersji, trybem kompozycji i sposobem wykonania `manual`/`api`. Szkic zachowuje
 identyfikatory twierdzeń i źródeł, wskazania niewiadomych oraz komplet pól
@@ -344,7 +360,8 @@ SEO oraz obsługę ryzyka. Próg zaliczenia wynosi 75/100.
 Niezależnie od odpowiedzi modelu aplikacja ponownie sprawdza źródła, podstawę
 tytułu, nieudokumentowane cytaty i deklaracje własnych testów, długie wspólne
 fragmenty ze źródłami lub opublikowanymi tekstami, clickbait, kompletność SEO
-oraz treści wysokiego ryzyka. Najnowszy ukończony szkic musi mieć zaliczoną
+oraz treści wysokiego ryzyka. Dodatkowo niezależnie mierzy długość głównej
+treści i blokuje wynik poza zakresem właściwym dla trybu. Najnowszy ukończony szkic musi mieć zaliczoną
 najnowszą ukończoną kontrolę. W przeciwnym razie przejście do `scheduled` lub
 `published` kończy się błędem również w schedulerze.
 

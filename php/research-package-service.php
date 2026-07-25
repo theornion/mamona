@@ -397,25 +397,38 @@ function research_mock_generation_value(array $operation): array
     $input = json_decode((string) $operation['input_json'], true, 128, JSON_THROW_ON_ERROR);
     $sources = (array) ($input['numbered_sources'] ?? []);
     $sourceId = (string) ($sources[0]['source_id'] ?? '');
+    $sourceTitle = trim((string) ($sources[0]['title'] ?? ''));
     if ($sourceId === '') {
         throw new RuntimeException('Lokalna atrapa researchu nie otrzymała źródła.');
+    }
+    if ($sourceTitle === '') {
+        throw new RuntimeException('Lokalna atrapa researchu nie otrzymała tytułu źródła.');
     }
 
     return [
         'event_summary' => [
-            'text' => 'Lokalna atrapa potwierdza format paczki, ale nie ocenia materiału.',
+            'text' => 'Lokalna atrapa potwierdza techniczny przepływ dla materiału: ' . $sourceTitle,
             'source_ids' => [$sourceId],
         ],
-        'claims' => [],
+        'claims' => [[
+            'claim_id' => 'C1',
+            'claim' => $sourceTitle,
+            'source_ids' => [$sourceId],
+            'evidence' => [[
+                'source_id' => $sourceId,
+                'excerpt' => $sourceTitle,
+            ]],
+            'confidence' => 'high',
+        ]],
         'shared_facts' => [],
         'contradictions' => [],
-        'unknowns' => ['Treść wymaga właściwego researchu zamiast lokalnej atrapy.'],
+        'unknowns' => ['Atrapa nie ocenia prawdziwości ani kompletności materiału.'],
         'polish_context' => [],
         'comparisons' => [],
         'recommendation' => [
-            'decision' => 'reject',
-            'reason' => 'Atrapa sprawdza przepływ techniczny, a nie jakość źródeł.',
-            'source_coverage' => 'insufficient',
+            'decision' => 'continue',
+            'reason' => 'Kontynuacja służy wyłącznie testowi technicznemu pełnego pipeline’u.',
+            'source_coverage' => 'sufficient',
         ],
     ];
 }

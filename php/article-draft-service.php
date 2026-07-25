@@ -3,6 +3,77 @@
 declare(strict_types=1);
 
 const ARTICLE_COMPOSITION_MODES = ['informational', 'problem_discovery_return'];
+const ARTICLE_MAIN_CONTENT_MIN_LENGTH = 2000;
+const ARTICLE_COMPLEX_MAIN_CONTENT_MIN_LENGTH = 3000;
+const ARTICLE_MAIN_CONTENT_MAX_LENGTH = 4000;
+
+function article_draft_length_policy(string $compositionMode): array
+{
+    if (!in_array($compositionMode, ARTICLE_COMPOSITION_MODES, true)) {
+        throw new InvalidArgumentException('Nieprawidłowy tryb kompozycji szkicu.');
+    }
+    $complex = $compositionMode === 'problem_discovery_return';
+
+    return [
+        'scope' => 'main_content',
+        'complex' => $complex,
+        'minimum_characters' => $complex
+            ? ARTICLE_COMPLEX_MAIN_CONTENT_MIN_LENGTH
+            : ARTICLE_MAIN_CONTENT_MIN_LENGTH,
+        'maximum_characters' => ARTICLE_MAIN_CONTENT_MAX_LENGTH,
+    ];
+}
+
+function article_draft_main_content_texts(array $draft): array
+{
+    $texts = [];
+    $append = static function (mixed $value) use (&$texts): void {
+        $text = trim(strip_tags((string) $value));
+        if ($text !== '') {
+            $texts[] = $text;
+        }
+    };
+    $append($draft['lead']['text'] ?? '');
+    $append($draft['why_important']['text'] ?? '');
+    foreach ((array) ($draft['key_facts'] ?? []) as $fact) {
+        $append($fact['text'] ?? '');
+    }
+    $append($draft['comparison_context']['text'] ?? '');
+    foreach ((array) ($draft['unknowns'] ?? []) as $unknown) {
+        $append($unknown['text'] ?? '');
+    }
+    $append($draft['practical_takeaway']['text'] ?? '');
+    foreach ((array) ($draft['narrative'] ?? []) as $section) {
+        $append($section['text'] ?? '');
+    }
+
+    return $texts;
+}
+
+function article_draft_main_content_length(array $draft): int
+{
+    return mb_strlen(implode("\n\n", article_draft_main_content_texts($draft)));
+}
+
+function article_draft_repeated_sentence(array $draft): ?string
+{
+    $seen = [];
+    foreach (article_draft_main_content_texts($draft) as $text) {
+        $sentences = preg_split('/(?<=[.!?])\s+|\R+/u', $text, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        foreach ($sentences as $sentence) {
+            $normalized = mb_strtolower(trim(preg_replace('/\s+/u', ' ', $sentence) ?? $sentence));
+            if (mb_strlen($normalized) < 40) {
+                continue;
+            }
+            if (isset($seen[$normalized])) {
+                return $sentence;
+            }
+            $seen[$normalized] = true;
+        }
+    }
+
+    return null;
+}
 
 function article_draft_reference_schema(array $sourceIds, array $claimIds): array
 {
@@ -173,6 +244,7 @@ function prepare_article_draft_operation(int $researchPackageId, string $composi
         throw new RuntimeException('Odrzucona paczka researchowa nie może być podstawą szkicu.');
     }
     $compositionMode = resolve_article_composition_mode($research, $compositionMode);
+    $lengthPolicy = article_draft_length_policy($compositionMode);
     $sourceIds = array_values(array_map(
         static fn (array $source): string => (string) $source['source_id'],
         (array) ($researchInput['numbered_sources'] ?? [])
@@ -189,6 +261,14 @@ function prepare_article_draft_operation(int $researchPackageId, string $composi
         'composition_mode' => $compositionMode,
         'research_package' => $research,
         'numbered_sources' => $researchInput['numbered_sources'] ?? [],
+        'length_requirements' => [
+            ...$lengthPolicy,
+            'measurement' => 'Liczba znaków tekstu głównego: lead, znaczenie, fakty, kontekst porównawczy, niewiadome, wniosek praktyczny i — jeśli używana — narracja. Bez tytułu, SEO, kategorii, altu i metadanych.',
+            'quality' => 'Osiągnij zakres konkretnym, logicznie uporządkowanym wyjaśnieniem. Nie używaj powtórzeń, lania wody ani sztucznego wydłużania.',
+            'complex_guidance' => $lengthPolicy['complex']
+                ? '3000 znaków to wyłącznie dolna granica. Gdy research dostarcza wartościowego materiału, wyjaśnij temat szerzej i naturalnie przekrocz minimum; nie skracaj mechanicznie do 3000 znaków.'
+                : 'Nie rozciągaj prostego tematu ponad ilość wartościowego materiału, ale przedstaw go kompletnie w wymaganym zakresie.',
+        ],
         'editorial_requirements' => [
             'Napisz naturalny tekst po polsku, zoptymalizowany do czytania na telefonie.',
             'Nie kopiuj zdań ze źródeł. Parafrazuj, zachowując znaczenie i przypisania.',
@@ -203,9 +283,10 @@ function prepare_article_draft_operation(int $researchPackageId, string $composi
                 'Wypełnij siedem pól narrative w kolejności: pytanie, dążenie, temat B, ślepa uliczka, powrót do A, domknięcie B, odpowiedź i puenta.',
                 'Pytanie, temat B oraz puenta muszą wynikać z przypisanych twierdzeń i źródeł.',
                 'Temat B ma pomagać zrozumieć A, nie dominować tekstu i zostać domknięty.',
+                'Rozwiń wszystkie wartościowe zależności obecne w researchu; minimum 3000 znaków nie jest docelową długością ani powodem do skracania pełnego wyjaśnienia.',
             ]
             : [
-                'Przekaż najważniejszą odpowiedź od razu i nie rozciągaj krótkiej wiadomości.',
+                'Przekaż najważniejszą odpowiedź od razu, a dalszą treść uporządkuj bez powtórzeń i pustych zdań.',
                 'Wszystkie pola narrative pozostaw puste: text jako pusty string, claim_ids i source_ids jako puste tablice.',
             ],
     ];
@@ -333,6 +414,21 @@ function validate_article_draft_output(array $operation, array $draft): array
     if (($draft['composition_mode'] ?? '') !== $mode || !in_array($mode, ARTICLE_COMPOSITION_MODES, true)) {
         throw new InvalidArgumentException('Wynik zmienił wybrany tryb kompozycji.');
     }
+    $lengthPolicy = article_draft_length_policy($mode);
+    $contentLength = article_draft_main_content_length($draft);
+    if ($contentLength < $lengthPolicy['minimum_characters'] || $contentLength > $lengthPolicy['maximum_characters']) {
+        throw new InvalidArgumentException(
+            'Treść główna szkicu ma ' . $contentLength . ' znaków; dla trybu ' . $mode
+            . ' wymagany jest zakres ' . $lengthPolicy['minimum_characters']
+            . '–' . $lengthPolicy['maximum_characters'] . ' znaków.'
+        );
+    }
+    $repeatedSentence = article_draft_repeated_sentence($draft);
+    if ($repeatedSentence !== null) {
+        throw new InvalidArgumentException(
+            'Treść główna powtarza to samo zdanie i nie może osiągać wymaganej długości przez duplikowanie treści.'
+        );
+    }
     foreach (['title', 'seo_description', 'category', 'image_alt'] as $field) {
         if (trim((string) ($draft[$field] ?? '')) === '') {
             throw new InvalidArgumentException("Pole {$field} nie może być puste.");
@@ -419,6 +515,9 @@ function validate_article_draft_output(array $operation, array $draft): array
         'used_source_count' => count($usedSources),
         'key_fact_count' => count((array) $draft['key_facts']),
         'unknown_count' => count((array) $draft['unknowns']),
+        'main_content_character_count' => $contentLength,
+        'main_content_minimum' => $lengthPolicy['minimum_characters'],
+        'main_content_maximum' => $lengthPolicy['maximum_characters'],
     ];
 }
 
@@ -506,12 +605,12 @@ function article_draft_mock_generation_value(array $operation): array
     ] as $key) {
         $narrative[$key] = $mode === 'informational'
             ? $empty
-            : $section('Kontrolowana część narracji oparta na twierdzeniu ' . $claimId . '.');
+            : $section('Kontrolowana część narracji ' . $key . ' oparta na twierdzeniu ' . $claimId . '.');
     }
 
-    return [
+    $draft = [
         'composition_mode' => $mode,
-        'title' => 'Lokalny szkic testowy oparty na zatwierdzonym researchu',
+        'title' => mb_substr((string) $claim['claim'], 0, 100),
         'lead' => $section('To lokalny szkic służący do sprawdzenia przepływu technicznego.'),
         'why_important' => $section('Znaczenie wynika z zatwierdzonego twierdzenia researchowego.'),
         'key_facts' => [$section('Najważniejszy fakt pochodzi z przypisanego źródła.')],
@@ -526,4 +625,13 @@ function article_draft_mock_generation_value(array $operation): array
         'used_source_ids' => [$sourceId],
         'narrative' => $narrative,
     ];
+    $policy = article_draft_length_policy($mode);
+    $index = 1;
+    while (article_draft_main_content_length($draft) < $policy['minimum_characters']) {
+        $draft['practical_takeaway']['text'] .= ' Techniczny kontekst ' . $index
+            . ' opisuje zakres danych, ich znaczenie, ograniczenia interpretacji oraz sposób zachowania przypisań do zatwierdzonego twierdzenia.';
+        $index++;
+    }
+
+    return $draft;
 }

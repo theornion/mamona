@@ -198,8 +198,8 @@ admin_page_open('Generowanie manualne i API', 'generation');
                 </select>
                 <label for="composition-mode">Tryb kompozycji</label>
                 <select id="composition-mode" name="composition_mode" required>
-                    <option value="informational">informational — krótka wiadomość, odpowiedź od razu</option>
-                    <option value="problem_discovery_return">problem_discovery_return — analiza „dlaczego?” lub „jak?”</option>
+                    <option value="informational">informational — prostszy temat, 2000–4000 znaków</option>
+                    <option value="problem_discovery_return">problem_discovery_return — szersza analiza z tematem B, 3000–4000 znaków</option>
                 </select>
                 <button type="submit">Przygotuj szkic</button>
             </form>

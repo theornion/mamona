@@ -38,10 +38,10 @@ function draft_smoke_output(string $mode, string $claimId, string $sourceId, str
     ] as $key) {
         $narrative[$key] = $mode === 'informational'
             ? $empty
-            : $section('Część narracji oparta na zatwierdzonym fakcie:');
+            : $section('Część narracji ' . $key . ' oparta na zatwierdzonym fakcie:');
     }
 
-    return [
+    $draft = [
         'composition_mode' => $mode,
         'title' => 'Precyzyjny tytuł kontrolowanego szkicu ' . $suffix,
         'lead' => $section('Lead od razu opisuje kontrolowane wydarzenie.'),
@@ -59,6 +59,15 @@ function draft_smoke_output(string $mode, string $claimId, string $sourceId, str
         'used_source_ids' => [$sourceId],
         'narrative' => $narrative,
     ];
+    $policy = article_draft_length_policy($mode);
+    $index = 1;
+    while (article_draft_main_content_length($draft) < $policy['minimum_characters']) {
+        $draft['practical_takeaway']['text'] .= ' Kontekst testowy ' . $index
+            . ' porządkuje znaczenie wyniku, zakres dostępnych danych, ograniczenia interpretacji i praktyczne konsekwencje opisane w źródle.';
+        $index++;
+    }
+
+    return $draft;
 }
 
 $database = bueno_database();
@@ -145,7 +154,48 @@ try {
     $manualId = prepare_article_draft_operation((int) $researchPackage['id'], 'informational');
     $operationIds[] = $manualId;
     $manualOperation = find_generation_operation($manualId);
+    draft_smoke_assert(
+        str_contains((string) $manualOperation['prompt_text'], '"minimum_characters":2000')
+        && str_contains((string) $manualOperation['prompt_text'], '"maximum_characters":4000')
+        && str_contains((string) $manualOperation['prompt_text'], 'lania wody'),
+        'Prompt prostego szkicu nie zawiera kompletnej polityki długości i jakości.'
+    );
     $manualOutput = draft_smoke_output('informational', 'C1', 'S1', 'manual-v1');
+    $shortOutput = $manualOutput;
+    $shortOutput['practical_takeaway']['text'] = 'Zbyt krótki wniosek.';
+    draft_smoke_assert(
+        article_draft_main_content_length($shortOutput) < ARTICLE_MAIN_CONTENT_MIN_LENGTH,
+        'Fixture krótkiego szkicu nie jest krótsza od minimum.'
+    );
+    $shortRejected = false;
+    try {
+        import_manual_generation_response($manualId, generation_json($shortOutput));
+    } catch (Throwable $exception) {
+        $shortRejected = str_contains($exception->getMessage(), 'wymagany jest zakres 2000–4000');
+    }
+    draft_smoke_assert($shortRejected, 'Szkic krótszy niż 2000 znaków nie został odrzucony.');
+    $longOutput = $manualOutput;
+    $longOutput['practical_takeaway']['text'] .= str_repeat(' Nadmiarowa treść testowa.', 200);
+    $longRejected = false;
+    try {
+        import_manual_generation_response($manualId, generation_json($longOutput));
+    } catch (Throwable $exception) {
+        $longRejected = str_contains($exception->getMessage(), 'wymagany jest zakres 2000–4000');
+    }
+    draft_smoke_assert($longRejected, 'Szkic dłuższy niż 4000 znaków nie został odrzucony.');
+    $repeatedOutput = $manualOutput;
+    $repeatedOutput['why_important']['text'] = $repeatedOutput['lead']['text'];
+    $repetitionRejected = false;
+    try {
+        import_manual_generation_response($manualId, generation_json($repeatedOutput));
+    } catch (Throwable $exception) {
+        $repetitionRejected = str_contains($exception->getMessage(), 'powtarza to samo zdanie');
+    }
+    draft_smoke_assert($repetitionRejected, 'Powtórzone długie zdanie nie zostało odrzucone.');
+    draft_smoke_assert(
+        find_generation_operation($manualId)['status'] === 'prepared',
+        'Odrzucona odpowiedź zmieniła stan operacji przed poprawną regeneracją.'
+    );
     import_manual_generation_response($manualId, generation_json($manualOutput));
     $manualDraft = find_article_draft_by_operation($manualId);
     draft_smoke_assert(
@@ -159,11 +209,18 @@ try {
     $narrativeId = prepare_article_draft_operation((int) $researchPackage['id'], 'problem_discovery_return');
     $operationIds[] = $narrativeId;
     $narrativeOutput = draft_smoke_output('problem_discovery_return', 'C1', 'S1', 'manual-v2');
+    $narrativeOperation = find_generation_operation($narrativeId);
+    draft_smoke_assert(
+        str_contains((string) $narrativeOperation['prompt_text'], '"minimum_characters":3000')
+        && str_contains((string) $narrativeOperation['prompt_text'], 'dolna granica'),
+        'Prompt złożonego szkicu nie podkreśla progu 3000 i pełnego rozwinięcia.'
+    );
     import_manual_generation_response($narrativeId, generation_json($narrativeOutput));
     $narrativeDraft = find_article_draft_by_operation($narrativeId);
     draft_smoke_assert(
         (int) $narrativeDraft['version_number'] === 2
-        && $narrativeDraft['composition_mode'] === 'problem_discovery_return',
+        && $narrativeDraft['composition_mode'] === 'problem_discovery_return'
+        && article_draft_main_content_length($narrativeOutput) >= ARTICLE_COMPLEX_MAIN_CONTENT_MIN_LENGTH,
         'Nie zapisano narracyjnej wersji szkicu.'
     );
 

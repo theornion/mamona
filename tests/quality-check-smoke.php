@@ -40,7 +40,7 @@ function quality_smoke_draft(string $suffix, string $practicalText, string $lead
 {
     $empty = ['text' => '', 'claim_ids' => [], 'source_ids' => []];
 
-    return [
+    $draft = [
         'composition_mode' => 'informational',
         'title' => 'Laboratorium opisuje kontrolowany pomiar ' . $suffix,
         'lead' => quality_smoke_section(
@@ -68,6 +68,14 @@ function quality_smoke_draft(string $suffix, string $practicalText, string $lead
             'answer_and_punchline' => $empty,
         ],
     ];
+    $index = 1;
+    while (article_draft_main_content_length($draft) < ARTICLE_MAIN_CONTENT_MIN_LENGTH) {
+        $draft['practical_takeaway']['text'] .= ' Kontekst jakościowy ' . $index
+            . ' wyjaśnia znaczenie pomiaru, ograniczenia danych, ostrożność interpretacji oraz praktyczny sens informacji dla czytelnika.';
+        $index++;
+    }
+
+    return $draft;
 }
 
 function quality_smoke_result(int $score = 90): array
@@ -183,11 +191,14 @@ try {
     $manualResult = quality_smoke_result(90);
     import_manual_generation_response($manualCheckOperationId, generation_json($manualResult));
     $manualCheck = find_quality_check_by_operation($manualCheckOperationId);
+    $manualDeterministic = json_decode((string) $manualCheck['deterministic_json'], true);
     quality_smoke_assert(
         $manualCheck['status'] === 'completed'
         && (int) $manualCheck['final_score'] === 90
         && (int) $manualCheck['passed'] === 1
-        && $manualCheck['execution_mode'] === 'manual',
+        && $manualCheck['execution_mode'] === 'manual'
+        && ($manualDeterministic['main_content_character_count'] ?? 0) >= ARTICLE_MAIN_CONTENT_MIN_LENGTH
+        && ($manualDeterministic['main_content_maximum'] ?? 0) === ARTICLE_MAIN_CONTENT_MAX_LENGTH,
         'Poprawna manualna kontrola jakości nie została zaliczona.'
     );
     assert_post_quality_allows_publication($postId);
