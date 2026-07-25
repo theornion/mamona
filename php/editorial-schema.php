@@ -15,6 +15,8 @@ const RESEARCH_PACKAGES_MIGRATION = '20260724_010_research_packages';
 const ARTICLE_DRAFT_VERSIONS_MIGRATION = '20260724_011_article_draft_versions';
 const QUALITY_CHECKS_MIGRATION = '20260724_012_quality_checks';
 const THUMBNAIL_VERSIONS_MIGRATION = '20260724_013_thumbnail_versions';
+const ARTICLE_IMAGES_MIGRATION = '20260725_014_article_images';
+const ARTICLE_IMAGE_INDEX_MIGRATION = '20260725_015_article_image_index';
 
 function database_table_columns(PDO $database, string $table): array
 {
@@ -772,6 +774,57 @@ function run_schema_migrations(PDO $database): void
                     ON thumbnail_versions(draft_version_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS thumbnails_status_idx
                     ON thumbnail_versions(status, is_active, created_at DESC);'
+            );
+        }
+    );
+    apply_schema_migration(
+        $database,
+        ARTICLE_IMAGES_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing($database, 'posts', 'content_blocks', 'TEXT NOT NULL DEFAULT "[]"');
+            $database->exec(
+                'CREATE TABLE IF NOT EXISTS article_images (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    post_id INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    section_id TEXT NOT NULL,
+                    visual_intent TEXT NOT NULL,
+                    search_queries_json TEXT NOT NULL DEFAULT "[]",
+                    source_page_url TEXT NOT NULL DEFAULT "",
+                    source_file_url TEXT NOT NULL DEFAULT "",
+                    local_path TEXT NOT NULL DEFAULT "",
+                    author TEXT NOT NULL DEFAULT "",
+                    license TEXT NOT NULL DEFAULT "",
+                    license_url TEXT NOT NULL DEFAULT "",
+                    attribution TEXT NOT NULL DEFAULT "",
+                    alt TEXT NOT NULL,
+                    caption TEXT NOT NULL DEFAULT "",
+                    layout TEXT NOT NULL DEFAULT "full",
+                    status TEXT NOT NULL DEFAULT "planned",
+                    width INTEGER,
+                    height INTEGER,
+                    downloaded_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS article_images_post_idx
+                    ON article_images(post_id, role, section_id);
+                CREATE INDEX IF NOT EXISTS article_images_status_idx
+                    ON article_images(status, created_at DESC);'
+            );
+        }
+    );
+    apply_schema_migration(
+        $database,
+        ARTICLE_IMAGE_INDEX_MIGRATION,
+        static function (PDO $database): void {
+            $database->exec(
+                'DROP INDEX IF EXISTS article_images_local_path_idx;
+                 CREATE INDEX IF NOT EXISTS article_images_local_path_idx
+                    ON article_images(local_path) WHERE local_path <> "";
+                 CREATE UNIQUE INDEX IF NOT EXISTS article_images_slot_idx
+                    ON article_images(post_id, role, section_id);'
             );
         }
     );

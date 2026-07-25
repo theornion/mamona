@@ -190,8 +190,11 @@ try {
         static fn (array $payload): array => [
             'status' => 200,
             'body' => generation_json([
-                'id' => 'resp_research_smoke',
-                'output_text' => generation_json($validOutput),
+                'responseId' => 'resp_research_smoke',
+                'candidates' => [[
+                    'content' => ['parts' => [['text' => generation_json($validOutput)]]],
+                    'finishReason' => 'STOP',
+                ]],
                 'usage' => ['input_tokens' => 50, 'output_tokens' => 30, 'total_tokens' => 80],
             ]),
             'headers' => [],
@@ -214,15 +217,18 @@ try {
             static fn (): array => [
                 'status' => 200,
                 'body' => generation_json([
-                    'id' => 'resp_research_invalid',
-                    'output_text' => generation_json($invalidOutput),
+                    'responseId' => 'resp_research_invalid',
+                    'candidates' => [[
+                        'content' => ['parts' => [['text' => generation_json($invalidOutput)]]],
+                        'finishReason' => 'STOP',
+                    ]],
                 ]),
                 'headers' => [],
                 'network_error' => '',
             ],
             'smoke-secret-key'
         ),
-        'Nieprawidłowa odpowiedź OpenAI API'
+        'Nieprawidłowa odpowiedź Gemini API'
     );
     research_smoke_assert(
         find_generation_operation($invalidApiId)['status'] === 'failed'

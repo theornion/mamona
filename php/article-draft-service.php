@@ -136,6 +136,7 @@ function article_draft_schema(array $sourceIds, array $claimIds, string $composi
             'seo_description' => ['type' => 'string'],
             'category' => ['type' => 'string'],
             'image_alt' => ['type' => 'string'],
+            'illustration_plan' => article_illustration_plan_schema(),
             'used_source_ids' => [
                 'type' => 'array',
                 'items' => ['type' => 'string', 'enum' => $sourceIds],
@@ -159,6 +160,7 @@ function article_draft_schema(array $sourceIds, array $claimIds, string $composi
             'seo_description',
             'category',
             'image_alt',
+            'illustration_plan',
             'used_source_ids',
             'narrative',
         ],
@@ -277,6 +279,12 @@ function prepare_article_draft_operation(int $researchPackageId, string $composi
             'Nie używaj sensacyjnych obietnic nieobecnych w paczce.',
             'Każda sekcja faktograficzna wskazuje claim_ids i source_ids z paczki.',
             'used_source_ids zawiera dokładnie wszystkie źródła wykorzystane w szkicu.',
+        ],
+        'illustration_requirements' => [
+            'Zaplanuj osobną grafikę hero dla całego tematu oraz około jedną ilustrację inline na 750–800 znaków tekstu.',
+            'Każdą ilustrację inline przypisz do konkretnej semantycznej sekcji tekstu.',
+            'Zwróć tylko intencję, oczekiwaną zawartość, zapytania, alt i podpis. Pola źródła, autora i licencji pozostaw puste, a status ustaw na planned.',
+            'Nie wymyślaj adresów URL, autorów ani licencji. Wybór jest możliwy dopiero z rzeczywistych wyników Wikimedia Commons lub Openverse.',
         ],
         'composition_requirements' => $compositionMode === 'problem_discovery_return'
             ? [
@@ -429,6 +437,11 @@ function validate_article_draft_output(array $operation, array $draft): array
             'Treść główna powtarza to samo zdanie i nie może osiągać wymaganej długości przez duplikowanie treści.'
         );
     }
+    validate_article_illustration_plan(
+        (array) ($draft['illustration_plan'] ?? []),
+        article_section_blocks($draft),
+        $contentLength
+    );
     foreach (['title', 'seo_description', 'category', 'image_alt'] as $field) {
         if (trim((string) ($draft[$field] ?? '')) === '') {
             throw new InvalidArgumentException("Pole {$field} nie może być puste.");
@@ -631,6 +644,37 @@ function article_draft_mock_generation_value(array $operation): array
         $draft['practical_takeaway']['text'] .= ' Techniczny kontekst ' . $index
             . ' opisuje zakres danych, ich znaczenie, ograniczenia interpretacji oraz sposób zachowania przypisań do zatwierdzonego twierdzenia.';
         $index++;
+    }
+    $makeImage = static fn (string $role, string $sectionId, string $layout, string $intent): array => [
+        'role' => $role,
+        'section_id' => $sectionId,
+        'visual_intent' => $intent,
+        'search_queries' => ['popular science ' . str_replace('-', ' ', $sectionId)],
+        'expected_content' => $intent,
+        'source_page_url' => '',
+        'source_file_url' => '',
+        'local_path' => '',
+        'author' => '',
+        'license' => '',
+        'license_url' => '',
+        'attribution' => '',
+        'alt' => $intent,
+        'caption' => $intent,
+        'layout' => $layout,
+        'status' => 'planned',
+    ];
+    $draft['illustration_plan'] = [
+        'hero' => $makeImage('hero', 'article', 'full', 'Reprezentatywny obraz całego tematu artykułu'),
+        'inline' => [],
+    ];
+    $target = article_inline_image_target_count(article_draft_main_content_length($draft));
+    foreach (array_slice(article_section_blocks($draft), 0, $target) as $imageIndex => $articleSection) {
+        $draft['illustration_plan']['inline'][] = $makeImage(
+            'inline',
+            (string) $articleSection['id'],
+            ['full', 'left', 'right', 'breakout'][$imageIndex % 4],
+            'Konkretna ilustracja treści sekcji ' . (string) $articleSection['id']
+        );
     }
 
     return $draft;

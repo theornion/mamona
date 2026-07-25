@@ -15,6 +15,7 @@ require_once __DIR__ . '/feed-ingestion-service.php';
 require_once __DIR__ . '/topic-grouping-service.php';
 require_once __DIR__ . '/topic-scoring-service.php';
 require_once __DIR__ . '/generation-service.php';
+require_once __DIR__ . '/article-image-service.php';
 require_once __DIR__ . '/research-package-service.php';
 require_once __DIR__ . '/article-draft-service.php';
 require_once __DIR__ . '/quality-check-service.php';
@@ -1608,7 +1609,10 @@ function render_post_page_html(array $post, bool $preview = false): string
             . render_news_article_json_ld($post, $category);
     }
     $template = preg_replace('/<title>.*?<\/title>/s', $head, $template, 1) ?? $template;
-    $content = nl2br(htmlspecialchars((string) $post['content'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
+    $contentBlocks = json_decode((string) ($post['content_blocks'] ?? '[]'), true);
+    $content = is_array($contentBlocks) && $contentBlocks !== []
+        ? render_article_blocks($contentBlocks, list_article_images((int) $post['id']))
+        : nl2br(htmlspecialchars((string) $post['content'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
     $contentImages = post_content_image_items($post);
     $hasMainImage = trim((string) ($post['image_path'] ?? '')) !== ''
         && is_file(app_path((string) $post['image_path']));

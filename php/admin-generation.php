@@ -132,9 +132,9 @@ admin_page_open('Generowanie manualne i API', 'generation');
 ?>
 <section class="post admin-card technical-sources-page">
     <header class="major admin-heading">
-        <p class="admin-kicker">OpenAI / ChatGPT</p>
+        <p class="admin-kicker">Gemini API / import ręczny</p>
         <h1>Generowanie treści</h1>
-        <p>Jeden format operacji dla pracy ręcznej z ChatGPT Plus i późniejszej automatyzacji przez OpenAI API.</p>
+        <p>Jeden rygorystycznie walidowany format JSON dla pracy ręcznej i Gemini API Free Tier.</p>
     </header>
 
     <?php if ($error !== ''): ?><p class="admin-notice is-error" role="alert"><?php echo escape_html($error); ?></p><?php endif; ?>
@@ -149,16 +149,19 @@ admin_page_open('Generowanie manualne i API', 'generation');
             <label for="generation-mode">Tryb dla nowych operacji</label>
             <select id="generation-mode" name="generation_mode">
                 <option value="manual"<?php echo $mode === 'manual' ? ' selected' : ''; ?>>manual — kopiowanie do ChatGPT Plus</option>
-                <option value="api"<?php echo $mode === 'api' ? ' selected' : ''; ?>>api — automatyczne OpenAI API</option>
+                <option value="api"<?php echo $mode === 'api' ? ' selected' : ''; ?>>api — <?php echo escape_html((string) app_config('generation_provider')); ?> API</option>
             </select>
             <button type="submit">Zapisz tryb</button>
         </form>
         <p><strong>Aktualnie: <?php echo escape_html($mode); ?></strong></p>
-        <p>ChatGPT Plus nie jest połączeniem API. W trybie manual prompt i odpowiedź trzeba przenieść ręcznie. Brak <code>OPENAI_API_KEY</code> nie blokuje tego trybu.</p>
-        <?php if ($mode === 'api' && app_environment_value('OPENAI_API_KEY') === null && !(bool) app_config('openai_mock')): ?>
-            <p class="admin-notice is-error">Tryb API jest wybrany, ale brakuje <code>OPENAI_API_KEY</code> w środowisku serwera.</p>
+        <p>W trybie manual prompt i odpowiedź JSON trzeba przenieść ręcznie. Brak klucza API nie blokuje tego trybu.</p>
+        <?php $apiKeyName = app_config('generation_provider') === 'gemini' ? 'GEMINI_API_KEY' : 'OPENAI_API_KEY'; ?>
+        <?php $apiMock = (bool) app_config(app_config('generation_provider') === 'gemini' ? 'gemini_mock' : 'openai_mock'); ?>
+        <?php if ($mode === 'api' && app_environment_value($apiKeyName) === null && !$apiMock): ?>
+            <p class="admin-notice is-error">Tryb API jest wybrany, ale brakuje <code><?php echo escape_html($apiKeyName); ?></code> w środowisku serwera.</p>
         <?php endif; ?>
-        <?php if ((bool) app_config('openai_mock')): ?><p class="admin-notice">Aktywna jest lokalna atrapa API — nie zostaną naliczone koszty.</p><?php endif; ?>
+        <?php if ($apiMock): ?><p class="admin-notice">Aktywna jest lokalna atrapa API — nie zostaną naliczone koszty.</p><?php endif; ?>
+        <?php if (!(bool) app_config('ai_image_generation_enabled')): ?><p class="admin-notice">Generowanie obrazów AI jest wyłączone. System zapisuje pominięcie; użyj legalnej grafiki źródłowej albo ręcznego uploadu.</p><?php endif; ?>
     </section>
 
     <section class="technical-source-card">
@@ -232,8 +235,8 @@ admin_page_open('Generowanie manualne i API', 'generation');
     </section>
 
     <section class="technical-source-card">
-        <h2>Przygotuj miniaturę</h2>
-        <p>Miniatura może powstać wyłącznie dla szkicu z zaliczoną kontrolą i bez blokad. Prompt jest taki sam w trybie manualnym i API.</p>
+        <h2>Przygotuj miniaturę źródłową</h2>
+        <p>Miniatura może powstać wyłącznie dla szkicu z zaliczoną kontrolą. Generowanie AI jest domyślnie wyłączone; wybierz legalny obraz źródłowy albo wgraj własny.</p>
         <?php if ($thumbnailEligibleDrafts === []): ?>
             <p class="admin-notice">Brak szkicu spełniającego warunki generowania obrazu.</p>
         <?php else: ?>
@@ -250,7 +253,7 @@ admin_page_open('Generowanie manualne i API', 'generation');
                         </option>
                     <?php endforeach; ?>
                 </select>
-                <button type="submit"><?php echo $mode === 'api' ? 'Wygeneruj obraz przez API' : 'Przygotuj prompt obrazu'; ?></button>
+                <button type="submit">Przygotuj miejsce na miniaturę</button>
             </form>
         <?php endif; ?>
     </section>
@@ -275,7 +278,8 @@ admin_page_open('Generowanie manualne i API', 'generation');
                     <button type="button" data-copy-target="thumbnail-prompt-<?php echo (int) $thumbnail['id']; ?>">Kopiuj prompt</button>
                 </details>
 
-                <?php if ($thumbnail['status'] === 'prepared' && $thumbnail['execution_mode'] === 'manual'): ?>
+                <?php if (in_array((string) $thumbnail['status'], ['prepared', 'skipped'], true)
+                    && ($thumbnail['execution_mode'] === 'manual' || !(bool) app_config('ai_image_generation_enabled'))): ?>
                     <form method="post" action="admin-generation.php" enctype="multipart/form-data">
                         <input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>">
                         <input type="hidden" name="action" value="upload_thumbnail">
@@ -288,7 +292,8 @@ admin_page_open('Generowanie manualne i API', 'generation');
                         </label>
                         <button type="submit">Zweryfikuj, wykadruj i zapisz WebP</button>
                     </form>
-                <?php elseif ($thumbnail['status'] === 'prepared' && $thumbnail['execution_mode'] === 'api'): ?>
+                <?php elseif ($thumbnail['status'] === 'prepared' && $thumbnail['execution_mode'] === 'api'
+                    && (bool) app_config('ai_image_generation_enabled')): ?>
                     <form method="post" action="admin-generation.php">
                         <input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>">
                         <input type="hidden" name="action" value="execute_thumbnail_api">
@@ -374,12 +379,13 @@ admin_page_open('Generowanie manualne i API', 'generation');
                     </div>
                 </details>
 
-                <?php if ($operation['status'] !== 'completed' && $operation['execution_mode'] === 'manual'): ?>
+                <?php if ($operation['status'] !== 'completed'
+                    && ($operation['execution_mode'] === 'manual' || $operation['status'] === 'failed')): ?>
                     <form method="post" action="admin-generation.php" enctype="multipart/form-data">
                         <input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>">
                         <input type="hidden" name="action" value="import_manual">
                         <input type="hidden" name="operation_id" value="<?php echo (int) $operation['id']; ?>">
-                        <label for="response-<?php echo (int) $operation['id']; ?>">Odpowiedź JSON z ChatGPT</label>
+                        <label for="response-<?php echo (int) $operation['id']; ?>">Odpowiedź JSON z narzędzia wybranego ręcznie</label>
                         <textarea id="response-<?php echo (int) $operation['id']; ?>" name="response_json" rows="8"></textarea>
                         <label>Albo import pliku JSON/TXT (maks. 2 MB)<input type="file" name="response_file" accept=".json,.txt,application/json,text/plain"></label>
                         <button type="submit">Waliduj i zapisz odpowiedź ręczną</button>
@@ -389,7 +395,7 @@ admin_page_open('Generowanie manualne i API', 'generation');
                         <input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>">
                         <input type="hidden" name="action" value="execute_api">
                         <input type="hidden" name="operation_id" value="<?php echo (int) $operation['id']; ?>">
-                        <button type="submit">Wykonaj przez OpenAI API</button>
+                        <button type="submit">Wykonaj przez <?php echo escape_html((string) $operation['provider']); ?> API</button>
                     </form>
                 <?php endif; ?>
 

@@ -89,6 +89,7 @@ function thumbnail_smoke_draft(string $suffix): array
             . ' opisuje znaczenie wyniku, ograniczenia materiału, sposób ostrożnej interpretacji oraz elementy istotne dla czytelnika.';
         $index++;
     }
+    $draft['illustration_plan'] = build_planned_illustration_fixture($draft);
 
     return $draft;
 }
@@ -273,6 +274,7 @@ try {
         $apiPrepared['prompt_text'] === $manualThumbnail['prompt_text'],
         'Tryb API otrzymał inny prompt niż manual.'
     );
+    if ((bool) app_config('ai_image_generation_enabled')) {
     $apiBytes = thumbnail_smoke_png(2048, 1152, [35, 120, 75]);
     $transportCalls = 0;
     $apiCompleted = execute_thumbnail_api(
@@ -326,6 +328,30 @@ try {
         && is_file(app_path((string) $firstCompleted['public_path'])),
         'Nieudane API naruszyło wcześniejsze wersje obrazu.'
     );
+    } else {
+        $transportCalls = 0;
+        $apiSkipped = execute_thumbnail_api(
+            $apiThumbnailId,
+            static function () use (&$transportCalls): array {
+                $transportCalls++;
+                throw new RuntimeException('Generator obrazu nie może zostać wywołany.');
+            },
+            'image-smoke-key'
+        );
+        thumbnail_smoke_assert(
+            $transportCalls === 0
+            && $apiSkipped['status'] === 'skipped'
+            && str_contains((string) $apiSkipped['error_message'], 'pominięto'),
+            'Wyłączony generator obrazu wykonał transport albo nie zapisał pominięcia.'
+        );
+        $apiCompleted = complete_thumbnail_from_bytes(
+            $apiThumbnailId,
+            thumbnail_smoke_png(2048, 1152, [35, 120, 75]),
+            'Manual source fixture'
+        );
+        $createdFiles[] = app_path((string) $apiCompleted['original_path']);
+        $createdFiles[] = app_path((string) $apiCompleted['public_path']);
+    }
 
     echo "THUMBNAIL_SMOKE_OK\n";
 } finally {

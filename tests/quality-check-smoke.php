@@ -74,6 +74,7 @@ function quality_smoke_draft(string $suffix, string $practicalText, string $lead
             . ' wyjaśnia znaczenie pomiaru, ograniczenia danych, ostrożność interpretacji oraz praktyczny sens informacji dla czytelnika.';
         $index++;
     }
+    $draft['illustration_plan'] = build_planned_illustration_fixture($draft);
 
     return $draft;
 }
@@ -229,8 +230,11 @@ try {
         static fn (): array => [
             'status' => 200,
             'body' => generation_json([
-                'id' => 'resp_quality_smoke',
-                'output_text' => generation_json($manualResult),
+                'responseId' => 'resp_quality_smoke',
+                'candidates' => [[
+                    'content' => ['parts' => [['text' => generation_json($manualResult)]]],
+                    'finishReason' => 'STOP',
+                ]],
                 'usage' => ['input_tokens' => 90, 'output_tokens' => 40, 'total_tokens' => 130],
             ]),
             'headers' => [],

@@ -102,6 +102,13 @@ function app_generation_mode_from_environment(): string
     return in_array($mode, ['manual', 'api'], true) ? $mode : 'manual';
 }
 
+function app_generation_provider_from_environment(): string
+{
+    $provider = strtolower(app_environment_value('CMS_GENERATION_PROVIDER') ?? 'gemini');
+
+    return in_array($provider, ['gemini', 'openai'], true) ? $provider : 'gemini';
+}
+
 function app_config(?string $key = null): mixed
 {
     static $configuration = null;
@@ -147,6 +154,15 @@ function app_config(?string $key = null): mixed
             ),
             'feed_ca_bundle' => app_environment_value('CMS_FEED_CA_BUNDLE') ?? '',
             'generation_mode' => app_generation_mode_from_environment(),
+            'generation_provider' => app_generation_provider_from_environment(),
+            'gemini_model' => app_environment_value('GEMINI_MODEL') ?? 'gemini-2.5-flash-lite',
+            'gemini_api_base_url' => app_normalize_public_url(
+                app_environment_value('GEMINI_API_BASE_URL') ?? 'https://generativelanguage.googleapis.com/v1beta'
+            ),
+            'gemini_timeout_seconds' => app_environment_int('GEMINI_TIMEOUT_SECONDS', 60, 10, 180),
+            'gemini_max_attempts' => app_environment_int('GEMINI_MAX_ATTEMPTS', 3, 1, 4),
+            'gemini_initial_backoff_ms' => app_environment_int('GEMINI_INITIAL_BACKOFF_MS', 750, 100, 10000),
+            'gemini_mock' => app_environment_bool('GEMINI_API_MOCK', false),
             'openai_model' => app_environment_value('OPENAI_MODEL') ?? 'gpt-5.6-terra',
             'openai_image_model' => app_environment_value('OPENAI_IMAGE_MODEL') ?? 'gpt-image-2',
             'image_processor_python' => app_environment_value('CMS_IMAGE_PROCESSOR_PYTHON') ?? '',
@@ -157,6 +173,13 @@ function app_config(?string $key = null): mixed
             'openai_max_attempts' => app_environment_int('OPENAI_MAX_ATTEMPTS', 3, 1, 4),
             'openai_mock' => app_environment_bool('OPENAI_API_MOCK', false),
             'openai_ca_bundle' => app_environment_value('OPENAI_CA_BUNDLE') ?? '',
+            'ai_image_generation_enabled' => app_environment_bool('CMS_AI_IMAGE_GENERATION_ENABLED', false),
+            'source_image_provider' => strtolower(app_environment_value('CMS_SOURCE_IMAGE_PROVIDER') ?? 'wikimedia'),
+            'source_image_timeout_seconds' => app_environment_int('CMS_SOURCE_IMAGE_TIMEOUT_SECONDS', 20, 5, 60),
+            'source_image_max_bytes' => app_environment_int('CMS_SOURCE_IMAGE_MAX_BYTES', 12582912, 1048576, 26214400),
+            'source_image_min_width' => app_environment_int('CMS_SOURCE_IMAGE_MIN_WIDTH', 800, 320, 4000),
+            'source_image_min_height' => app_environment_int('CMS_SOURCE_IMAGE_MIN_HEIGHT', 450, 240, 3000),
+            'source_image_max_redirects' => app_environment_int('CMS_SOURCE_IMAGE_MAX_REDIRECTS', 3, 0, 5),
         ];
 
         date_default_timezone_set((string) $configuration['timezone']);

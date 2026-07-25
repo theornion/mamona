@@ -12,7 +12,7 @@ putenv('CMS_PUBLIC_URL=https://example.test');
 putenv('CMS_SKIP_PUBLIC_SYNC=1');
 putenv('CMS_AUTOMATIC_PUBLISHING=true');
 putenv('CMS_DAILY_PUBLICATION_LIMIT=50');
-putenv('OPENAI_API_MOCK=true');
+putenv('GEMINI_API_MOCK=true');
 require_once dirname(__DIR__) . '/php/admin-database.php';
 
 function pipeline_e2e_assert(bool $condition, string $message): void
@@ -91,6 +91,7 @@ function pipeline_e2e_draft(string $sourceTitle, string $mode): array
             . ' porządkuje znaczenie eksperymentu, ograniczenia dostępnych danych, ostrożność interpretacji i dalsze kroki weryfikacji.';
         $index++;
     }
+    $draft['illustration_plan'] = build_planned_illustration_fixture($draft);
 
     return $draft;
 }
@@ -293,6 +294,15 @@ try {
             );
         } else {
             $thumbnail = execute_thumbnail_api($thumbnailId);
+            pipeline_e2e_assert(
+                $thumbnail['status'] === 'skipped',
+                'Pipeline API nie pominął generowania obrazu AI.'
+            );
+            $thumbnail = complete_thumbnail_from_bytes(
+                $thumbnailId,
+                thumbnail_mock_image_bytes(),
+                'Manual source fixture after AI skip'
+            );
         }
         $createdFiles[] = app_path((string) $thumbnail['original_path']);
         $createdFiles[] = app_path((string) $thumbnail['public_path']);

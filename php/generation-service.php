@@ -98,8 +98,10 @@ function prepare_generation_operation(
         ':input_json' => $inputJson,
         ':output_schema_json' => $schemaJson,
         ':input_hash' => hash('sha256', $inputJson),
-        ':provider' => $mode === 'api' ? 'openai' : 'chatgpt-manual',
-        ':model' => $mode === 'api' ? (string) app_config('openai_model') : '',
+        ':provider' => $mode === 'api' ? (string) app_config('generation_provider') : 'manual-json',
+        ':model' => $mode === 'api'
+            ? (string) app_config((string) app_config('generation_provider') === 'gemini' ? 'gemini_model' : 'openai_model')
+            : '',
     ]);
 
     return (int) bueno_database()->lastInsertId();
@@ -269,7 +271,21 @@ function complete_generation_operation(
 
 function import_manual_generation_response(int $operationId, string $rawResponse): array
 {
-    return complete_generation_operation($operationId, $rawResponse, 'manual');
+    $operation = find_generation_operation($operationId);
+    if ($operation === null) {
+        throw new RuntimeException('Nie znaleziono operacji generowania.');
+    }
+    if ($operation['execution_mode'] === 'manual') {
+        return complete_generation_operation($operationId, $rawResponse, 'manual');
+    }
+    if ($operation['execution_mode'] === 'api'
+        && in_array((string) $operation['status'], ['prepared', 'running', 'failed'], true)) {
+        return complete_generation_operation($operationId, $rawResponse, 'api', [
+            'response_id' => 'manual-fallback',
+            'usage' => ['manual_fallback' => true],
+        ]);
+    }
+    throw new InvalidArgumentException('Ta operacja nie może być kontynuowana importem ręcznym.');
 }
 
 function generation_mock_value(array $schema): mixed
@@ -396,7 +412,99 @@ function openai_error_details(array $response): array
     ];
 }
 
-function execute_generation_operation(
+function gemini_curl_transport(array $payload, string $apiKey, string $operationKey, string $model): array
+{
+    $baseUrl = rtrim((string) app_config('gemini_api_base_url'), '/');
+    if ($baseUrl === '' || !str_starts_with($baseUrl, 'https://')) {
+        throw new RuntimeException('GEMINI_API_BASE_URL musi być poprawnym adresem HTTPS.');
+    }
+    if (preg_match('/^[a-zA-Z0-9._-]{2,100}$/', $model) !== 1) {
+        throw new RuntimeException('GEMINI_MODEL zawiera niedozwolone znaki.');
+    }
+    $body = '';
+    $tooLarge = false;
+    $headers = [];
+    $curl = curl_init($baseUrl . '/models/' . rawurlencode($model) . ':generateContent');
+    if ($curl === false) {
+        throw new RuntimeException('Nie można uruchomić klienta Gemini API.');
+    }
+    curl_setopt_array($curl, [
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => false,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => (int) app_config('gemini_timeout_seconds'),
+        CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
+        CURLOPT_HTTPHEADER => [
+            'x-goog-api-key: ' . $apiKey,
+            'Content-Type: application/json',
+            'X-Mamona-Operation: ' . $operationKey,
+        ],
+        CURLOPT_POSTFIELDS => generation_json($payload),
+        CURLOPT_HEADERFUNCTION => static function ($handle, string $line) use (&$headers): int {
+            $position = strpos($line, ':');
+            if ($position !== false) {
+                $headers[strtolower(trim(substr($line, 0, $position)))] = trim(substr($line, $position + 1));
+            }
+            return strlen($line);
+        },
+        CURLOPT_WRITEFUNCTION => static function ($handle, string $chunk) use (&$body, &$tooLarge): int {
+            if (strlen($body) + strlen($chunk) > GENERATION_RESPONSE_MAX_BYTES) {
+                $tooLarge = true;
+                return 0;
+            }
+            $body .= $chunk;
+            return strlen($chunk);
+        },
+    ]);
+    $success = curl_exec($curl);
+    $status = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+    $error = curl_error($curl);
+    curl_close($curl);
+
+    return [
+        'status' => $tooLarge ? 0 : $status,
+        'body' => $tooLarge ? '' : $body,
+        'headers' => $headers,
+        'network_error' => $tooLarge
+            ? 'Odpowiedź Gemini przekracza limit 2 MB.'
+            : ($success === false ? ($error !== '' ? $error : 'Nieznany błąd sieci Gemini API.') : ''),
+    ];
+}
+
+function gemini_error_details(array $response): array
+{
+    $decoded = json_decode((string) ($response['body'] ?? ''), true);
+    $error = is_array($decoded['error'] ?? null) ? $decoded['error'] : [];
+
+    return [
+        'code' => (string) ($error['status'] ?? $error['code'] ?? ''),
+        'message' => mb_substr(trim((string) ($error['message'] ?? '')), 0, 1000),
+    ];
+}
+
+function gemini_extract_output(array $response): array
+{
+    $text = '';
+    foreach ((array) ($response['candidates'][0]['content']['parts'] ?? []) as $part) {
+        if (is_array($part) && is_string($part['text'] ?? null)) {
+            $text .= $part['text'];
+        }
+    }
+    if (trim($text) === '') {
+        $reason = trim((string) ($response['candidates'][0]['finishReason'] ?? ''));
+        throw new RuntimeException(
+            'Gemini API nie zwróciło wyniku JSON' . ($reason !== '' ? ' (finishReason: ' . $reason . ')' : '') . '.'
+        );
+    }
+
+    return [
+        'text' => $text,
+        'response_id' => (string) ($response['responseId'] ?? ''),
+        'usage' => is_array($response['usageMetadata'] ?? null) ? $response['usageMetadata'] : [],
+    ];
+}
+
+function execute_openai_generation_operation(
     int $operationId,
     ?callable $transport = null,
     ?string $apiKey = null
@@ -502,6 +610,151 @@ function execute_generation_operation(
             break;
         }
         usleep(250000 * $attempt);
+    }
+
+    bueno_database()->prepare(
+        'UPDATE generation_operations
+         SET status = "failed", error_message = :error_message,
+             updated_at = CURRENT_TIMESTAMP WHERE id = :id'
+    )->execute([':error_message' => mb_substr($lastError, 0, 2000), ':id' => $operationId]);
+    if ($operation['operation_type'] === 'research_package') {
+        mark_research_package_failed($operationId, $lastError);
+    } elseif ($operation['operation_type'] === 'article_draft') {
+        mark_article_draft_failed($operationId, $lastError);
+    } elseif ($operation['operation_type'] === 'quality_check') {
+        mark_quality_check_failed($operationId, $lastError);
+    }
+    throw new RuntimeException($lastError);
+}
+
+function execute_generation_operation(
+    int $operationId,
+    ?callable $transport = null,
+    ?string $apiKey = null
+): array {
+    $operation = find_generation_operation($operationId);
+    if ($operation === null) {
+        throw new RuntimeException('Nie znaleziono operacji generowania.');
+    }
+    if ((string) $operation['provider'] !== 'gemini') {
+        return execute_openai_generation_operation($operationId, $transport, $apiKey);
+    }
+    if ($operation['execution_mode'] !== 'api') {
+        throw new InvalidArgumentException('Ta operacja została przygotowana w trybie manual.');
+    }
+    if ($operation['status'] === 'completed') {
+        return json_decode((string) $operation['output_json'], true, 128, JSON_THROW_ON_ERROR);
+    }
+
+    $schema = json_decode((string) $operation['output_schema_json'], true, 128, JSON_THROW_ON_ERROR);
+    $useBuiltInMock = (bool) app_config('gemini_mock') && $transport === null;
+    if (!$useBuiltInMock && $transport === null) {
+        $apiKey = $apiKey ?? app_environment_value('GEMINI_API_KEY');
+        if ($apiKey === null) {
+            throw new RuntimeException(
+                'Brakuje GEMINI_API_KEY. Ustaw klucz w środowisku albo przełącz tryb na manual.'
+            );
+        }
+    }
+    $payload = [
+        'contents' => [[
+            'role' => 'user',
+            'parts' => [['text' => (string) $operation['prompt_text']]],
+        ]],
+        'generationConfig' => [
+            'responseMimeType' => 'application/json',
+            'responseJsonSchema' => $schema,
+            'temperature' => 0.2,
+        ],
+    ];
+    if ($useBuiltInMock) {
+        $mockValue = match ($operation['operation_type']) {
+            'research_package' => research_mock_generation_value($operation),
+            'article_draft' => article_draft_mock_generation_value($operation),
+            'quality_check' => quality_check_mock_generation_value(),
+            default => generation_mock_value($schema),
+        };
+        $transport = static fn (): array => [
+            'status' => 200,
+            'body' => generation_json([
+                'responseId' => 'gemini_local_mock',
+                'candidates' => [[
+                    'content' => ['parts' => [['text' => generation_json($mockValue)]]],
+                    'finishReason' => 'STOP',
+                ]],
+                'usageMetadata' => [
+                    'promptTokenCount' => 0,
+                    'candidatesTokenCount' => 0,
+                    'totalTokenCount' => 0,
+                ],
+            ]),
+            'headers' => [],
+            'network_error' => '',
+        ];
+        $apiKey = 'local-mock-not-a-secret';
+    }
+    $transport ??= 'gemini_curl_transport';
+    $maximumAttempts = (int) app_config('gemini_max_attempts');
+    $lastError = 'Nieznany błąd Gemini API.';
+
+    for ($attempt = 1; $attempt <= $maximumAttempts; $attempt++) {
+        bueno_database()->prepare(
+            'UPDATE generation_operations
+             SET status = "running", attempt_count = :attempt, error_message = "",
+                 updated_at = CURRENT_TIMESTAMP WHERE id = :id'
+        )->execute([':attempt' => $attempt, ':id' => $operationId]);
+        try {
+            $response = $transport(
+                $payload,
+                (string) $apiKey,
+                (string) $operation['operation_key'],
+                (string) $operation['model']
+            );
+        } catch (Throwable $exception) {
+            $response = ['status' => 0, 'body' => '', 'headers' => [], 'network_error' => $exception->getMessage()];
+        }
+        $status = (int) ($response['status'] ?? 0);
+        $details = gemini_error_details($response);
+        $transient = $status === 0 || in_array($status, [408, 429, 500, 502, 503, 504], true);
+        if ($status >= 200 && $status < 300) {
+            try {
+                $decoded = json_decode((string) $response['body'], true, 128, JSON_THROW_ON_ERROR);
+                if (!is_array($decoded)) {
+                    throw new RuntimeException('Odpowiedź API nie jest obiektem.');
+                }
+                $providerOutput = gemini_extract_output($decoded);
+
+                return complete_generation_operation($operationId, (string) $providerOutput['text'], 'api', [
+                    'response_id' => (string) $providerOutput['response_id'],
+                    'usage' => (array) $providerOutput['usage'],
+                ]);
+            } catch (Throwable $exception) {
+                $lastError = 'Nieprawidłowa odpowiedź Gemini API: ' . $exception->getMessage();
+                $transient = false;
+            }
+        } else {
+            $lastError = trim((string) ($response['network_error'] ?? ''));
+            if ($lastError === '') {
+                $lastError = $details['message'] !== ''
+                    ? 'Gemini API: ' . $details['message']
+                    : 'Gemini API zwróciło HTTP ' . $status . '.';
+            }
+            if ($status === 429) {
+                $lastError .= ' Limit Free Tier został osiągnięty; operację można zaimportować ręcznie lub ponowić później.';
+            }
+        }
+        if (!$transient || $attempt >= $maximumAttempts) {
+            break;
+        }
+        $retryAfterSeconds = max(0, min(10, (int) ($response['headers']['retry-after'] ?? 0)));
+        $backoffMs = min(
+            10000,
+            max(
+                $retryAfterSeconds * 1000,
+                (int) app_config('gemini_initial_backoff_ms') * (2 ** ($attempt - 1))
+            )
+        );
+        usleep($backoffMs * 1000);
     }
 
     bueno_database()->prepare(

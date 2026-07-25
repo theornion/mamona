@@ -66,6 +66,7 @@ function draft_smoke_output(string $mode, string $claimId, string $sourceId, str
             . ' porządkuje znaczenie wyniku, zakres dostępnych danych, ograniczenia interpretacji i praktyczne konsekwencje opisane w źródle.';
         $index++;
     }
+    $draft['illustration_plan'] = build_planned_illustration_fixture($draft);
 
     return $draft;
 }
@@ -238,9 +239,12 @@ try {
         static fn (): array => [
             'status' => 200,
             'body' => generation_json([
-                'id' => 'resp_draft_smoke',
-                'output_text' => generation_json($apiOutput),
-                'usage' => ['input_tokens' => 70, 'output_tokens' => 60, 'total_tokens' => 130],
+                'responseId' => 'resp_draft_smoke',
+                'candidates' => [[
+                    'content' => ['parts' => [['text' => generation_json($apiOutput)]]],
+                    'finishReason' => 'STOP',
+                ]],
+                'usageMetadata' => ['promptTokenCount' => 70, 'candidatesTokenCount' => 60, 'totalTokenCount' => 130],
             ]),
             'headers' => [],
             'network_error' => '',

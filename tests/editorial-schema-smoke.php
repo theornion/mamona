@@ -46,7 +46,8 @@ assert_same('2026-07-02 11:00:00', $rows[0]['content_updated_at'], 'Data aktuali
 assert_same('draft', $rows[1]['status'], 'Szkic otrzymał zły status.');
 assert_same(null, $rows[1]['published_at'], 'Szkic otrzymał datę publikacji.');
 assert_same($rows[0]['author_id'], $rows[1]['author_id'], 'Wpisy nie otrzymały domyślnego autora.');
-assert_same(13, (int) $database->query('SELECT COUNT(migration_key) FROM schema_migrations')->fetchColumn(), 'Migracje uruchomiły się więcej niż raz.');
+assert_same(15, (int) $database->query('SELECT COUNT(migration_key) FROM schema_migrations')->fetchColumn(), 'Migracje uruchomiły się więcej niż raz.');
+assert_same('[]', $rows[0]['content_blocks'], 'Kontrolowane bloki nie mają bezpiecznej wartości domyślnej.');
 assert_same('[]', $rows[0]['ai_components'], 'Nowe pole komponentów AI ma nieprawidłową wartość domyślną.');
 assert_same(16, (int) $database->query('SELECT COUNT(id) FROM technical_sources')->fetchColumn(), 'Nie dodano źródeł obu profili.');
 assert_same(11, (int) $database->query('SELECT COUNT(id) FROM technical_sources WHERE profile_key = "popular_science" AND is_active = 1')->fetchColumn(), 'Nie aktywowano źródeł popularnonaukowych.');

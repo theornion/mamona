@@ -262,7 +262,7 @@ function complete_thumbnail_from_bytes(
     array $providerMetadata = []
 ): array {
     $thumbnail = find_thumbnail_version($thumbnailId);
-    if ($thumbnail === null || !in_array($thumbnail['status'], ['prepared', 'running'], true)) {
+    if ($thumbnail === null || !in_array($thumbnail['status'], ['prepared', 'running', 'skipped'], true)) {
         throw new RuntimeException('Miniatura nie jest gotowa na przyjęcie obrazu.');
     }
     [$mime, $extension] = thumbnail_detect_mime($bytes);
@@ -368,7 +368,10 @@ function complete_thumbnail_from_bytes(
 function complete_manual_thumbnail_upload(int $thumbnailId, array $upload, string $model = ''): array
 {
     $thumbnail = find_thumbnail_version($thumbnailId);
-    if ($thumbnail === null || $thumbnail['execution_mode'] !== 'manual') {
+    if ($thumbnail === null
+        || ($thumbnail['execution_mode'] !== 'manual'
+            && !(!(bool) app_config('ai_image_generation_enabled')
+                && in_array((string) $thumbnail['status'], ['prepared', 'skipped'], true)))) {
         throw new InvalidArgumentException('Ta miniatura nie została przygotowana w trybie manual.');
     }
     if (($upload['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK
@@ -474,6 +477,16 @@ function execute_thumbnail_api(
     $thumbnail = find_thumbnail_version($thumbnailId);
     if ($thumbnail === null || $thumbnail['execution_mode'] !== 'api' || $thumbnail['status'] !== 'prepared') {
         throw new RuntimeException('Miniatura API nie jest gotowa do wygenerowania.');
+    }
+    if (!(bool) app_config('ai_image_generation_enabled')) {
+        $message = 'Generowanie obrazów AI pominięto: CMS_AI_IMAGE_GENERATION_ENABLED=false. Użyj obrazu źródłowego lub uploadu ręcznego.';
+        bueno_database()->prepare(
+            'UPDATE thumbnail_versions
+             SET status = "skipped", error_message = :message, updated_at = CURRENT_TIMESTAMP
+             WHERE id = :id'
+        )->execute([':message' => $message, ':id' => $thumbnailId]);
+
+        return find_thumbnail_version($thumbnailId) ?? throw new RuntimeException($message);
     }
     $useBuiltInMock = (bool) app_config('openai_mock') && $transport === null;
     $apiKey = $apiKey ?? app_environment_value('OPENAI_API_KEY');

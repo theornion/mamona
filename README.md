@@ -1,5 +1,9 @@
 # Szablon CMS
 
+Konfigurację Gemini Free Tier, planowanie legalnych ilustracji, bezpieczny
+downloader i wyłączenie generowania obrazów AI opisuje
+[`GEMINI-IMAGES.md`](GEMINI-IMAGES.md).
+
 Neutralna baza lekkiego CMS-a w PHP i SQLite. Treści, galerie, wiadomości,
 dane kontaktowe, profile społecznościowe oraz wygląd strony są zarządzane
 z panelu administratora w katalogu `php/`.

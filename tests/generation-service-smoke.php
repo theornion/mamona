@@ -34,7 +34,7 @@ function generation_expect_exception(callable $callback, string $messagePart): v
 
 $database = bueno_database();
 $originalMode = generation_mode();
-$originalApiKey = getenv('OPENAI_API_KEY');
+$originalApiKey = getenv('GEMINI_API_KEY');
 $operationIds = [];
 $baselineFeedItems = (int) $database->query('SELECT COUNT(*) FROM discovered_feed_items')->fetchColumn();
 $schema = [
@@ -64,7 +64,7 @@ try {
     $manual = find_generation_operation($manualId);
     generation_assert($manual !== null, 'Nie zapisano operacji manualnej.');
     generation_assert($manual['execution_mode'] === 'manual', 'Nie zapisano trybu manual.');
-    generation_assert($manual['provider'] === 'chatgpt-manual', 'Nie zapisano pochodzenia ChatGPT manual.');
+    generation_assert($manual['provider'] === 'manual-json', 'Nie zapisano pochodzenia importu manualnego.');
     generation_assert(str_contains($manual['prompt_text'], generation_json($input)), 'Prompt nie zawiera kompletnych danych wejściowych.');
     generation_assert(str_contains($manual['prompt_text'], generation_json($schema)), 'Prompt nie zawiera kompletnego schematu.');
 
@@ -92,10 +92,10 @@ try {
     generation_assert(find_generation_operation($manualId) !== null, 'Zmiana trybu usunęła wcześniejszą operację.');
     $missingKeyId = prepare_generation_operation('contract_test', $input, $schema);
     $operationIds[] = $missingKeyId;
-    putenv('OPENAI_API_KEY');
+    putenv('GEMINI_API_KEY');
     generation_expect_exception(
         static fn () => execute_generation_operation($missingKeyId),
-        'Brakuje OPENAI_API_KEY'
+        'Brakuje GEMINI_API_KEY'
     );
     generation_assert(
         find_generation_operation($missingKeyId)['status'] === 'prepared',
@@ -106,7 +106,7 @@ try {
     $operationIds[] = $apiId;
     $attempts = 0;
     $operationKeys = [];
-    $transport = static function (array $payload, string $apiKey, string $operationKey) use (
+    $transport = static function (array $payload, string $apiKey, string $operationKey, string $model) use (
         &$attempts,
         &$operationKeys,
         $validOutput
@@ -114,8 +114,15 @@ try {
         $attempts++;
         $operationKeys[] = $operationKey;
         generation_assert($apiKey === 'smoke-secret-key', 'Transport nie otrzymał przekazanego klucza.');
-        generation_assert(($payload['store'] ?? true) === false, 'Żądanie API nie wyłącza przechowywania.');
-        generation_assert(($payload['text']['format']['strict'] ?? false) === true, 'Żądanie API nie wymusza ścisłego schematu.');
+        generation_assert($model !== '', 'Transport Gemini nie otrzymał modelu.');
+        generation_assert(
+            ($payload['generationConfig']['responseMimeType'] ?? '') === 'application/json',
+            'Żądanie Gemini nie wymusza JSON.'
+        );
+        generation_assert(
+            ($payload['generationConfig']['responseJsonSchema']['additionalProperties'] ?? null) === false,
+            'Żądanie Gemini nie przekazuje ścisłego schematu.'
+        );
         if ($attempts === 1) {
             return [
                 'status' => 500,
@@ -128,9 +135,12 @@ try {
         return [
             'status' => 200,
             'body' => generation_json([
-                'id' => 'resp_smoke',
-                'output_text' => generation_json($validOutput),
-                'usage' => ['input_tokens' => 20, 'output_tokens' => 10, 'total_tokens' => 30],
+                'responseId' => 'resp_smoke',
+                'candidates' => [[
+                    'content' => ['parts' => [['text' => generation_json($validOutput)]]],
+                    'finishReason' => 'STOP',
+                ]],
+                'usageMetadata' => ['promptTokenCount' => 20, 'candidatesTokenCount' => 10, 'totalTokenCount' => 30],
             ]),
             'headers' => [],
             'network_error' => '',
@@ -144,7 +154,7 @@ try {
     generation_assert((int) $apiOperation['attempt_count'] === 2, 'Nie zapisano liczby prób.');
     generation_assert($apiOperation['provider_response_id'] === 'resp_smoke', 'Nie zapisano identyfikatora odpowiedzi.');
     generation_assert(
-        json_decode($apiOperation['usage_json'], true)['total_tokens'] === 30,
+        json_decode($apiOperation['usage_json'], true)['totalTokenCount'] === 30,
         'Nie zapisano użycia tokenów.'
     );
     generation_assert(
@@ -171,15 +181,18 @@ try {
             static fn (): array => [
                 'status' => 200,
                 'body' => generation_json([
-                    'id' => 'resp_invalid',
-                    'output_text' => generation_json(['summary' => 123]),
+                    'responseId' => 'resp_invalid',
+                    'candidates' => [[
+                        'content' => ['parts' => [['text' => generation_json(['summary' => 123])]]],
+                        'finishReason' => 'STOP',
+                    ]],
                 ]),
                 'headers' => [],
                 'network_error' => '',
             ],
             'smoke-secret-key'
         ),
-        'Nieprawidłowa odpowiedź OpenAI API'
+        'Nieprawidłowa odpowiedź Gemini API'
     );
     generation_assert(
         find_generation_operation($invalidApiId)['status'] === 'failed',
@@ -213,8 +226,15 @@ try {
         'Quota exhausted'
     );
     generation_assert(
-        $quotaAttempts === 1,
-        'Brak środków wywołał kosztowne ponowienia (liczba prób: ' . $quotaAttempts . ').'
+        $quotaAttempts === (int) app_config('gemini_max_attempts'),
+        'Limit Free Tier nie użył kontrolowanej liczby prób: ' . $quotaAttempts . '.'
+    );
+    $manualFallback = import_manual_generation_response($quotaId, generation_json($validOutput));
+    generation_assert(
+        $manualFallback === $validOutput
+        && find_generation_operation($quotaId)['status'] === 'completed'
+        && find_generation_operation($quotaId)['provider_response_id'] === 'manual-fallback',
+        'Po limicie Free Tier nie można kontynuować ręcznym importem.'
     );
     generation_assert(
         (int) $database->query('SELECT COUNT(*) FROM discovered_feed_items')->fetchColumn() === $baselineFeedItems,
@@ -228,8 +248,8 @@ try {
     }
     update_generation_mode($originalMode);
     if ($originalApiKey === false) {
-        putenv('OPENAI_API_KEY');
+        putenv('GEMINI_API_KEY');
     } else {
-        putenv('OPENAI_API_KEY=' . $originalApiKey);
+        putenv('GEMINI_API_KEY=' . $originalApiKey);
     }
 }
