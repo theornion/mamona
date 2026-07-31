@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "target": "/php/admin-content-studio.php",
+  "viewport": {
+    "width": 1366,
+    "height": 768,
+    "dpr": 1.0000000149011612
+  },
+  "mode": "legacy",
+  "scroller": "main",
+  "scrollRange": 12821,
+  "samples": 358,
+  "frameTimeMs": {
+    "median": 16.7,
+    "p95": 33.2,
+    "max": 83.3
+  },
+  "slowFrames": {
+    "over16_7ms": 129,
+    "over33_3ms": 14,
+    "over50ms": 1
+  },
+  "longTasks": {
+    "count": 1,
+    "totalMs": 66,
+    "maxMs": 66
+  },
+  "lcpMs": 2988,
+  "cls": 0.0539,
+  "maxEventDurationMs": 0,
+  "scrollEvents": 358,
+  "backgroundStyleMutations": 357,
+  "resources": {
+    "count": 22,
+    "transferBytes": 11631799,
+    "decodedBytes": 11625199,
+    "imageDecodedBytes": 1638228
+  },
+  "memory": {
+    "usedJsHeapBytes": 6167158,
+    "totalJsHeapBytes": 9064382
+  },
+  "cssAudit": {
+    "backdropFilters": 0,
+    "filters": 0,
+    "fixed": 4,
+    "sticky": 1,
+    "willChange": 0
+  },
+  "timestamp": "2026-07-31T13:25:42.877Z"
+}

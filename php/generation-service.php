@@ -4,6 +4,21 @@ declare(strict_types=1);
 
 const GENERATION_RESPONSE_MAX_BYTES = 2097152;
 
+function generation_error_classification(Throwable $exception, ?int $httpStatus = null): array
+{
+    if ($exception instanceof InvalidArgumentException || $exception instanceof JsonException) {
+        return ['class' => 'validation_contract', 'retryable' => false];
+    }
+    $message = mb_strtolower($exception->getMessage());
+    $retryable = $httpStatus === 0 || $httpStatus === 408 || $httpStatus === 429
+        || ($httpStatus !== null && $httpStatus >= 500 && $httpStatus <= 599)
+        || str_contains($message, 'timeout') || str_contains($message, 'timed out')
+        || str_contains($message, 'network') || str_contains($message, 'worker')
+        || str_contains($message, '429') || str_contains($message, 'rate limit')
+        || preg_match('/http\s+5\d\d/', $message) === 1;
+    return ['class' => $retryable ? 'retryable_transport' : 'non_retryable', 'retryable' => $retryable];
+}
+
 function generation_mode(): string
 {
     $mode = (string) bueno_database()->query(
@@ -155,6 +170,20 @@ function validate_generation_value(mixed $value, array $schema, string $path = '
     if (isset($schema['enum']) && is_array($schema['enum']) && !in_array($value, $schema['enum'], true)) {
         throw new InvalidArgumentException("Pole {$path} ma wartość spoza dozwolonej listy.");
     }
+    if (in_array($type, ['integer', 'number'], true)) {
+        if (isset($schema['minimum']) && $value < $schema['minimum']) {
+            throw new InvalidArgumentException(
+                "Pole {$path}: otrzymano {$value}; dozwolony zakres {$schema['minimum']}–"
+                . ($schema['maximum'] ?? '∞') . '.'
+            );
+        }
+        if (isset($schema['maximum']) && $value > $schema['maximum']) {
+            throw new InvalidArgumentException(
+                "Pole {$path}: otrzymano {$value}; dozwolony zakres "
+                . ($schema['minimum'] ?? '-∞') . "–{$schema['maximum']}."
+            );
+        }
+    }
     if ($type === 'object') {
         $properties = is_array($schema['properties'] ?? null) ? $schema['properties'] : [];
         foreach ((array) ($schema['required'] ?? []) as $required) {
@@ -177,6 +206,17 @@ function validate_generation_value(mixed $value, array $schema, string $path = '
         $itemSchema = $schema['items'] ?? null;
         if (!is_array($itemSchema)) {
             throw new InvalidArgumentException("Schemat tablicy {$path} nie definiuje elementów.");
+        }
+        $count = count($value);
+        if (isset($schema['minItems']) && $count < (int) $schema['minItems']) {
+            throw new InvalidArgumentException(
+                "Pole {$path} musi zawierać co najmniej " . (int) $schema['minItems'] . ' elementów.'
+            );
+        }
+        if (isset($schema['maxItems']) && $count > (int) $schema['maxItems']) {
+            throw new InvalidArgumentException(
+                "Pole {$path} może zawierać maksymalnie " . (int) $schema['maxItems'] . ' elementów.'
+            );
         }
         foreach ($value as $index => $child) {
             validate_generation_value($child, $itemSchema, $path . '[' . $index . ']');
@@ -286,6 +326,105 @@ function import_manual_generation_response(int $operationId, string $rawResponse
         ]);
     }
     throw new InvalidArgumentException('Ta operacja nie może być kontynuowana importem ręcznym.');
+}
+
+function persist_rejected_title_candidate(int $operationId, array $draft, array $diagnostics): void
+{
+    bueno_database()->prepare(
+        'UPDATE generation_operations SET output_json = :output, error_message = :error, updated_at = CURRENT_TIMESTAMP WHERE id = :id'
+    )->execute([':output'=>generation_json($draft), ':error'=>generation_json($diagnostics), ':id'=>$operationId]);
+    bueno_database()->prepare(
+        'UPDATE article_draft_versions SET draft_json = :draft, validation_json = :validation, status = "repairing", updated_at = CURRENT_TIMESTAMP WHERE generation_operation_id = :id'
+    )->execute([':draft'=>generation_json($draft), ':validation'=>generation_json($diagnostics), ':id'=>$operationId]);
+}
+
+function generation_title_repair_audit(array $parent, int $repairOperationId, int $attempt, array $details): void
+{
+    $statement = bueno_database()->prepare('SELECT id,batch_id FROM generation_batch_items WHERE draft_operation_id = :id ORDER BY id DESC LIMIT 1');
+    $statement->execute([':id'=>(int)$parent['id']]);
+    $item = $statement->fetch();
+    if (is_array($item)) generation_batch_audit((int)$item['batch_id'], (int)$item['id'], 'title_repair_attempt', 'worker', [
+        'parent_operation_id'=>(int)$parent['id'], 'repair_operation_id'=>$repairOperationId,
+        'repair_scope'=>'titles', 'attempt'=>$attempt, ...$details,
+    ]);
+}
+
+function annotate_completed_title_repair(int $operationId, array $metadata): void
+{
+    $draft = find_article_draft_by_operation($operationId);
+    if (!is_array($draft)) return;
+    $validation = json_decode((string)$draft['validation_json'], true) ?: [];
+    bueno_database()->prepare('UPDATE article_draft_versions SET validation_json = :validation WHERE generation_operation_id = :id')
+        ->execute([':validation'=>generation_json([...$validation, ...$metadata]), ':id'=>$operationId]);
+}
+
+function complete_generation_with_title_repair(
+    int $operationId,
+    string $rawResponse,
+    string $executionMode,
+    array $providerMetadata,
+    callable $executeRepair
+): array {
+    try {
+        return complete_generation_operation($operationId, $rawResponse, $executionMode, $providerMetadata);
+    } catch (ArticleTitleRepairException $exception) {
+        $parent = find_generation_operation($operationId);
+        if (!is_array($parent) || (string)$parent['operation_type'] !== 'article_draft') throw $exception;
+        $draft = decode_generation_response($rawResponse);
+        $diagnostics = $exception->diagnostics;
+        persist_rejected_title_candidate($operationId, $draft, $diagnostics);
+        $knownClaims = [];
+        $parentInput = json_decode((string)$parent['input_json'], true, 128, JSON_THROW_ON_ERROR);
+        foreach ((array)($parentInput['research_package']['claims'] ?? []) as $claim) $knownClaims[(string)$claim['claim_id']] = $claim;
+        $maximum = (int)app_config('title_repair_max_attempts');
+        $repairUsage = [];
+        for ($attempt=1; $attempt<=$maximum; $attempt++) {
+            $repairOperationId = prepare_generation_operation('article_title_repair', article_title_repair_input($parent, $draft, $diagnostics, $attempt), article_title_repair_schema(), (int)$parent['post_id'], (int)$parent['topic_id']);
+            $repair = [];
+            try {
+                $repair = $executeRepair($repairOperationId);
+                $candidate = merge_article_title_repair($draft, $repair);
+                $result = validate_article_title_strategy($candidate, $knownClaims);
+                $repairOperation = find_generation_operation($repairOperationId);
+                $repairUsage[] = ['operation_id'=>$repairOperationId,'attempt'=>$attempt,'usage'=>json_decode((string)($repairOperation['usage_json'] ?? '{}'),true) ?: []];
+                generation_title_repair_audit($parent, $repairOperationId, $attempt, ['old_title'=>$draft['title'] ?? '', 'new_title'=>$candidate['title'] ?? '', 'reason'=>$diagnostics['message'] ?? '', 'validation_result'=>$result]);
+                $providerMetadata['usage'] = ['operation_kind'=>'title_only_repair','parent_usage'=>$providerMetadata['usage'] ?? [],'repair_calls'=>$repairUsage];
+                $completed = complete_generation_operation($operationId, generation_json($candidate), $executionMode, $providerMetadata);
+                annotate_completed_title_repair($operationId, ['repair_scope'=>'titles','repair_status'=>'succeeded','repair_attempt'=>$attempt,'old_title'=>$draft['title'] ?? '','new_title'=>$candidate['title'] ?? '']);
+                return $completed;
+            } catch (ArticleTitleRepairException|InvalidArgumentException $repairError) {
+                $newDiagnostics = $repairError instanceof ArticleTitleRepairException ? $repairError->diagnostics : ['code'=>'invalid_title_repair','repair_scope'=>'titles','message'=>$repairError->getMessage()];
+                generation_title_repair_audit($parent, $repairOperationId, $attempt, ['old_title'=>$draft['title'] ?? '', 'new_title'=>$repair['title'] ?? '', 'reason'=>$diagnostics['message'] ?? '', 'validation_result'=>$newDiagnostics]);
+                $diagnostics = $newDiagnostics;
+            }
+        }
+        $fallback = article_title_deterministic_fallback($draft, $knownClaims);
+        $candidate = merge_article_title_repair($draft, $fallback);
+        try {
+            validate_article_title_strategy($candidate, $knownClaims);
+            $providerMetadata['usage'] = ['operation_kind'=>'title_only_repair_fallback','repair_calls'=>$repairUsage];
+            generation_title_repair_audit($parent, 0, $maximum + 1, ['old_title'=>$draft['title'] ?? '', 'new_title'=>$candidate['title'] ?? '', 'reason'=>'Wyczerpano próby modelu.', 'validation_result'=>'fallback_passed']);
+            $completed = complete_generation_operation($operationId, generation_json($candidate), $executionMode, $providerMetadata);
+            annotate_completed_title_repair($operationId, ['repair_scope'=>'titles','repair_status'=>'fallback_succeeded','repair_attempt'=>$maximum + 1,'old_title'=>$draft['title'] ?? '','new_title'=>$candidate['title'] ?? '']);
+            return $completed;
+        } catch (Throwable $fallbackError) {
+            persist_rejected_title_candidate($operationId, $candidate, ['code'=>'title_repair_review_required','repair_scope'=>'titles','message'=>$fallbackError->getMessage(),'proposals'=>$fallback['title_variants']]);
+            throw new RuntimeException('Naprawa tytułu wymaga review; tekst artykułu i propozycje zostały zachowane.');
+        }
+    }
+}
+
+function resume_saved_article_title_repair(int $operationId, ?callable $transport = null): array
+{
+    $operation = find_generation_operation($operationId);
+    $record = find_article_draft_by_operation($operationId);
+    $draft = is_array($record) ? json_decode((string)$record['draft_json'], true) : null;
+    $validation = is_array($record) ? (json_decode((string)$record['validation_json'], true) ?: []) : [];
+    if (!is_array($operation) || !is_array($draft) || $draft === [] || ($validation['repair_scope'] ?? '') !== 'titles') {
+        throw new RuntimeException('Brak zachowanego szkicu do naprawy samego tytułu. Wymagane jest review; pełna regeneracja została zablokowana.');
+    }
+    $usage = json_decode((string)$operation['usage_json'], true) ?: [];
+    return complete_generation_with_title_repair($operationId, generation_json($draft), (string)$operation['execution_mode'], ['response_id'=>'saved-title-repair','usage'=>$usage], static fn(int $repairId): array => execute_generation_operation($repairId, $transport));
 }
 
 function generation_mock_value(array $schema): mixed
@@ -590,10 +729,10 @@ function execute_openai_generation_operation(
                 if (isset($decoded['cost']) && (is_int($decoded['cost']) || is_float($decoded['cost']))) {
                     $usage['reported_cost'] = $decoded['cost'];
                 }
-                return complete_generation_operation($operationId, $outputText, 'api', [
+                return complete_generation_with_title_repair($operationId, $outputText, 'api', [
                     'response_id' => (string) ($decoded['id'] ?? ''),
                     'usage' => $usage,
-                ]);
+                ], static fn(int $repairId): array => execute_generation_operation($repairId, $transport, $apiKey));
             } catch (Throwable $exception) {
                 $lastError = 'Nieprawidłowa odpowiedź OpenAI API: ' . $exception->getMessage();
                 $transient = false;
@@ -697,6 +836,7 @@ function execute_generation_operation(
     $maximumAttempts = (int) app_config('gemini_max_attempts');
     $lastError = 'Nieznany błąd Gemini API.';
 
+    $lastRetryAfterSeconds = 0;
     for ($attempt = 1; $attempt <= $maximumAttempts; $attempt++) {
         bueno_database()->prepare(
             'UPDATE generation_operations
@@ -715,7 +855,8 @@ function execute_generation_operation(
         }
         $status = (int) ($response['status'] ?? 0);
         $details = gemini_error_details($response);
-        $transient = $status === 0 || in_array($status, [408, 429, 500, 502, 503, 504], true);
+        $transient = $status === 0 || $status === 408 || $status === 429 || ($status >= 500 && $status <= 599);
+        $failureDiagnostics = ['class' => $transient ? 'retryable_transport' : 'non_retryable', 'retryable' => $transient, 'http_status' => $status];
         if ($status >= 200 && $status < 300) {
             try {
                 $decoded = json_decode((string) $response['body'], true, 128, JSON_THROW_ON_ERROR);
@@ -724,13 +865,15 @@ function execute_generation_operation(
                 }
                 $providerOutput = gemini_extract_output($decoded);
 
-                return complete_generation_operation($operationId, (string) $providerOutput['text'], 'api', [
+                return complete_generation_with_title_repair($operationId, (string) $providerOutput['text'], 'api', [
                     'response_id' => (string) $providerOutput['response_id'],
                     'usage' => (array) $providerOutput['usage'],
-                ]);
+                ], static fn(int $repairId): array => execute_generation_operation($repairId, $transport, $apiKey));
             } catch (Throwable $exception) {
                 $lastError = 'Nieprawidłowa odpowiedź Gemini API: ' . $exception->getMessage();
-                $transient = false;
+                $failureDiagnostics = generation_error_classification($exception, $status);
+                $failureDiagnostics['http_status'] = $status;
+                $transient = (bool) $failureDiagnostics['retryable'];
             }
         } else {
             $lastError = trim((string) ($response['network_error'] ?? ''));
@@ -740,6 +883,7 @@ function execute_generation_operation(
                     : 'Gemini API zwróciło HTTP ' . $status . '.';
             }
             if ($status === 429) {
+                $lastRetryAfterSeconds = max(0, min(86400, (int) ($response['headers']['retry-after'] ?? 0)));
                 $lastError .= ' Limit Free Tier został osiągnięty; operację można zaimportować ręcznie lub ponowić później.';
             }
         }
@@ -757,6 +901,9 @@ function execute_generation_operation(
         usleep($backoffMs * 1000);
     }
 
+    if ($lastRetryAfterSeconds > 0) {
+        $lastError .= ' Retry-After: ' . $lastRetryAfterSeconds . ' s.';
+    }
     bueno_database()->prepare(
         'UPDATE generation_operations
          SET status = "failed", error_message = :error_message,
@@ -767,7 +914,7 @@ function execute_generation_operation(
     } elseif ($operation['operation_type'] === 'article_draft') {
         mark_article_draft_failed($operationId, $lastError);
     } elseif ($operation['operation_type'] === 'quality_check') {
-        mark_quality_check_failed($operationId, $lastError);
+        mark_quality_check_failed($operationId, $lastError, $failureDiagnostics ?? ['class' => 'non_retryable', 'retryable' => false]);
     }
     throw new RuntimeException($lastError);
 }

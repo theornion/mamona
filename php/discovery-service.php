@@ -110,7 +110,7 @@ function render_rss_xml(int $limit = 30): string
         if ($published !== '') {
             $xml .= '<pubDate>' . discovery_xml($published) . '</pubDate>';
         }
-        if ($category !== null) {
+        if (post_category_is_public($category)) {
             $xml .= '<category>' . discovery_xml((string) $category['title']) . '</category>';
         }
         $imageUrl = post_absolute_image_url($post);

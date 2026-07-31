@@ -22,6 +22,17 @@ function draft_smoke_section(string $text, string $claimId, string $sourceId): a
     return ['text' => $text, 'claim_ids' => [$claimId], 'source_ids' => [$sourceId]];
 }
 
+function draft_smoke_replace_selected_title(array $draft, string $title): array
+{
+    $draft['title'] = $title;
+    foreach ($draft['title_variants'] as $index => $variant) {
+        $draft['title_variants'][$index]['selected'] = $index === 0;
+    }
+    $draft['title_variants'][0]['title'] = $title;
+
+    return $draft;
+}
+
 function draft_smoke_output(string $mode, string $claimId, string $sourceId, string $suffix): array
 {
     $section = static fn (string $text): array => draft_smoke_section($text . ' ' . $suffix, $claimId, $sourceId);
@@ -43,10 +54,15 @@ function draft_smoke_output(string $mode, string $claimId, string $sourceId, str
 
     $draft = [
         'composition_mode' => $mode,
-        'title' => 'Precyzyjny tytuł kontrolowanego szkicu ' . $suffix,
+        'title' => 'Kontrolowany pomiar ujawnia znaczenie i ograniczenia danych',
+        'brief' => 'Za kontrolowanym wynikiem kryje się szerszy mechanizm, którego znaczenie pokaże dopiero uporządkowanie dostępnych danych.',
         'lead' => $section('Lead od razu opisuje kontrolowane wydarzenie.'),
         'why_important' => $section('Znaczenie wynika z udokumentowanego pomiaru.'),
-        'key_facts' => [$section('Najważniejszy fakt ma przypisane źródło.')],
+        'key_facts' => [
+            $section('Pierwszy najważniejszy fakt ma przypisane źródło.'),
+            $section('Drugi fakt rozwija udokumentowane znaczenie wyniku.'),
+            $section('Trzeci fakt porządkuje ograniczenia dostępnego materiału.'),
+        ],
         'comparison_context' => $empty,
         'unknowns' => [[
             'text' => 'Nie jest jeszcze znany pełny zestaw danych. ' . $suffix,
@@ -59,6 +75,7 @@ function draft_smoke_output(string $mode, string $claimId, string $sourceId, str
         'used_source_ids' => [$sourceId],
         'narrative' => $narrative,
     ];
+    $draft = [...$draft, ...build_article_title_strategy_fixture((string) $draft['title'])];
     $policy = article_draft_length_policy($mode);
     $index = 1;
     while (article_draft_main_content_length($draft) < $policy['minimum_characters']) {
@@ -156,12 +173,122 @@ try {
     $operationIds[] = $manualId;
     $manualOperation = find_generation_operation($manualId);
     draft_smoke_assert(
-        str_contains((string) $manualOperation['prompt_text'], '"minimum_characters":2000')
-        && str_contains((string) $manualOperation['prompt_text'], '"maximum_characters":4000')
+        str_contains((string) $manualOperation['prompt_text'], '"minimum_characters":3000')
+        && str_contains((string) $manualOperation['prompt_text'], '"maximum_characters":5000')
+        && str_contains((string) $manualOperation['prompt_text'], '"code":"pl-PL"')
+        && str_contains((string) $manualOperation['prompt_text'], '"target_characters":"3400–3500"')
+        && str_contains((string) $manualOperation['prompt_text'], '"required_inline_illustrations":3')
+        && str_contains((string) $manualOperation['prompt_text'], '"required_inline_section_ids":["lead","why-important","fact-1"]')
+        && str_contains((string) $manualOperation['prompt_text'], 'jedną ilustrację inline na 950–1050 znaków')
+        && str_contains((string) $manualOperation['prompt_text'], 'Brief to jedno naturalne zdanie')
+        && str_contains((string) $manualOperation['prompt_text'], 'title_variants')
+        && str_contains((string) $manualOperation['prompt_text'], 'Nie uwierzysz')
+        && str_contains((string) $manualOperation['prompt_text'], 'total_score')
         && str_contains((string) $manualOperation['prompt_text'], 'lania wody'),
-        'Prompt prostego szkicu nie zawiera kompletnej polityki długości i jakości.'
+        'Prompt prostego szkicu nie zawiera języka oraz kompletnej polityki długości i jakości.'
+    );
+    $manualSchema = json_decode((string) $manualOperation['output_schema_json'], true, 128, JSON_THROW_ON_ERROR);
+    $titleVariantsSchema = (array) (($manualSchema['properties'] ?? [])['title_variants'] ?? []);
+    draft_smoke_assert(
+        ($titleVariantsSchema['minItems'] ?? null) === 5
+        && ($titleVariantsSchema['maxItems'] ?? null) === 8
+        && in_array('title_selection_reason', (array) ($manualSchema['required'] ?? []), true),
+        'Formalny schemat JSON nie wymusza kompletnej strategii wyboru tytułu.'
     );
     $manualOutput = draft_smoke_output('informational', 'C1', 'S1', 'manual-v1');
+    $titleValidation = validate_article_title_strategy($manualOutput, [
+        'C1' => ['claim' => 'Laboratorium opisało kontrolowany pomiar.'],
+    ]);
+    draft_smoke_assert(
+        $titleValidation['variant_count'] === 5
+        && $titleValidation['selected_score'] === 46
+        && $titleValidation['supported_title_tokens'] >= 2,
+        'Tytuł zgodny z faktami i treścią nie przeszedł strategii wyboru.'
+    );
+    $forbiddenTitle = draft_smoke_replace_selected_title(
+        $manualOutput,
+        'Nie uwierzysz, co ujawnił kontrolowany pomiar'
+    );
+    try {
+        validate_article_title_strategy($forbiddenTitle, [
+            'C1' => ['claim' => 'Laboratorium opisało kontrolowany pomiar.'],
+        ]);
+        throw new RuntimeException('Zakazana pusta formuła clickbaitowa nie została odrzucona.');
+    } catch (InvalidArgumentException $exception) {
+        draft_smoke_assert(str_contains($exception->getMessage(), 'clickbait'), 'Nieoczekiwany błąd clickbaitu.');
+    }
+    $capsTitle = draft_smoke_replace_selected_title(
+        $manualOutput,
+        'KONTROLOWANY POMIAR UJAWNIA ZNACZENIE DANYCH'
+    );
+    try {
+        validate_article_title_strategy($capsTitle, [
+            'C1' => ['claim' => 'Laboratorium opisało kontrolowany pomiar.'],
+        ]);
+        throw new RuntimeException('Tytuł ALL CAPS nie został odrzucony.');
+    } catch (InvalidArgumentException $exception) {
+        draft_smoke_assert(str_contains($exception->getMessage(), 'wersalikami'), 'Nieoczekiwany błąd ALL CAPS.');
+    }
+    $punctuationTitle = draft_smoke_replace_selected_title(
+        $manualOutput,
+        'Kontrolowany pomiar ujawnia znaczenie dostępnych danych!!!'
+    );
+    try {
+        validate_article_title_strategy($punctuationTitle, [
+            'C1' => ['claim' => 'Laboratorium opisało kontrolowany pomiar.'],
+        ]);
+        throw new RuntimeException('Nadmiar interpunkcji nie został odrzucony.');
+    } catch (InvalidArgumentException $exception) {
+        draft_smoke_assert(str_contains($exception->getMessage(), 'interpunkcję'), 'Nieoczekiwany błąd interpunkcji.');
+    }
+    $weakerSelection = $manualOutput;
+    $weakerSelection['title_variants'][0]['selected'] = false;
+    $weakerSelection['title_variants'][1]['selected'] = true;
+    $weakerSelection['title'] = $weakerSelection['title_variants'][1]['title'];
+    try {
+        validate_article_title_strategy($weakerSelection, [
+            'C1' => ['claim' => 'Laboratorium opisało kontrolowany pomiar.'],
+        ]);
+        throw new RuntimeException('Słabszy wariant został wybrany mimo niższego wyniku.');
+    } catch (InvalidArgumentException $exception) {
+        draft_smoke_assert(str_contains($exception->getMessage(), 'najmocniejszym'), 'Nieoczekiwany błąd wyboru wariantu.');
+    }
+    $unsupportedSensational = draft_smoke_replace_selected_title(
+        $manualOutput,
+        'Kontrolowany pomiar dowodzi, że wynik zmieni życie każdego człowieka!'
+    );
+    try {
+        validate_article_title_strategy($unsupportedSensational, [
+            'C1' => ['claim_id'=>'C1','claim' => 'Laboratorium opisało kontrolowany pomiar.','source_ids'=>['S1']],
+        ]);
+        throw new RuntimeException('Nieuzasadniony sensacyjny tytuł nie został odrzucony.');
+    } catch (InvalidArgumentException $exception) {
+        draft_smoke_assert(
+            str_contains($exception->getMessage(), 'więcej')
+            || str_contains($exception->getMessage(), 'mocniejsze'),
+            'Nieoczekiwany błąd sensacyjnej obietnicy.'
+        );
+        draft_smoke_assert(
+            $exception instanceof ArticleTitleRepairException
+            && $exception->diagnostics['code'] === 'unsupported_title_promise'
+            && $exception->diagnostics['repair_scope'] === 'titles'
+            && $exception->diagnostics['allowed_claim_ids'] === ['C1']
+            && in_array('lead', $exception->diagnostics['preserved_fields'], true),
+            'Błąd obietnicy tytułu nie ma strukturalnego kontraktu title-only repair.'
+        );
+    }
+    $repair = $manualOutput;
+    $repair['title_selection_reason'] = 'Nowe uzasadnienie pozostaje ściśle oparte na kontrolowanym pomiarze opisanym w tekście.';
+    $repair['seo_description'] = 'Zmienione SEO bez fałszywej obietnicy.';
+    $mergedRepair = merge_article_title_repair($unsupportedSensational, [
+        'title'=>$manualOutput['title'], 'title_variants'=>$manualOutput['title_variants'],
+        'title_selection_reason'=>$repair['title_selection_reason'], 'seo_title'=>$manualOutput['title'],
+        'seo_description'=>$repair['seo_description'],
+    ]);
+    foreach (array_diff(array_keys($manualOutput), ['title','title_variants','title_selection_reason','seo_title','seo_description']) as $field) {
+        draft_smoke_assert(serialize($mergedRepair[$field]) === serialize($unsupportedSensational[$field]), "Title repair zmienił zachowane pole {$field}.");
+    }
+    draft_smoke_assert($mergedRepair['illustration_plan'] === $unsupportedSensational['illustration_plan'], 'Title repair zmienił plan ilustracji.');
     $shortOutput = $manualOutput;
     $shortOutput['practical_takeaway']['text'] = 'Zbyt krótki wniosek.';
     draft_smoke_assert(
@@ -172,18 +299,18 @@ try {
     try {
         import_manual_generation_response($manualId, generation_json($shortOutput));
     } catch (Throwable $exception) {
-        $shortRejected = str_contains($exception->getMessage(), 'wymagany jest zakres 2000–4000');
+        $shortRejected = str_contains($exception->getMessage(), 'wymagany jest zakres 3000–5000');
     }
-    draft_smoke_assert($shortRejected, 'Szkic krótszy niż 2000 znaków nie został odrzucony.');
+    draft_smoke_assert($shortRejected, 'Szkic krótszy niż 3000 znaków nie został odrzucony.');
     $longOutput = $manualOutput;
     $longOutput['practical_takeaway']['text'] .= str_repeat(' Nadmiarowa treść testowa.', 200);
     $longRejected = false;
     try {
         import_manual_generation_response($manualId, generation_json($longOutput));
     } catch (Throwable $exception) {
-        $longRejected = str_contains($exception->getMessage(), 'wymagany jest zakres 2000–4000');
+        $longRejected = str_contains($exception->getMessage(), 'wymagany jest zakres 3000–5000');
     }
-    draft_smoke_assert($longRejected, 'Szkic dłuższy niż 4000 znaków nie został odrzucony.');
+    draft_smoke_assert($longRejected, 'Szkic dłuższy niż 5000 znaków nie został odrzucony.');
     $repeatedOutput = $manualOutput;
     $repeatedOutput['why_important']['text'] = $repeatedOutput['lead']['text'];
     $repetitionRejected = false;
@@ -193,6 +320,21 @@ try {
         $repetitionRejected = str_contains($exception->getMessage(), 'powtarza to samo zdanie');
     }
     draft_smoke_assert($repetitionRejected, 'Powtórzone długie zdanie nie zostało odrzucone.');
+    $englishRejected = false;
+    try {
+        article_draft_assert_polish_language([
+            'lead' => ['text' => str_repeat('The source describes a controlled scientific result. ', 20)],
+            'why_important' => ['text' => str_repeat('Researchers explain the result and its importance. ', 20)],
+            'key_facts' => [['text' => str_repeat('Measurements support the reported conclusion. ', 20)]],
+            'comparison_context' => ['text' => 'The available material provides context.'],
+            'unknowns' => [['text' => 'Further measurements remain necessary.']],
+            'practical_takeaway' => ['text' => str_repeat('Readers should consider the limitations of the evidence. ', 20)],
+            'narrative' => [],
+        ]);
+    } catch (Throwable $exception) {
+        $englishRejected = str_contains($exception->getMessage(), 'język polski');
+    }
+    draft_smoke_assert($englishRejected, 'Angielska treść nie została odrzucona.');
     draft_smoke_assert(
         find_generation_operation($manualId)['status'] === 'prepared',
         'Odrzucona odpowiedź zmieniła stan operacji przed poprawną regeneracją.'
@@ -212,9 +354,9 @@ try {
     $narrativeOutput = draft_smoke_output('problem_discovery_return', 'C1', 'S1', 'manual-v2');
     $narrativeOperation = find_generation_operation($narrativeId);
     draft_smoke_assert(
-        str_contains((string) $narrativeOperation['prompt_text'], '"minimum_characters":3000')
+        str_contains((string) $narrativeOperation['prompt_text'], '"minimum_characters":4000')
         && str_contains((string) $narrativeOperation['prompt_text'], 'dolna granica'),
-        'Prompt złożonego szkicu nie podkreśla progu 3000 i pełnego rozwinięcia.'
+        'Prompt złożonego szkicu nie podkreśla progu 4000 i pełnego rozwinięcia.'
     );
     import_manual_generation_response($narrativeId, generation_json($narrativeOutput));
     $narrativeDraft = find_article_draft_by_operation($narrativeId);
@@ -260,10 +402,59 @@ try {
         json_decode((string) $manualDraft['draft_json'], true) === $manualOutput,
         'Regeneracja nadpisała wcześniejszą wersję.'
     );
+    $repairParentId = prepare_article_draft_operation((int) $researchPackage['id'], 'informational');
+    $operationIds[] = $repairParentId;
+    $badDraft = draft_smoke_replace_selected_title($apiOutput, 'Kontrolowany pomiar to przełom, który zmieni życie każdego człowieka!');
+    $goodRepair = ['title'=>$apiOutput['title'],'title_variants'=>$apiOutput['title_variants'],'title_selection_reason'=>'Wybór pozostaje atrakcyjny, ale opiera się wyłącznie na kontrolowanym pomiarze i jego przypisanym claimie.','seo_title'=>$apiOutput['title'],'seo_description'=>$apiOutput['seo_description']];
+    $badRepair = $goodRepair;
+    $badRepair['title'] = $badDraft['title'];
+    $badRepair['title_variants'] = $badDraft['title_variants'];
+    $repairCalls = 0;
+    $beforeRepairOperation = (int)$database->query('SELECT COALESCE(MAX(id),0) FROM generation_operations')->fetchColumn();
+    execute_generation_operation($repairParentId, static function () use (&$repairCalls, $badDraft, $badRepair, $goodRepair): array {
+        $value = $repairCalls++ === 0 ? $badDraft : ($repairCalls === 2 ? $badRepair : $goodRepair);
+        return ['status'=>200,'body'=>generation_json(['responseId'=>'resp_title_repair_'.$repairCalls,'candidates'=>[['content'=>['parts'=>[['text'=>generation_json($value)]]],'finishReason'=>'STOP']],'usageMetadata'=>['promptTokenCount'=>10,'candidatesTokenCount'=>5,'totalTokenCount'=>15]]),'headers'=>[],'network_error'=>''];
+    }, 'smoke-secret-key');
+    foreach ($database->query('SELECT id FROM generation_operations WHERE id > '.(int)$beforeRepairOperation.' AND id <> '.(int)$repairParentId)->fetchAll(PDO::FETCH_COLUMN) as $childId) $operationIds[] = (int)$childId;
+    $repairedRecord = find_article_draft_by_operation($repairParentId);
+    $repairedDraft = json_decode((string)$repairedRecord['draft_json'], true, 128, JSON_THROW_ON_ERROR);
+    $repairedValidation = json_decode((string)$repairedRecord['validation_json'], true, 128, JSON_THROW_ON_ERROR);
+    foreach (array_diff(array_keys($apiOutput), ['title','title_variants','title_selection_reason','seo_title','seo_description']) as $field) draft_smoke_assert(serialize($repairedDraft[$field]) === serialize($badDraft[$field]), "Automatyczny title repair zmienił zachowane pole {$field}.");
+    draft_smoke_assert($repairCalls === 3 && $repairedValidation['repair_attempt'] === 2 && $repairedValidation['repair_scope'] === 'titles', 'Druga próba title repair nie zakończyła operacji rodzica.');
+    $repairUsage = json_decode((string)find_generation_operation($repairParentId)['usage_json'], true);
+    draft_smoke_assert(($repairUsage['operation_kind'] ?? '') === 'title_only_repair', 'Usage nie oznacza małej naprawy tytułu.');
     $postAfter = find_post($postId, true);
     foreach (['title', 'content', 'status', 'is_published'] as $field) {
         draft_smoke_assert($postAfter[$field] === $postBefore[$field], 'Generowanie zmieniło pole posta: ' . $field);
     }
+    $promotedPostId = promote_article_draft_to_post((int) $apiDraft['id']);
+    $promotedPost = find_post($promotedPostId);
+    $promotedBlocks = json_decode((string) ($promotedPost['content_blocks'] ?? '[]'), true);
+    draft_smoke_assert(
+        $promotedPostId === $postId
+        && is_array($promotedPost)
+        && $promotedPost['status'] === 'draft'
+        && (int) $promotedPost['is_published'] === 0
+        && $promotedPost['title'] === $apiOutput['title']
+        && is_array($promotedBlocks)
+        && $promotedBlocks !== [],
+        'Ukończony szkic nie trafił do edytora jako nieopublikowany post.'
+    );
+    draft_smoke_assert(
+        count(list_article_images($promotedPostId)) === 1 + count($apiOutput['illustration_plan']['inline']),
+        'Promocja szkicu nie zapisała planu hero i ilustracji inline.'
+    );
+    draft_smoke_assert($promotedPost['excerpt'] === $apiOutput['brief'], 'Brief nie trafił pod tytuł jako osobne pole.');
+    draft_smoke_assert(
+        !str_contains((string) $promotedPost['content'], '<h2>Najważniejsze fakty</h2>')
+        && !str_contains((string) $promotedPost['content'], '<h2>Kontekst</h2>'),
+        'Kompozytor nadal pokazuje techniczne etykiety sekcji.'
+    );
+    draft_smoke_assert(
+        str_contains((string) $promotedPost['content'], 'article-section--facts')
+        && str_contains((string) $promotedPost['content'], 'article-section--importance'),
+        'Kompozytor nie rozróżnia sekcji kontrolowanymi stylami.'
+    );
 
     echo "ARTICLE_DRAFT_SMOKE_OK\n";
 } finally {

@@ -46,11 +46,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <html lang="pl">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex, nofollow, noarchive">
     <title>Logowanie administratora | CMS</title>
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="stylesheet" href="../assets/css/main.css?v=bueno-release-20260721c">
+    <link rel="stylesheet" href="../assets/css/admin.css?v=admin-redesign-20260731a">
 </head>
 <body class="is-preload admin-page admin-login-page">
     <div id="wrapper" class="fade-in">
@@ -85,6 +86,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </section>
         </main>
     </div>
+    <script src="../assets/js/performance-mode.js?v=cms-perf-20260731"></script>
     <script src="../assets/js/jquery.min.js?v=bueno-release-20260721c"></script>
     <script src="../assets/js/breakpoints.min.js?v=bueno-release-20260721c"></script>
     <script src="../assets/js/browser.min.js?v=bueno-release-20260721c"></script>

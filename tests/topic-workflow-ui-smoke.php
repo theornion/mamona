@@ -1,0 +1,33 @@
+<?php
+declare(strict_types=1);
+function check(bool $condition, string $message): void { if (!$condition) throw new RuntimeException($message); }
+$page = file_get_contents(__DIR__ . '/../php/admin-editorial-topics.php');
+$api = file_get_contents(__DIR__ . '/../php/admin-editorial-topics-api.php');
+$js = file_get_contents(__DIR__ . '/../assets/js/admin-editorial-topics.js');
+$css = file_get_contents(__DIR__ . '/../assets/css/admin.css');
+$service = file_get_contents(__DIR__ . '/../php/generation-batch-service.php');
+check(strpos($page, 'topic-card-selector') < strpos($page, 'editorial-status'), 'Checkbox nie jest bezpośrednio przed badge’em.');
+check(strpos($page, 'topic-bulk-toolbar') < strpos($page, 'topic-list-heading'), 'Toolbar zbiorczy ma być nad nagłówkiem listy.');
+check(str_contains($page, 'aria-label="Przenieś temat do Kosza:') && str_contains($page, 'topic-trash'), 'Brak kontraktu kosza.');
+foreach (['research','draft','quality','images','generate_all'] as $action) check(str_contains($page, 'value="'.$action.'"'), 'Brak akcji '.$action);
+check(str_contains($js, 'selected = new Set()') && str_contains($js, 'topic-select-visible') && str_contains($js, 'topic-select-top'), 'Brak selekcji zbiorczej.');
+check(str_contains($page, 'topic-clear-selection') && str_contains($page, 'Zaznaczono:') && str_contains($page, 'data-selected="false"'), 'Brak jawnego, wspólnego stanu wyboru.');
+check(str_contains($page, 'aria-labelledby="topic-title-') && str_contains($page, 'topic-selected-badge'), 'Checkbox nie jest powiązany z tytułem lub brakuje tekstowego stanu karty.');
+check(str_contains($js, "card.classList.toggle('is-selected'") && str_contains($js, "card.dataset.selected ="), 'Stan karty nie jest aktualizowany natychmiast.');
+check(!str_contains($js, 'if (card.hidden) selected.delete'), 'Filtrowanie po cichu usuwa zaznaczenie.');
+check(str_contains($js, 'hiddenSelected') && str_contains($js, 'ukrytych przez'), 'Liczba zaznaczonych, ale ukrytych tematów nie jest jawna.');
+check(str_contains($css, 'width:44px') && str_contains($css, 'width:24px!important') && str_contains($css, '.topic-control-card.is-selected'), 'Checkbox nie ma wymaganego rozmiaru lub karta nie ma stanu zaznaczenia.');
+check(str_contains($js, 'payload.skipped') && str_contains($service, "'skipped'"), 'Brak raportu pominięć dla mieszanego wyboru.');
+check(str_contains($api, 'admin_valid_csrf') && str_contains($service, 'request_key') && str_contains($service, 'generation_batch_audit'), 'Brak zabezpieczeń kontraktu.');
+$sourceToolsPosition = strpos($page, 'topic-source-tools');
+check(str_contains($page, 'Źródła, łączenie i ręczne rozdzielanie') && $sourceToolsPosition !== false && strpos($page, 'name="action" value="merge_topics"', $sourceToolsPosition) !== false, 'Łączenie nie znajduje się w zwijanym panelu źródeł.');
+check(str_contains($page, 'form="topic-trash-bulk-form"') && !str_contains($page, 'topic-trash-bulk-check'), 'Zbiorczy Kosz nie korzysta ze wspólnego zaznaczenia.');
+check(str_contains($js, 'trashHiddenIds') && str_contains($js, "window.confirm('Przenieść ' + selected.size"), 'Brak synchronizacji i potwierdzenia zbiorczego Kosza.');
+check(str_contains($css, '.topic-trash-selected'), 'Brak kompaktowego Kosza w toolbarze.');
+check(str_contains($css, '@media(max-width:900px)') && str_contains($css, '@media(max-width:520px)'), 'Brak breakpointów responsywnych.');
+check(str_contains($js, "document.addEventListener('visibilitychange'") && str_contains($js, "window.addEventListener('online'"), 'Client does not resync after tab visibility or network recovery.');
+check(str_contains($js, 'serverOffset = Date.parse(payload.server_time) - Date.now()') && str_contains($js, 'Date.parse(job.available_at)'), 'Countdown is not based on backend time.');
+check(str_contains($js, 'networkFailures++') && str_contains($js, 'Math.pow(2'), 'Network retry does not use controlled backoff.');
+foreach (['W kolejce', 'Aktywne przetwarzanie', 'Limit API', 'Wymaga decyzji', 'Błąd ponawialny', 'Błąd trwały'] as $label) check(str_contains($js, $label), 'Missing state message: ' . $label);
+check(str_contains($api, "'server_time' => gmdate('c')") && str_contains($service, "'available_at' => \$availableAt"), 'API does not expose server and resume time.');
+echo "TOPIC_WORKFLOW_UI_SMOKE_OK\n";

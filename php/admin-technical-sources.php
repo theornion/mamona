@@ -62,6 +62,12 @@ function technical_source_form(array $source = []): void
             </div>
             <div><label>Język</label><input name="language" pattern="[a-zA-Z]{2}(-[a-zA-Z]{2})?" maxlength="5" required value="<?php echo escape_html((string) ($source['language'] ?? 'en')); ?>"></div>
             <div><label>Wiarygodność</label><select name="credibility_level"><?php for ($level = 5; $level >= 1; $level--): ?><option value="<?php echo $level; ?>"<?php echo (int) ($source['credibility_level'] ?? 5) === $level ? ' selected' : ''; ?>><?php echo $level; ?>/5</option><?php endfor; ?></select></div>
+            <div><label>Timeout połączenia (s)</label><input type="number" min="2" max="20" name="feed_connect_timeout_seconds" placeholder="domyślny" value="<?php echo escape_html((string)($source['feed_connect_timeout_seconds'] ?? '')); ?>"></div>
+            <div><label>Timeout transferu (s)</label><input type="number" min="10" max="90" name="feed_transfer_timeout_seconds" placeholder="domyślny" value="<?php echo escape_html((string)($source['feed_transfer_timeout_seconds'] ?? '')); ?>"></div>
+            <div><label>Low speed: bajty/s</label><input type="number" min="1" max="65536" name="feed_low_speed_limit" placeholder="domyślny" value="<?php echo escape_html((string)($source['feed_low_speed_limit'] ?? '')); ?>"></div>
+            <div><label>Low speed: czas (s)</label><input type="number" min="5" max="60" name="feed_low_speed_time_seconds" placeholder="domyślny" value="<?php echo escape_html((string)($source['feed_low_speed_time_seconds'] ?? '')); ?>"></div>
+            <div><label>Maks. prób</label><input type="number" min="1" max="4" name="feed_max_attempts" placeholder="domyślny" value="<?php echo escape_html((string)($source['feed_max_attempts'] ?? '')); ?>"></div>
+            <div><label>Budżet źródła (s)</label><input type="number" min="30" max="600" name="feed_job_budget_seconds" placeholder="domyślny" value="<?php echo escape_html((string)($source['feed_job_budget_seconds'] ?? '')); ?>"></div>
         </div>
         <div class="technical-source-flags">
             <label><input type="checkbox" name="is_primary" value="1"<?php echo !isset($source['is_primary']) || (int) $source['is_primary'] === 1 ? ' checked' : ''; ?>> Źródło pierwotne</label>

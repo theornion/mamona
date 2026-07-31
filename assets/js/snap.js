@@ -1,5 +1,6 @@
 /* Unified page/menu snap behavior. */
 (function () {
+    if (window.MamonaPerformance && window.MamonaPerformance.shouldReduceEffects()) return;
     const menuImageDirectory = 'images/menu/';
     const xlsxSharedStringType = 's';
     const xlsxInlineStringType = 'inlineStr';
@@ -944,6 +945,7 @@
 
 
 (function () {
+    if (window.MamonaPerformance && window.MamonaPerformance.shouldReduceEffects()) return;
     function initMainSnap() {
         const intro = document.querySelector('#intro');
         const header = document.querySelector('#header');
@@ -1082,7 +1084,10 @@
             const mainDocumentTop = documentLayoutTop(main);
             nav.style.setProperty('--nav-main-top', `${Math.round(mainDocumentTop)}px`);
             nav.style.setProperty('width', `${Math.round(mainRect.width)}px`, 'important');
-            nav.style.setProperty('left', `${Math.round(mainRect.left + mainRect.width / 2)}px`, 'important');
+            // The public nav is centered with the same auto margins as #main.
+            // A legacy inline 50% anchor combined with removed translate(-50%)
+            // pushed the bar to the right, so horizontal placement stays in CSS.
+            nav.style.removeProperty('left');
             footer.style.setProperty('width', `${Math.round(mainRect.width)}px`, 'important');
             footer.style.setProperty('max-width', 'none', 'important');
         }

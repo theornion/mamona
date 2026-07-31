@@ -7,6 +7,7 @@ if (getenv('CMS_ALLOW_TRUST_SMOKE') !== '1') {
     exit(0);
 }
 
+putenv('CMS_PUBLIC_URL=https://example.test');
 require_once dirname(__DIR__) . '/php/admin-database.php';
 
 function trust_smoke_assert(bool $condition, string $message): void
@@ -29,10 +30,14 @@ try {
     $about = (string) file_get_contents($directory . '/o-serwisie.html');
     $privacy = (string) file_get_contents($directory . '/polityka-prywatnosci.html');
     $corrections = (string) file_get_contents($directory . '/korekty-i-aktualizacje.html');
+    $contact = (string) file_get_contents($directory . '/kontakt.html');
     trust_smoke_assert(str_contains($about, 'trust-footer-links'), 'Strony nie zawierają nawigacji zaufania.');
     trust_smoke_assert(str_contains($privacy, 'Twoje prawa'), 'Polityka prywatności nie opisuje praw użytkownika.');
     trust_smoke_assert(str_contains($corrections, 'Korekta: tytuł lub URL'), 'Brakuje jednoznacznej procedury korekty.');
     trust_smoke_assert(str_contains($corrections, 'fragment, którego dotyczy zgłoszenie'), 'Procedura korekty nie określa danych zgłoszenia.');
+    trust_smoke_assert(str_contains($contact, 'class="trust-contact-form"'), 'Formularz kontaktowy nie znajduje się w main strony Kontakt.');
+    trust_smoke_assert(str_contains($contact, 'assets/js/contact-form.js'), 'Strona Kontakt nie ładuje obsługi formularza.');
+    trust_smoke_assert(!str_contains($about, 'id="contactForm"'), 'Formularz kontaktowy pozostał na innej stronie zaufania.');
 
     $authors = list_authors(true);
     foreach ($authors as $author) {

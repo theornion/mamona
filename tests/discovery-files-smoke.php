@@ -105,6 +105,18 @@ try {
         'lastmod nie zawiera strefy czasowej.'
     );
 
+    $database->prepare('UPDATE post_categories SET is_editorial_only = 1 WHERE id = :id')
+        ->execute([':id' => $categoryId]);
+    $editorialFeed = render_rss_xml();
+    discovery_assert(
+        str_contains($editorialFeed, discovery_xml($publishedUrl)),
+        'Artykul w kategorii redakcyjnej zniknal z RSS.'
+    );
+    discovery_assert(
+        !str_contains($editorialFeed, '<category>Discovery ' . $token . '</category>'),
+        'Techniczna kategoria redakcyjna jest widoczna w RSS.'
+    );
+
     update_post(
         $publishedId,
         (string) $published['title'],

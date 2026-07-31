@@ -23,7 +23,13 @@ function research_evidence_schema(array $sourceIds): array
 function research_package_schema(array $sourceIds): array
 {
     $sourceIdSchema = ['type' => 'array', 'items' => ['type' => 'string', 'enum' => $sourceIds]];
+    $sharedSourceIdSchema = [
+        'type' => 'array',
+        'items' => ['type' => 'string', 'enum' => $sourceIds],
+        'minItems' => 2,
+    ];
     $evidenceListSchema = ['type' => 'array', 'items' => research_evidence_schema($sourceIds)];
+    $requiresMultipleSources = count(array_unique($sourceIds)) >= 2;
 
     return [
         'type' => 'object',
@@ -54,11 +60,12 @@ function research_package_schema(array $sourceIds): array
             ],
             'shared_facts' => [
                 'type' => 'array',
+                ...($requiresMultipleSources ? [] : ['maxItems' => 0]),
                 'items' => [
                     'type' => 'object',
                     'properties' => [
                         'fact' => ['type' => 'string'],
-                        'source_ids' => $sourceIdSchema,
+                        'source_ids' => $sharedSourceIdSchema,
                         'evidence' => $evidenceListSchema,
                         'confidence' => research_confidence_schema(),
                     ],
@@ -68,12 +75,14 @@ function research_package_schema(array $sourceIds): array
             ],
             'contradictions' => [
                 'type' => 'array',
+                ...($requiresMultipleSources ? [] : ['maxItems' => 0]),
                 'items' => [
                     'type' => 'object',
                     'properties' => [
                         'description' => ['type' => 'string'],
                         'positions' => [
                             'type' => 'array',
+                            'minItems' => 2,
                             'items' => [
                                 'type' => 'object',
                                 'properties' => [
@@ -146,6 +155,28 @@ function research_package_schema(array $sourceIds): array
 function research_numbered_sources(int $topicId): array
 {
     $sources = [];
+    $verified = list_verified_research_sources($topicId);
+    if ($verified !== []) {
+        foreach ($verified as $index => $item) {
+            $sources[] = [
+                'source_id' => 'S' . ($index + 1),
+                'verified_source_id' => (int) $item['id'],
+                'publisher' => (string) $item['publisher'],
+                'title' => trim((string) $item['title']),
+                'url' => (string) $item['canonical_url'],
+                'published_at' => $item['published_at'],
+                'material' => trim((string) $item['content_excerpt']),
+                'source_kind' => (string) $item['source_kind'],
+                'is_primary' => (bool) $item['is_primary'],
+                'peer_reviewed' => (bool) $item['is_peer_reviewed'],
+                'identifier' => trim((string) $item['identifier_type'] . ':' . (string) $item['identifier_value'], ':'),
+                'verification_method' => (string) $item['verification_method'],
+                'completeness' => (string) $item['completeness'],
+                'verification_evidence' => json_decode((string) $item['evidence_json'], true) ?: [],
+            ];
+        }
+        return $sources;
+    }
     foreach (topic_feed_items($topicId) as $index => $item) {
         $sources[] = [
             'source_id' => 'S' . ($index + 1),
@@ -155,6 +186,11 @@ function research_numbered_sources(int $topicId): array
             'url' => (string) $item['source_url'],
             'published_at' => $item['published_at'],
             'material' => trim((string) $item['summary']),
+            'source_kind' => 'rss_discovery',
+            'is_primary' => false,
+            'peer_reviewed' => false,
+            'verification_method' => 'unverified_feed_metadata',
+            'completeness' => 'excerpt_only',
         ];
     }
 
@@ -172,14 +208,22 @@ function prepare_research_package_operation(int $topicId): int
         throw new RuntimeException('Temat nie zawiera materiału źródłowego.');
     }
     $sourceIds = array_column($sources, 'source_id');
+    $policy = research_policy_decision(
+        list_verified_research_sources($topicId),
+        (string) ($topic['risk_level'] ?? 'low'),
+        !empty($topic['is_controversial'])
+    );
     $input = [
         'topic_id' => $topicId,
         'topic_title' => (string) $topic['title'],
         'topic_score' => $topic['score'] !== null ? (int) $topic['score'] : null,
         'numbered_sources' => $sources,
+        'research_policy' => $policy,
         'instructions' => [
             'Używaj wyłącznie tytułów i materiałów przekazanych w numbered_sources.',
             'Każde twierdzenie musi wskazywać source_ids i zawierać krótki, dosłowny excerpt z odpowiedniego materiału.',
+            'shared_facts zawiera wyłącznie fakty potwierdzone przez co najmniej dwa różne source_ids; przy jednym źródle zwróć pustą tablicę.',
+            'contradictions porównuje co najmniej dwa różne źródła; przy jednym źródle zwróć pustą tablicę.',
             'Nie uzupełniaj wiedzy z pamięci ani z innych stron.',
             'Sprzeczności pozostaw jako unresolved lub partially_resolved; nie przedstawiaj ich jako pewników.',
             'Jeżeli materiał nie wystarcza do rzetelnego artykułu, ustaw recommendation.decision na reject.',
@@ -208,6 +252,11 @@ function prepare_research_package_operation(int $topicId): int
             ':operation_id' => $operationId,
             ':execution_mode' => generation_mode(),
         ]);
+        $packageId = (int) $database->lastInsertId();
+        $database->prepare('UPDATE research_packages SET policy_json = :policy WHERE id = :id')
+            ->execute([':policy' => generation_json($policy), ':id' => $packageId]);
+        $database->prepare('INSERT INTO research_policy_audit (topic_id,research_package_id,decision,reason,policy_json) VALUES (:topic,:package,:decision,:reason,:policy)')
+            ->execute([':topic'=>$topicId, ':package'=>$packageId, ':decision'=>$policy['decision'], ':reason'=>$policy['reason'], ':policy'=>generation_json($policy)]);
         $database->commit();
     } catch (Throwable $exception) {
         if ($database->inTransaction()) {
@@ -382,6 +431,7 @@ function validate_research_package(array $package, array $input): array
         'shared_fact_count' => count((array) ($package['shared_facts'] ?? [])),
         'contradiction_count' => count((array) ($package['contradictions'] ?? [])),
         'decision' => $decision,
+        'policy' => (array) ($input['research_policy'] ?? []),
     ];
 }
 

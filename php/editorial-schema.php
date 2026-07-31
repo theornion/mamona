@@ -17,6 +17,16 @@ const QUALITY_CHECKS_MIGRATION = '20260724_012_quality_checks';
 const THUMBNAIL_VERSIONS_MIGRATION = '20260724_013_thumbnail_versions';
 const ARTICLE_IMAGES_MIGRATION = '20260725_014_article_images';
 const ARTICLE_IMAGE_INDEX_MIGRATION = '20260725_015_article_image_index';
+const ARTICLE_IMAGE_EXPECTED_CONTENT_MIGRATION = '20260727_016_article_image_expected_content';
+const GENERATION_BATCHES_MIGRATION = '20260731_017_generation_batches';
+const CONTENT_STUDIO_MIGRATION = '20260731_017_content_studio';
+const PROPOSAL_REVIEW_MIGRATION = '20260731_018_proposal_review';
+const TOPIC_WORKFLOWS_MIGRATION = '20260731_019_topic_workflows';
+const TOPIC_TRASH_MIGRATION = '20260731_020_topic_trash';
+const TOPIC_TRASH_SNAPSHOTS_MIGRATION = '20260731_021_topic_trash_snapshots';
+const SOURCE_ENRICHMENT_MIGRATION = '20260731_022_source_enrichment';
+const ARTICLE_IMAGE_SEMANTIC_CASCADE_MIGRATION = '20260731_023_article_image_semantic_cascade';
+const FEED_RELIABILITY_MIGRATION = '20260731_024_feed_reliability';
 
 function database_table_columns(PDO $database, string $table): array
 {
@@ -779,6 +789,78 @@ function run_schema_migrations(PDO $database): void
     );
     apply_schema_migration(
         $database,
+        SOURCE_ENRICHMENT_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing($database, 'editorial_topics', 'risk_level', "TEXT NOT NULL DEFAULT 'low'");
+            database_add_column_if_missing($database, 'editorial_topics', 'is_controversial', 'INTEGER NOT NULL DEFAULT 0');
+            database_add_column_if_missing($database, 'research_packages', 'policy_json', "TEXT NOT NULL DEFAULT '{}'");
+            database_add_column_if_missing($database, 'research_packages', 'approval_actor', "TEXT NOT NULL DEFAULT ''");
+            database_add_column_if_missing($database, 'research_packages', 'approval_reason', "TEXT NOT NULL DEFAULT ''");
+            database_add_column_if_missing($database, 'technical_sources', 'request_timeout_seconds', 'INTEGER NOT NULL DEFAULT 20');
+            database_add_column_if_missing($database, 'technical_sources', 'response_max_bytes', 'INTEGER NOT NULL DEFAULT 3145728');
+            $database->exec(
+                'CREATE TABLE IF NOT EXISTS verified_research_sources (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    topic_id INTEGER NOT NULL,
+                    discovery_feed_item_id INTEGER,
+                    source_kind TEXT NOT NULL,
+                    is_primary INTEGER NOT NULL DEFAULT 0,
+                    is_peer_reviewed INTEGER NOT NULL DEFAULT 0,
+                    publisher TEXT NOT NULL DEFAULT "",
+                    title TEXT NOT NULL,
+                    published_at TEXT,
+                    identifier_type TEXT NOT NULL DEFAULT "",
+                    identifier_value TEXT NOT NULL DEFAULT "",
+                    canonical_url TEXT NOT NULL,
+                    verification_method TEXT NOT NULL,
+                    verification_status TEXT NOT NULL DEFAULT "verified",
+                    completeness TEXT NOT NULL DEFAULT "metadata_only",
+                    evidence_json TEXT NOT NULL DEFAULT "[]",
+                    content_excerpt TEXT NOT NULL DEFAULT "",
+                    content_fingerprint TEXT NOT NULL,
+                    verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (topic_id) REFERENCES editorial_topics(id) ON DELETE CASCADE,
+                    FOREIGN KEY (discovery_feed_item_id) REFERENCES discovered_feed_items(id) ON DELETE SET NULL,
+                    UNIQUE(topic_id, canonical_url)
+                );
+                CREATE INDEX IF NOT EXISTS verified_sources_topic_idx
+                    ON verified_research_sources(topic_id, verification_status, is_primary);
+                CREATE TABLE IF NOT EXISTS research_policy_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    topic_id INTEGER NOT NULL,
+                    research_package_id INTEGER,
+                    decision TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    policy_json TEXT NOT NULL,
+                    actor TEXT NOT NULL DEFAULT "system",
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (topic_id) REFERENCES editorial_topics(id) ON DELETE CASCADE,
+                    FOREIGN KEY (research_package_id) REFERENCES research_packages(id) ON DELETE SET NULL
+                );'
+            );
+
+            /* example.com is a documentation fixture, never a production feed. */
+            $database->exec("UPDATE technical_sources SET is_active = 0, last_error = 'Deactivated fixture endpoint' WHERE is_active = 1 AND (feed_url LIKE '%://example.com/%' OR website_url LIKE '%://example.com/%')");
+            $sources = [
+                ['NSF News', 'https://www.nsf.gov/news/', 'https://www.nsf.gov/rss/rss_www_news.xml', 'new-technologies', 1, 1],
+                ['NIH News Releases', 'https://www.nih.gov/news-releases', 'https://www.nih.gov/news-releases/feed.xml', 'human-technology', 1, 0],
+                ['NIEHS News', 'https://www.niehs.nih.gov/news/', 'https://www.niehs.nih.gov/news/newsroom/rssfeed/rss_news.xml', 'human-technology', 1, 1],
+                ['NIEHS Recently Published Research', 'https://www.niehs.nih.gov/news/', 'https://www.niehs.nih.gov/news/newsroom/rssfeed/rss_recently_published_research.xml', 'human-technology', 1, 1],
+                ['ESO News', 'https://www.eso.org/public/news/', 'https://www.eso.org/public/news/feed/', 'space', 1, 1],
+            ];
+            $insert = $database->prepare('INSERT INTO technical_sources (name, website_url, feed_url, source_type, topic_category, language, credibility_level, is_primary, is_active, profile_key) VALUES (:name,:website,:feed,"rss",:category,"en",5,:primary,:active,"popular_science") ON CONFLICT(name) DO UPDATE SET website_url=excluded.website_url, feed_url=excluded.feed_url, is_active=excluded.is_active, updated_at=CURRENT_TIMESTAMP');
+            foreach ($sources as [$name, $website, $feed, $category, $primary, $active]) {
+                $insert->execute([':name'=>$name, ':website'=>$website, ':feed'=>$feed, ':category'=>$category, ':primary'=>$primary, ':active'=>$active]);
+            }
+            $database->exec("UPDATE technical_sources SET request_timeout_seconds=30 WHERE name='ESA Space Science'");
+            $database->exec("UPDATE technical_sources SET request_timeout_seconds=30, response_max_bytes=6291456 WHERE name='MIT Research News'");
+            $database->exec("UPDATE technical_sources SET last_error='HTTP 403 during endpoint validation; source remains configurable but inactive' WHERE name='NIH News Releases'");
+            $database->exec("UPDATE technical_sources SET last_error='Endpoint returns HTTP 403; TLS verification remains enabled' WHERE name='NASA Jet Propulsion Laboratory'");
+        }
+    );
+    apply_schema_migration(
+        $database,
         ARTICLE_IMAGES_MIGRATION,
         static function (PDO $database): void {
             database_add_column_if_missing($database, 'posts', 'content_blocks', 'TEXT NOT NULL DEFAULT "[]"');
@@ -789,6 +871,7 @@ function run_schema_migrations(PDO $database): void
                     role TEXT NOT NULL,
                     section_id TEXT NOT NULL,
                     visual_intent TEXT NOT NULL,
+                    expected_content TEXT NOT NULL DEFAULT "",
                     search_queries_json TEXT NOT NULL DEFAULT "[]",
                     source_page_url TEXT NOT NULL DEFAULT "",
                     source_file_url TEXT NOT NULL DEFAULT "",
@@ -826,6 +909,272 @@ function run_schema_migrations(PDO $database): void
                  CREATE UNIQUE INDEX IF NOT EXISTS article_images_slot_idx
                     ON article_images(post_id, role, section_id);'
             );
+        }
+    );
+    apply_schema_migration(
+        $database,
+        ARTICLE_IMAGE_EXPECTED_CONTENT_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing(
+                $database,
+                'article_images',
+                'expected_content',
+                'TEXT NOT NULL DEFAULT ""'
+            );
+        }
+    );
+    apply_schema_migration(
+        $database,
+        ARTICLE_IMAGE_SEMANTIC_CASCADE_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing($database, 'article_images', 'relationship', 'TEXT NOT NULL DEFAULT "exact_subject"');
+            database_add_column_if_missing($database, 'article_images', 'search_audit_json', 'TEXT NOT NULL DEFAULT "[]"');
+        }
+    );
+    apply_schema_migration(
+        $database,
+        CONTENT_STUDIO_MIGRATION,
+        static function (PDO $database): void {
+            $database->exec(
+                'CREATE TABLE IF NOT EXISTS editorial_ingestion_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    status TEXT NOT NULL DEFAULT "queued",
+                    stage TEXT NOT NULL DEFAULT "queued",
+                    current_source TEXT NOT NULL DEFAULT "",
+                    processed_units INTEGER NOT NULL DEFAULT 0,
+                    total_units INTEGER NOT NULL DEFAULT 0,
+                    active_source_count INTEGER NOT NULL DEFAULT 0,
+                    created_count INTEGER NOT NULL DEFAULT 0,
+                    duplicate_count INTEGER NOT NULL DEFAULT 0,
+                    failed_source_count INTEGER NOT NULL DEFAULT 0,
+                    source_results_json TEXT NOT NULL DEFAULT "[]",
+                    grouping_result_json TEXT NOT NULL DEFAULT "{}",
+                    scoring_result_json TEXT NOT NULL DEFAULT "{}",
+                    error_message TEXT NOT NULL DEFAULT "",
+                    requested_by TEXT NOT NULL DEFAULT "admin",
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    started_at TEXT,
+                    heartbeat_at TEXT,
+                    finished_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS editorial_ingestion_jobs_created_idx
+                    ON editorial_ingestion_jobs(created_at DESC);
+                CREATE UNIQUE INDEX IF NOT EXISTS editorial_ingestion_one_active_idx
+                    ON editorial_ingestion_jobs((1))
+                    WHERE status IN ("queued", "running");'
+            );
+        }
+    );
+    apply_schema_migration(
+        $database,
+        FEED_RELIABILITY_MIGRATION,
+        static function (PDO $database): void {
+            foreach ([
+                'feed_connect_timeout_seconds' => 'INTEGER',
+                'feed_transfer_timeout_seconds' => 'INTEGER',
+                'feed_low_speed_limit' => 'INTEGER',
+                'feed_low_speed_time_seconds' => 'INTEGER',
+                'feed_max_attempts' => 'INTEGER',
+                'feed_job_budget_seconds' => 'INTEGER',
+                'feed_etag' => 'TEXT NOT NULL DEFAULT ""',
+                'feed_last_modified' => 'TEXT NOT NULL DEFAULT ""',
+                'consecutive_failures' => 'INTEGER NOT NULL DEFAULT 0',
+                'health_status' => 'TEXT NOT NULL DEFAULT "healthy"',
+                'muted_until' => 'TEXT',
+                'last_http_status' => 'INTEGER',
+                'last_transport_diagnostics' => 'TEXT NOT NULL DEFAULT "{}"',
+            ] as $column => $definition) {
+                database_add_column_if_missing($database, 'technical_sources', $column, $definition);
+            }
+            foreach ([
+                'succeeded_source_count' => 'INTEGER NOT NULL DEFAULT 0',
+                'not_modified_source_count' => 'INTEGER NOT NULL DEFAULT 0',
+                'retried_source_count' => 'INTEGER NOT NULL DEFAULT 0',
+            ] as $column => $definition) {
+                database_add_column_if_missing($database, 'editorial_ingestion_jobs', $column, $definition);
+            }
+            $database->exec("UPDATE technical_sources SET feed_url='https://science.nasa.gov/feed/?science_org=19791%2C22453', last_error='' WHERE name='NASA Earth Observatory'");
+            $database->exec("UPDATE technical_sources SET health_status='unavailable', last_error='Oficjalny endpoint zwraca HTTP 403 dla automatycznego klienta; zabezpieczenia nie są obchodzone', muted_until=datetime('now', '+30 minutes') WHERE name='NASA Jet Propulsion Laboratory'");
+            $database->exec("UPDATE technical_sources SET health_status='healthy', last_error='' WHERE name IN ('NIEHS News','NIH News Releases','NSF News','Quanta Magazine')");
+        }
+    );
+    apply_schema_migration(
+        $database,
+        GENERATION_BATCHES_MIGRATION,
+        static function (PDO $database): void {
+            $database->exec(
+                'CREATE TABLE IF NOT EXISTS generation_batches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    batch_key TEXT NOT NULL UNIQUE,
+                    request_key TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL DEFAULT "queued",
+                    item_count INTEGER NOT NULL,
+                    created_by TEXT NOT NULL DEFAULT "admin",
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS generation_batch_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    batch_id INTEGER NOT NULL,
+                    topic_id INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT "queued",
+                    stage TEXT NOT NULL DEFAULT "research",
+                    progress_percent INTEGER NOT NULL DEFAULT 0,
+                    research_operation_id INTEGER,
+                    research_package_id INTEGER,
+                    draft_operation_id INTEGER,
+                    draft_version_id INTEGER,
+                    quality_operation_id INTEGER,
+                    quality_check_id INTEGER,
+                    post_id INTEGER,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    available_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    lease_token TEXT,
+                    lease_expires_at TEXT,
+                    wait_reason TEXT NOT NULL DEFAULT "",
+                    error_message TEXT NOT NULL DEFAULT "",
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TEXT,
+                    FOREIGN KEY (batch_id) REFERENCES generation_batches(id) ON DELETE CASCADE,
+                    FOREIGN KEY (topic_id) REFERENCES editorial_topics(id) ON DELETE CASCADE,
+                    UNIQUE(batch_id, topic_id)
+                );
+                CREATE TABLE IF NOT EXISTS generation_batch_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    batch_id INTEGER NOT NULL,
+                    item_id INTEGER,
+                    action TEXT NOT NULL,
+                    actor TEXT NOT NULL DEFAULT "admin",
+                    details_json TEXT NOT NULL DEFAULT "{}",
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (batch_id) REFERENCES generation_batches(id) ON DELETE CASCADE,
+                    FOREIGN KEY (item_id) REFERENCES generation_batch_items(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS generation_batch_items_work_idx
+                    ON generation_batch_items(status, available_at, lease_expires_at, id);
+                CREATE INDEX IF NOT EXISTS generation_batch_items_topic_idx
+                    ON generation_batch_items(topic_id, status);
+                CREATE INDEX IF NOT EXISTS generation_batch_audit_batch_idx
+                    ON generation_batch_audit(batch_id, created_at DESC);'
+            );
+        }
+    );
+    apply_schema_migration(
+        $database,
+        PROPOSAL_REVIEW_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing($database, 'article_draft_versions', 'parent_version_id', 'INTEGER');
+            database_add_column_if_missing($database, 'article_draft_versions', 'change_source', 'TEXT NOT NULL DEFAULT "gemini"');
+            database_add_column_if_missing($database, 'article_draft_versions', 'is_active', 'INTEGER NOT NULL DEFAULT 0');
+            $database->exec(
+                'CREATE TABLE IF NOT EXISTS article_feedback_operations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    post_id INTEGER NOT NULL,
+                    source_draft_version_id INTEGER NOT NULL,
+                    result_draft_version_id INTEGER,
+                    generation_operation_id INTEGER,
+                    scope TEXT NOT NULL,
+                    section_id TEXT NOT NULL DEFAULT "",
+                    notes TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT "prepared",
+                    actor TEXT NOT NULL DEFAULT "admin",
+                    immutable_rules_json TEXT NOT NULL DEFAULT "[]",
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TEXT,
+                    FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+                    FOREIGN KEY (source_draft_version_id) REFERENCES article_draft_versions(id) ON DELETE RESTRICT,
+                    FOREIGN KEY (result_draft_version_id) REFERENCES article_draft_versions(id) ON DELETE SET NULL,
+                    FOREIGN KEY (generation_operation_id) REFERENCES generation_operations(id) ON DELETE SET NULL
+                );
+                CREATE TABLE IF NOT EXISTS article_proposal_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    post_id INTEGER NOT NULL,
+                    draft_version_id INTEGER,
+                    action TEXT NOT NULL,
+                    actor TEXT NOT NULL DEFAULT "admin",
+                    details_json TEXT NOT NULL DEFAULT "{}",
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+                    FOREIGN KEY (draft_version_id) REFERENCES article_draft_versions(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS feedback_post_idx ON article_feedback_operations(post_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS proposal_audit_post_idx ON article_proposal_audit(post_id, created_at DESC);'
+            );
+            $database->exec(
+                'UPDATE article_draft_versions SET is_active = 1
+                 WHERE status = "completed" AND id IN (
+                    SELECT MAX(id) FROM article_draft_versions
+                    WHERE status = "completed" GROUP BY post_id
+                 )'
+            );
+        }
+    );
+    apply_schema_migration(
+        $database,
+        TOPIC_WORKFLOWS_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing($database, 'generation_batches', 'action', 'TEXT NOT NULL DEFAULT "generate_all"');
+            database_add_column_if_missing($database, 'generation_batch_items', 'requested_stage', 'TEXT NOT NULL DEFAULT ""');
+            database_add_column_if_missing($database, 'generation_batch_items', 'outcome', 'TEXT NOT NULL DEFAULT "queued"');
+            $database->exec(
+                'CREATE UNIQUE INDEX IF NOT EXISTS generation_batch_one_active_topic_idx
+                    ON generation_batch_items(topic_id)
+                    WHERE status IN ("queued", "research", "draft", "quality_check", "images", "rate_limited");
+                 CREATE INDEX IF NOT EXISTS generation_batches_action_idx
+                    ON generation_batches(action, created_at DESC);'
+            );
+        }
+    );
+    apply_schema_migration(
+        $database,
+        TOPIC_TRASH_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing($database, 'editorial_topics', 'trashed_at', 'TEXT');
+            database_add_column_if_missing($database, 'editorial_topics', 'trashed_by', 'TEXT');
+            database_add_column_if_missing($database, 'editorial_topics', 'trash_reason', 'TEXT NOT NULL DEFAULT ""');
+            database_add_column_if_missing($database, 'editorial_topics', 'trash_origin', 'TEXT NOT NULL DEFAULT "admin"');
+            database_add_column_if_missing($database, 'editorial_topics', 'purged_at', 'TEXT');
+            database_add_column_if_missing($database, 'editorial_topics', 'purged_by', 'TEXT');
+            database_add_column_if_missing($database, 'editorial_topics', 'pre_trash_automatic_eligible', 'INTEGER');
+            database_add_column_if_missing($database, 'editorial_topics', 'pre_trash_post_status', 'TEXT');
+            database_add_column_if_missing($database, 'editorial_topics', 'pre_trash_score', 'INTEGER');
+            $database->exec(
+                'CREATE TABLE IF NOT EXISTS topic_trash_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    topic_id INTEGER NOT NULL,
+                    topic_title TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    reason TEXT NOT NULL DEFAULT "",
+                    origin TEXT NOT NULL DEFAULT "admin",
+                    details_json TEXT NOT NULL DEFAULT "{}",
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS topic_trash_cleanup_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cutoff_at TEXT NOT NULL,
+                    deleted_count INTEGER NOT NULL DEFAULT 0,
+                    skipped_count INTEGER NOT NULL DEFAULT 0,
+                    error_count INTEGER NOT NULL DEFAULT 0,
+                    error_json TEXT NOT NULL DEFAULT "[]",
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS editorial_topics_trash_idx
+                    ON editorial_topics(trashed_at, purged_at);
+                CREATE INDEX IF NOT EXISTS topic_trash_audit_topic_idx
+                    ON topic_trash_audit(topic_id, created_at DESC);'
+            );
+        }
+    );
+    apply_schema_migration(
+        $database,
+        TOPIC_TRASH_SNAPSHOTS_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing($database, 'editorial_topics', 'pre_trash_post_status', 'TEXT');
+            database_add_column_if_missing($database, 'editorial_topics', 'pre_trash_score', 'INTEGER');
         }
     );
 }

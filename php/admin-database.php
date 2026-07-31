@@ -12,14 +12,20 @@ require_once __DIR__ . '/scheduled-publication-service.php';
 require_once __DIR__ . '/technical-source-repository.php';
 require_once __DIR__ . '/editorial-profile-service.php';
 require_once __DIR__ . '/feed-ingestion-service.php';
+require_once __DIR__ . '/source-enrichment-service.php';
 require_once __DIR__ . '/topic-grouping-service.php';
 require_once __DIR__ . '/topic-scoring-service.php';
+require_once __DIR__ . '/topic-trash-service.php';
+require_once __DIR__ . '/content-studio-service.php';
 require_once __DIR__ . '/generation-service.php';
 require_once __DIR__ . '/article-image-service.php';
+require_once __DIR__ . '/advertising.php';
 require_once __DIR__ . '/research-package-service.php';
 require_once __DIR__ . '/article-draft-service.php';
 require_once __DIR__ . '/quality-check-service.php';
+require_once __DIR__ . '/proposal-review-service.php';
 require_once __DIR__ . '/thumbnail-service.php';
+require_once __DIR__ . '/generation-batch-service.php';
 require_once __DIR__ . '/trust-pages-service.php';
 
 define('CMS_DATABASE_FILE', dirname(__DIR__) . '/data/cms.sqlite');
@@ -42,6 +48,8 @@ function bueno_database(): PDO
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     ]);
+    $database->exec('PRAGMA busy_timeout = 5000');
+    $database->exec('PRAGMA journal_mode = WAL');
     $database->exec('PRAGMA foreign_keys = ON');
 
     $database->exec(
@@ -1313,6 +1321,13 @@ function find_post_category_by_slug(string $slug, bool $includeDeleted = false):
     return is_array($category) ? $category : null;
 }
 
+function post_category_is_public(?array $category): bool
+{
+    return is_array($category)
+        && empty($category['deleted_at'])
+        && (int) ($category['is_editorial_only'] ?? 0) !== 1;
+}
+
 function create_post_category(string $title = 'Nowa kategoria', string $description = ''): int
 {
     $database = bueno_database();
@@ -1374,7 +1389,8 @@ function reorder_post_categories(array $categoryIds): void
 
 function list_posts(?int $categoryId = null, bool $publishedOnly = false, bool $includeDeleted = false): array
 {
-    $query = 'SELECT posts.*, post_categories.title AS category_title, post_categories.slug AS category_slug
+    $query = 'SELECT posts.*, post_categories.title AS category_title, post_categories.slug AS category_slug,
+                     post_categories.is_editorial_only AS category_is_editorial_only
               FROM posts
               INNER JOIN post_categories ON post_categories.id = posts.category_id';
     $conditions = [];
@@ -1476,7 +1492,7 @@ function list_related_published_posts(array $post, int $limit = 3): array
     return $statement->fetchAll();
 }
 
-function render_news_article_json_ld(array $post, array $category): string
+function render_news_article_json_ld(array $post, ?array $category): string
 {
     $canonical = post_canonical_url($post);
     $image = post_absolute_image_url($post);
@@ -1498,8 +1514,11 @@ function render_news_article_json_ld(array $post, array $category): string
             'name' => (string) app_config('publisher_name'),
         ],
         'inLanguage' => (string) app_config('language'),
-        'articleSection' => (string) $category['title'],
     ];
+
+    if (post_category_is_public($category)) {
+        $data['articleSection'] = (string) $category['title'];
+    }
 
     if ($publishedIso !== '') {
         $data['datePublished'] = $publishedIso;
@@ -1606,12 +1625,24 @@ function render_post_page_html(array $post, bool $preview = false): string
             . '<meta name="twitter:title" content="' . $title . '">'
             . '<meta name="twitter:description" content="' . $description . '">'
             . ($absoluteImage !== '' ? '<meta name="twitter:image" content="' . $absoluteImage . '">' : '')
-            . render_news_article_json_ld($post, $category);
+            . render_news_article_json_ld($post, post_category_is_public($category) ? $category : null);
     }
     $template = preg_replace('/<title>.*?<\/title>/s', $head, $template, 1) ?? $template;
     $contentBlocks = json_decode((string) ($post['content_blocks'] ?? '[]'), true);
+    $articleImages = list_article_images((int) $post['id']);
+    $adConfig = advertising_config();
+    if ($preview && !empty($adConfig['enabled'])) {
+        $adConfig['preview'] = true;
+    }
+    $adBudget = max(0, (int) ($adConfig['max_slots_per_page'] ?? 0));
+    $allowedAdPlacements = (array) ($adConfig['allowed_placements'] ?? []);
+    $renderPageTopAd = $adBudget > 0 && in_array('page-top', $allowedAdPlacements, true);
+    $adBudget -= $renderPageTopAd ? 1 : 0;
+    $renderPostArticleAd = $adBudget > 0 && in_array('post-article', $allowedAdPlacements, true);
+    $adBudget -= $renderPostArticleAd ? 1 : 0;
+    $adConfig['max_inline_slots'] = min((int) ($adConfig['max_inline_slots'] ?? 0), $adBudget);
     $content = is_array($contentBlocks) && $contentBlocks !== []
-        ? render_article_blocks($contentBlocks, list_article_images((int) $post['id']))
+        ? render_article_blocks_with_advertising($contentBlocks, $articleImages, $adConfig)
         : nl2br(htmlspecialchars((string) $post['content'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
     $contentImages = post_content_image_items($post);
     $hasMainImage = trim((string) ($post['image_path'] ?? '')) !== ''
@@ -1655,7 +1686,13 @@ function render_post_page_html(array $post, bool $preview = false): string
             $galleryLink = '<section class="post-linked-gallery cat-gallery" data-gallery-embedded="true" data-gallery-source="../php/gallery-items.php?gallery=' . $linkedGallerySlug . '" data-gallery-title="' . $linkedGalleryTitle . '"><header><span>Galeria</span><h2>' . $linkedGalleryTitle . '</h2><p>Ładowanie zdjęć galerii…</p></header></section>';
         }
     }
-    $categoryTitle = htmlspecialchars((string) $category['title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $publicCategory = post_category_is_public($category);
+    $categoryTitle = $publicCategory
+        ? htmlspecialchars((string) $category['title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+        : '';
+    $categoryKicker = $categoryTitle !== ''
+        ? '<p class="news-feed-kicker">' . $categoryTitle . '</p>'
+        : '';
     $author = !empty($post['author_id']) ? find_author((int) $post['author_id']) : null;
     $authorName = is_array($author)
         ? htmlspecialchars((string) $author['name'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
@@ -1697,21 +1734,36 @@ function render_post_page_html(array $post, bool $preview = false): string
             . htmlspecialchars($disclosure !== '' ? $disclosure : 'Materiał przygotowano z pomocą narzędzi automatycznych i zweryfikowano redakcyjnie.', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
             . '</aside>';
     }
-    $imageBlock = render_cropped_post_image(
-        (string) ($post['image_path'] ?? ''),
-        post_main_image_crop($post),
-        'post-page-image',
-        false,
-        trim((string) ($post['image_alt'] ?? '')) ?: (string) $post['title']
-    );
+    $imageBlock = '';
+    foreach ($articleImages as $articleImage) {
+        if ((string) ($articleImage['role'] ?? '') === 'hero'
+            && (string) ($articleImage['status'] ?? '') === 'downloaded') {
+            $imageBlock = render_article_image_record($articleImage, true);
+            break;
+        }
+    }
+    if ($imageBlock === '') {
+        $imageBlock = render_cropped_post_image(
+            (string) ($post['image_path'] ?? ''),
+            post_main_image_crop($post),
+            'post-page-image',
+            false,
+            trim((string) ($post['image_alt'] ?? '')) ?: (string) $post['title']
+        );
+    }
     if ($imageBlock !== '') {
         $imageBlock = "\t\t\t\t\t\t\t{$imageBlock}\n";
     }
-    $categoryUrl = '../index.html?category=' . rawurlencode((string) $category['slug']);
+    $categoryUrl = $publicCategory
+        ? '../index.html?category=' . rawurlencode((string) $category['slug'])
+        : '../index.html';
+    $pageTopAd = $renderPageTopAd ? render_ad_slot('page-top', 1, false, $adConfig) : '';
+    $postArticleAd = $renderPostArticleAd ? render_ad_slot('post-article', 1, true, $adConfig) : '';
     $postSection = <<<HTML
+						{$pageTopAd}
 						<article class="post featured bueno-post-page">
 {$imageBlock}							<header class="major news-feed-heading">
-								<p class="news-feed-kicker">{$categoryTitle}</p>
+								{$categoryKicker}
 								<h1>{$title}</h1>
 								<p>{$excerpt}</p>
 								{$byline}
@@ -1724,6 +1776,7 @@ function render_post_page_html(array $post, bool $preview = false): string
 							<ul class="actions special"><li><a class="button" href="{$categoryUrl}">Wróć do aktualności</a></li></ul>
 						</article>
 HTML;
+    $postSection .= "\n\t\t\t\t\t\t" . $postArticleAd;
 
     $template = preg_replace(
         '/<section class="post featured bueno-newsfeed" data-news-source="\.\.\/php\/posts\.php">.*?<\/section>/s',
@@ -1888,7 +1941,11 @@ function update_post(int $postId, string $title, string $excerpt, string $conten
         write_post_page($updatedPost);
     }
 
-    sync_public_navigation();
+    // Private drafts have no public artifacts. The CLI image worker may update
+    // their preview without CMS_PUBLIC_URL; publication still synchronizes.
+    if (post_is_public($currentPost) || ($updatedPost !== null && post_is_public($updatedPost))) {
+        sync_public_navigation();
+    }
 }
 
 function change_post_editorial_status(int $postId, string $newStatus, string $reason = '', string $actor = 'admin', ?string $publicationTimestamp = null): void
@@ -2239,7 +2296,7 @@ function sync_public_navigation(): void
 
         $links[] = '<li class="nav-dropdown' . ($isGalleryActive ? ' active' : '') . '"><a href="galerie.html">Galerie</a><ul class="nav-dropdown-menu">' . implode('', $galleryLinks) . '</ul></li>';
 
-        $links[] = '<li><a href="#footer" class="nav-footer-jump">Kontakt</a></li>';
+        $links[] = '<li' . ($currentPage === 'kontakt' ? ' class="active"' : '') . '><a href="kontakt.html">Kontakt</a></li>';
         $navigation = "<ul class=\"links\">\n\t\t\t\t\t\t\t\t\t" . implode("\n\t\t\t\t\t\t\t\t\t", $links) . "\n\t\t\t\t\t\t\t\t</ul>";
         $navigation = str_replace('href="index.html"', 'href="../index.html"', $navigation);
         $updatedPage = preg_replace('/<ul class="links">.*?<\/ul>(?=\s*<ul class="icons"[^>]*>)/s', $navigation, $page, 1);
@@ -2247,7 +2304,7 @@ function sync_public_navigation(): void
         if ($updatedPage !== null) {
             $updatedPage = preg_replace(
                 '/assets\/css\/main\.css\?v=[^"\']+/',
-                'assets/css/main.css?v=cms-core-20260721',
+                'assets/css/main.css?v=cms-core-20260727-articles',
                 $updatedPage,
                 1
             ) ?? $updatedPage;
@@ -2283,7 +2340,15 @@ function render_server_news_feed(array $posts, ?array $category, int $page, stri
         'UTF-8'
     );
     $categorySlug = htmlspecialchars((string) ($category['slug'] ?? ''), ENT_QUOTES, 'UTF-8');
-    $html = '<section class="post featured bueno-newsfeed" data-news-source="../php/posts.php" data-news-rendered="server"'
+    $adConfig = advertising_config();
+    $pageTopAd = (int) ($adConfig['max_slots_per_page'] ?? 0) > 0
+        ? render_ad_slot('page-top', 1, false, $adConfig)
+        : '';
+    $feedInlineAd = (int) ($adConfig['max_slots_per_page'] ?? 0) > ($pageTopAd === '' ? 0 : 1)
+        ? render_ad_slot('feed-inline', 1, true, $adConfig)
+        : '';
+    $html = $pageTopAd
+        . '<section class="post featured bueno-newsfeed" data-news-source="../php/posts.php" data-news-rendered="server"'
         . ($categorySlug !== '' ? ' data-news-category="' . $categorySlug . '"' : '')
         . ' data-news-page="' . $page . '">';
     $html .= '<header class="major news-feed-heading"><p class="news-feed-kicker">Najnowsze</p><h1>'
@@ -2315,14 +2380,24 @@ function render_server_news_feed(array $posts, ?array $category, int $page, stri
             $visual = '<div class="news-feed-visual"><img src="../' . htmlspecialchars($imagePath, ENT_QUOTES, 'UTF-8')
                 . '" alt="' . $alt . '" width="' . $width . '" height="' . $height . '" decoding="async"' . $loading . '></div>';
         }
+        $categoryLabel = (int) ($post['category_is_editorial_only'] ?? 0) === 1
+            ? ''
+            : trim((string) ($post['category_title'] ?? ''));
+        $categoryMarkup = $categoryLabel === ''
+            ? ''
+            : '<p class="news-feed-category">'
+                . htmlspecialchars($categoryLabel, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+                . '</p>';
         $html .= '<article class="news-feed-item"><a class="news-feed-card news-feed-post-link'
             . ($hasImage ? ' has-news-feed-visual' : '') . '" href="'
             . htmlspecialchars(post_page_filename((string) $post['slug']), ENT_QUOTES, 'UTF-8') . '">'
-            . $visual . '<div class="news-feed-content"><p class="news-feed-category">'
-            . htmlspecialchars((string) $post['category_title'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
-            . '</p><h2>' . $title . '</h2><p class="news-feed-excerpt">' . $excerpt . '</p>'
+            . $visual . '<div class="news-feed-content">' . $categoryMarkup
+            . '<h2>' . $title . '</h2><p class="news-feed-excerpt">' . $excerpt . '</p>'
             . ($dateIso !== '' ? '<time datetime="' . htmlspecialchars($dateIso, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($dateLabel, ENT_QUOTES, 'UTF-8') . '</time>' : '')
             . '</div></a></article>';
+        if ($index === 2 && count($visible) >= 4) {
+            $html .= $feedInlineAd;
+        }
     }
     $html .= '</div>';
     if ($pageCount > 1) {
@@ -2502,13 +2577,6 @@ HTML;
         $template,
         1
     ) ?? $template;
-    $template = str_replace(
-        '<script defer src="../assets/js/public-panel.js?v=cms-core-20260721"></script>',
-        '<script defer src="../assets/js/snap.js?v=cms-core-20260721"></script>' . "\n"
-        . '    <script defer src="../assets/js/public-panel.js?v=cms-core-20260721"></script>',
-        $template
-    );
-
     if (file_put_contents(gallery_page_path($slug), $template, LOCK_EX) === false) {
         throw new RuntimeException('Nie można utworzyć pliku strony galerii.');
     }

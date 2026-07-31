@@ -59,10 +59,15 @@ function thumbnail_smoke_draft(string $suffix): array
 
     $draft = [
         'composition_mode' => 'informational',
-        'title' => 'Laboratorium opisuje kontrolowany pomiar ' . $suffix,
+        'title' => 'Kontrolowany pomiar ujawnia znaczenie i ograniczenia danych',
+        'brief' => 'Za pojedynczym obrazem stoi większa opowieść, której znaczenie ujawniają dopiero dane i właściwy kontekst.',
         'lead' => thumbnail_smoke_section('Laboratorium przedstawiło kontrolowany wynik ' . $suffix . '.'),
         'why_important' => thumbnail_smoke_section('Metoda pozwala lepiej zrozumieć pomiar ' . $suffix . '.'),
-        'key_facts' => [thumbnail_smoke_section('Źródło pierwotne opisuje wynik ' . $suffix . '.')],
+        'key_facts' => [
+            thumbnail_smoke_section('Źródło pierwotne opisuje wynik ' . $suffix . '.'),
+            thumbnail_smoke_section('Drugi fakt rozwija znaczenie pomiaru ' . $suffix . '.'),
+            thumbnail_smoke_section('Trzeci fakt porządkuje ograniczenia danych ' . $suffix . '.'),
+        ],
         'comparison_context' => $empty,
         'unknowns' => [[
             'text' => 'Nie jest znany pełny zestaw danych ' . $suffix . '.',
@@ -83,6 +88,7 @@ function thumbnail_smoke_draft(string $suffix): array
             'answer_and_punchline' => $empty,
         ],
     ];
+    $draft = [...$draft, ...build_article_title_strategy_fixture((string) $draft['title'])];
     $index = 1;
     while (article_draft_main_content_length($draft) < ARTICLE_MAIN_CONTENT_MIN_LENGTH) {
         $draft['practical_takeaway']['text'] .= ' Kontekst miniatury ' . $index

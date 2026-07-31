@@ -6,8 +6,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Autorzy i zespoły odpowiedzialne za publikowane materiały.">
     <meta name="robots" content="index,follow">
-    <link rel="stylesheet" href="../assets/css/main.css?v=cms-core-20260721">
-    <link rel="stylesheet" href="../assets/css/public-theme.css?v=cms-theme-20260721">
+    <link rel="stylesheet" href="../assets/css/main.css?v=cms-core-20260727-articles">
+    <link rel="stylesheet" href="../assets/css/public-theme.css?v=cms-theme-20260729-inline-center">
+    <link rel="stylesheet" href="../assets/css/advertising.css?v=cms-ads-20260728-preview">
     <link rel="stylesheet" href="../php/site-theme.php?v=cms-theme-20260721">
     <noscript><link rel="stylesheet" href="../assets/css/noscript.css?v=cms-core-20260721"></noscript>
 </head>
@@ -24,9 +25,9 @@
 
         <nav id="nav">
             <ul class="links">
-									<li class="nav-dropdown"><a href="../index.html">Aktualności</a><ul class="nav-dropdown-menu"><li><a href="kategoria-nowa-kategoria.html">Nowa kategoria</a></li></ul></li>
+									<li class="nav-dropdown"><a href="../index.html">Aktualności</a><ul class="nav-dropdown-menu"></ul></li>
 									<li class="nav-dropdown"><a href="galerie.html">Galerie</a><ul class="nav-dropdown-menu"></ul></li>
-									<li><a href="#footer" class="nav-footer-jump">Kontakt</a></li>
+									<li><a href="kontakt.html">Kontakt</a></li>
 								</ul>
             <ul class="icons" data-social-list></ul>
         </nav>
@@ -36,42 +37,6 @@
         </div>
 
         <footer id="footer">
-            <section>
-                <form id="contactForm" method="post" action="../php/contact.php" data-turnstile-sitekey="">
-                    <div class="fields">
-                        <div class="field">
-                            <label for="name">Imię</label>
-                            <input type="text" name="name" id="name" autocomplete="name" placeholder="Wpisz swoje imię..." required>
-                        </div>
-                        <div class="field">
-                            <label for="email">E-mail</label>
-                            <input type="email" name="email" id="email" autocomplete="email" inputmode="email" placeholder="Wpisz swój adres e-mail..." required>
-                        </div>
-                        <div class="field">
-                            <label for="subject">Temat</label>
-                            <input type="text" name="subject" id="subject" maxlength="150" placeholder="Wpisz temat wiadomości..." required>
-                        </div>
-                        <div class="field">
-                            <label for="message">Wiadomość</label>
-                            <textarea name="message" id="message" rows="3" required></textarea>
-                        </div>
-                        <div class="field hp-field" aria-hidden="true">
-                            <label for="website">Strona WWW</label>
-                            <input type="text" name="website" id="website" tabindex="-1" autocomplete="off">
-                        </div>
-                    </div>
-                    <ul class="actions">
-                        <li class="contact-action-row">
-                            <input type="submit" value="Wyślij wiadomość">
-                            <div id="contactCaptcha" class="contact-captcha" hidden></div>
-                            <input type="hidden" name="cf-turnstile-response" id="cf-turnstile-response">
-                            <span id="contactStatus" class="contact-status" aria-live="polite"></span>
-                        </li>
-                    </ul>
-                    <p class="contact-privacy-note">Wysyłając wiadomość, przekazujesz dane potrzebne do jej obsługi.
-                        Szczegóły znajdziesz w <a href="polityka-prywatnosci.html">polityce prywatności</a>.</p>
-                </form>
-            </section>
             <section class="split contact">
                 <section class="alt" data-contact-field="address" hidden>
                     <h3>Adres</h3>
@@ -107,6 +72,7 @@
         </footer>
     </div>
 
+    <script defer src="../assets/js/performance-mode.js?v=cms-perf-20260731"></script>
     <script defer src="../assets/js/jquery.min.js?v=cms-core-20260721"></script>
     <script defer src="../assets/js/jquery.scrollex.min.js?v=cms-core-20260721"></script>
     <script defer src="../assets/js/jquery.scrolly.min.js?v=cms-core-20260721"></script>
@@ -115,9 +81,9 @@
     <script defer src="../assets/js/util.js?v=cms-core-20260721"></script>
     <script defer src="../assets/js/main.js?v=cms-core-20260721"></script>
     <script defer src="../assets/js/main-scrollbar.js?v=cms-core-20260721"></script>
-    <script defer src="../assets/js/contact-form.js?v=cms-core-20260721"></script>
     <script defer src="../assets/js/site-contact.js?v=cms-core-20260721"></script>
-    <script defer src="../assets/js/parallax.js?v=cms-core-20260721"></script>
+    <script defer src="../assets/js/parallax.js?v=cms-core-20260728-fit"></script>
+    <script defer src="../assets/js/snap.js?v=cms-core-20260727-layout2"></script>
     <script defer src="../assets/js/heading-scroll.js?v=cms-core-20260721"></script>
     <script defer src="../assets/js/public-panel.js?v=cms-core-20260721"></script>
 </body>

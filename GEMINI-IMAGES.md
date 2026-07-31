@@ -34,7 +34,7 @@ Sekrety ustaw wyłącznie w środowisku procesu PHP:
 CMS_GENERATION_MODE=api
 CMS_GENERATION_PROVIDER=gemini
 GEMINI_API_KEY=...
-GEMINI_MODEL=gemini-2.5-flash-lite
+GEMINI_MODEL=gemini-3.1-flash-lite
 GEMINI_API_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 GEMINI_TIMEOUT_SECONDS=60
 GEMINI_MAX_ATTEMPTS=3
@@ -78,10 +78,28 @@ Jedyny test z prawdziwym zapytaniem uruchamia się świadomie:
 ```powershell
 $env:CMS_ALLOW_REAL_GEMINI_SMOKE='1'
 $env:GEMINI_API_KEY='...'
-$env:GEMINI_MODEL='gemini-2.5-flash-lite'
+$env:GEMINI_MODEL='gemini-3.1-flash-lite'
 php scripts/gemini-free-tier-smoke.php
 ```
 
 Kod wyjścia `3` oznacza limit Free Tier. Ten test nie należy do automatycznego
 zestawu.
 
+Pełny test kompozycji zapisujący wyłącznie szkic z zatwierdzonego researchu:
+
+```powershell
+$env:CMS_ALLOW_REAL_GEMINI_ARTICLE='1'
+php scripts/gemini-article-draft-smoke.php --topics
+php scripts/gemini-article-draft-smoke.php --topic=ID
+php scripts/gemini-article-draft-smoke.php --list
+php scripts/gemini-article-draft-smoke.php --package=ID
+php scripts/gemini-article-draft-smoke.php --promote=ID_WERSJI_SZKICU
+php scripts/gemini-article-draft-smoke.php --images=ID_POSTA
+```
+
+Wariant `--topic` wykonuje kolejno research i kompozycję szkicu. Bez `--package`
+skrypt wybiera najnowszą zatwierdzoną paczkę. Poprawny wynik zapisuje jako post
+`draft` widoczny w edytorze, ale go nie publikuje i nie uruchamia generatora
+obrazów AI. `--promote` przenosi wcześniej utworzoną wersję bez wywołania API.
+`--images` wyszukuje legalne obrazy źródłowe, pobiera zaakceptowane pliki
+lokalnie i pozostawia nietrafione sloty jako `missing` lub `manual_review`.

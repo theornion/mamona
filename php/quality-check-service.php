@@ -3,23 +3,39 @@
 declare(strict_types=1);
 
 const QUALITY_PASS_SCORE = 75;
+const QUALITY_SCORE_TOTAL = 100;
+
+function quality_score_rubric(): array
+{
+    $rubric = [
+        'fact_source_alignment' => 25, 'completeness' => 10, 'primary_source' => 10,
+        'original_value' => 10, 'originality' => 10, 'title_quality' => 10,
+        'language_readability' => 10, 'seo' => 10, 'risk_handling' => 5,
+    ];
+    if (array_sum($rubric) !== QUALITY_SCORE_TOTAL) {
+        throw new LogicException('Rubryka kontroli jakości musi sumować się do 100 punktów.');
+    }
+    return $rubric;
+}
+
+function quality_score_instructions(): array
+{
+    $ranges = [];
+    foreach (quality_score_rubric() as $name => $maximum) $ranges[] = "{$name}: 0–{$maximum}";
+    return [
+        'Każde z dziewięciu pól scores jest liczbą całkowitą w dokładnym zakresie: ' . implode('; ', $ranges) . '.',
+        'risk_handling ma zakres 0–5, nie 0–10.',
+        'total_score musi być dokładną sumą dziewięciu pól scores (0–100).',
+        'Nie normalizuj kategorii do wspólnej skali 0–10.',
+    ];
+}
 
 function quality_check_schema(): array
 {
-    $scores = [
-        'fact_source_alignment' => 25,
-        'completeness' => 10,
-        'primary_source' => 10,
-        'original_value' => 10,
-        'originality' => 10,
-        'title_quality' => 10,
-        'language_readability' => 10,
-        'seo' => 10,
-        'risk_handling' => 5,
-    ];
+    $scores = quality_score_rubric();
     $scoreProperties = [];
     foreach ($scores as $name => $maximum) {
-        $scoreProperties[$name] = ['type' => 'integer'];
+        $scoreProperties[$name] = ['type' => 'integer', 'minimum' => 0, 'maximum' => $maximum];
     }
     $stringList = ['type' => 'array', 'items' => ['type' => 'string']];
 
@@ -32,7 +48,7 @@ function quality_check_schema(): array
                 'required' => array_keys($scoreProperties),
                 'additionalProperties' => false,
             ],
-            'total_score' => ['type' => 'integer'],
+            'total_score' => ['type' => 'integer', 'minimum' => 0, 'maximum' => QUALITY_SCORE_TOTAL],
             'title_supported' => ['type' => 'boolean'],
             'has_primary_source' => ['type' => 'boolean'],
             'unsupported_claims' => $stringList,
@@ -148,11 +164,11 @@ function prepare_quality_check_operation(int $draftVersionId): int
         'registered_post_sources' => $postSources,
         'instructions' => [
             'Oceń wyłącznie przekazany szkic względem paczki researchowej i źródeł.',
-            'Suma dziewięciu pól scores musi być równa total_score i nie może przekroczyć 100.',
+            ...quality_score_instructions(),
             'Zgłoś każdy fakt bez podstawy, fałszywy cytat, deklarowany test bez dowodu, clickbait i ryzyko.',
             'Wysokie podobieństwo oznacza kopiowanie lub bardzo bliską parafrazę cudzej publikacji.',
             'Sprawdź, czy długość treści głównej jest zgodna z polityką szkicu oraz czy tekst nie osiąga jej przez lanie wody, powtórzenia lub sztuczne rozwlekanie.',
-            'W złożonym trybie 3000 znaków jest dolną granicą, nie celem; pełne, wartościowe wyjaśnienie może i powinno być dłuższe.',
+            'W złożonym trybie 4000 znaków jest dolną granicą, nie celem; pełne, wartościowe wyjaśnienie może i powinno być dłuższe.',
             'Nie ukrywaj problemu tylko po to, aby wynik przekroczył próg.',
         ],
     ];
@@ -437,17 +453,7 @@ function deterministic_quality_checks(array $operation): array
 
 function validate_quality_check_output(array $operation, array $result): array
 {
-    $maximums = [
-        'fact_source_alignment' => 25,
-        'completeness' => 10,
-        'primary_source' => 10,
-        'original_value' => 10,
-        'originality' => 10,
-        'title_quality' => 10,
-        'language_readability' => 10,
-        'seo' => 10,
-        'risk_handling' => 5,
-    ];
+    $maximums = quality_score_rubric();
     $sum = 0;
     foreach ($maximums as $name => $maximum) {
         $score = $result['scores'][$name] ?? null;
@@ -456,7 +462,7 @@ function validate_quality_check_output(array $operation, array $result): array
         }
         $sum += $score;
     }
-    if (($result['total_score'] ?? null) !== $sum || $sum > 100) {
+    if (($result['total_score'] ?? null) !== $sum || $sum > QUALITY_SCORE_TOTAL) {
         throw new InvalidArgumentException('total_score nie jest sumą punktów składowych.');
     }
     foreach (['justification', 'original_value'] as $field) {
@@ -542,7 +548,7 @@ function persist_completed_quality_check(int $operationId, array $result, array 
     )->execute([':score' => (int) $validation['final_score'], ':post_id' => (int) $check['post_id']]);
 }
 
-function mark_quality_check_failed(int $operationId, string $errorMessage): void
+function mark_quality_check_failed(int $operationId, string $errorMessage, array $diagnostics = []): void
 {
     bueno_database()->prepare(
         'UPDATE quality_check_runs
@@ -550,7 +556,7 @@ function mark_quality_check_failed(int $operationId, string $errorMessage): void
              updated_at = CURRENT_TIMESTAMP
          WHERE generation_operation_id = :operation_id'
     )->execute([
-        ':validation_json' => generation_json(['valid' => false, 'error' => mb_substr($errorMessage, 0, 2000)]),
+        ':validation_json' => generation_json(['valid' => false, 'error' => mb_substr($errorMessage, 0, 2000), 'operation_id' => $operationId, ...$diagnostics]),
         ':operation_id' => $operationId,
     ]);
 }
@@ -647,7 +653,7 @@ function assert_post_quality_allows_publication(int $postId): void
     $draftStatement = bueno_database()->prepare(
         'SELECT * FROM article_draft_versions
          WHERE post_id = :post_id AND status = "completed"
-         ORDER BY id DESC LIMIT 1'
+         ORDER BY is_active DESC, id DESC LIMIT 1'
     );
     $draftStatement->execute([':post_id' => $postId]);
     $draft = $draftStatement->fetch();
@@ -675,19 +681,10 @@ function assert_post_quality_allows_publication(int $postId): void
 
 function quality_check_mock_generation_value(): array
 {
+    $scores = quality_score_rubric();
     return [
-        'scores' => [
-            'fact_source_alignment' => 25,
-            'completeness' => 10,
-            'primary_source' => 10,
-            'original_value' => 10,
-            'originality' => 10,
-            'title_quality' => 10,
-            'language_readability' => 10,
-            'seo' => 10,
-            'risk_handling' => 5,
-        ],
-        'total_score' => 100,
+        'scores' => $scores,
+        'total_score' => array_sum($scores),
         'title_supported' => true,
         'has_primary_source' => true,
         'unsupported_claims' => [],

@@ -45,8 +45,14 @@ foreach (['strona główna' => $home, 'artykuł' => $article, 'galerie' => $gall
 
 mobile_smoke_assert(str_contains($home, 'data-news-rendered="server"'), 'Kanał główny nie jest renderowany po stronie serwera.');
 mobile_smoke_assert(str_contains($newsFeedJs, "=== 'server'"), 'JavaScript nie chroni SSR przed ponownym renderem.');
-mobile_smoke_assert(!str_contains($home, 'snap.js'), 'Strona główna ładuje nieużywany snap.js.');
-mobile_smoke_assert(!str_contains($article, 'snap.js'), 'Artykuł ładuje nieużywany snap.js.');
+mobile_smoke_assert(
+    substr_count($home, 'assets/js/snap.js?v=cms-core-20260727-layout2') === 1,
+    'Strona główna nie ładuje dokładnie jednej instancji snap.js.'
+);
+mobile_smoke_assert(
+    substr_count($article, 'assets/js/snap.js?v=cms-core-20260727-layout2') === 1,
+    'Artykuł nie ładuje dokładnie jednej instancji snap.js.'
+);
 mobile_smoke_assert(!str_contains($article, 'news-feed.js'), 'Artykuł ładuje nieużywany news-feed.js.');
 mobile_smoke_assert(str_contains($gallery, 'gallery-overview.js'), 'Przegląd galerii utracił właściwy skrypt.');
 

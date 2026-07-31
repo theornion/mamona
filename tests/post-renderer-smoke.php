@@ -10,6 +10,8 @@ if (getenv('CMS_ALLOW_RENDERER_SMOKE') !== '1') {
 if (getenv('CMS_PUBLIC_URL') === false) {
     putenv('CMS_PUBLIC_URL=https://example.test');
 }
+putenv('CMS_ADS_ENABLED=false');
+putenv('CMS_ADS_PREVIEW=false');
 putenv('CMS_SKIP_PUBLIC_SYNC=1');
 
 require_once dirname(__DIR__) . '/php/admin-database.php';
@@ -90,6 +92,15 @@ try {
     $draft = $first;
     $draft['status'] = 'draft';
     $draftHtml = render_post_page_html($draft, true);
+    renderer_assert(!str_contains($firstHtml, 'data-ad-placement='), 'Wyłączone reklamy zostawiają slot w artykule.');
+    putenv('CMS_ADS_ENABLED=true');
+    putenv('CMS_ADS_PREVIEW=true');
+    $adPreviewHtml = render_post_page_html($draft, true);
+    renderer_assert(str_contains($adPreviewHtml, 'data-ad-placement="page-top"'), 'Podgląd artykułu nie ma slotu page-top.');
+    renderer_assert(str_contains($adPreviewHtml, 'data-ad-placement="post-article"'), 'Podgląd artykułu nie ma slotu post-article.');
+    renderer_assert(str_contains($adPreviewHtml, 'aria-label="Reklama"'), 'Podgląd artykułu nie ma dostępnej etykiety reklamy.');
+    putenv('CMS_ADS_ENABLED=false');
+    putenv('CMS_ADS_PREVIEW=false');
 
     renderer_assert($firstHtml !== $secondHtml, 'Artykuły mają identyczny HTML.');
     renderer_assert(str_contains($firstHtml, '&lt;SEO&gt; &amp; artykuł 1'), 'Tytuł nie jest prawidłowo kodowany.');
@@ -132,6 +143,31 @@ try {
     $withoutAuthor['author_id'] = null;
     $withoutAuthorData = renderer_json_ld(render_post_page_html($withoutAuthor));
     renderer_assert(!array_key_exists('author', $withoutAuthorData), 'Brak autora zastąpiono fikcyjną osobą.');
+
+    $database->prepare('UPDATE post_categories SET is_editorial_only = 1 WHERE id = :id')
+        ->execute([':id' => $categoryId]);
+    $editorialOnlyHtml = render_post_page_html($first);
+    $editorialOnlyData = renderer_json_ld($editorialOnlyHtml);
+    renderer_assert(
+        !str_contains($editorialOnlyHtml, 'Renderer ' . $token),
+        'Techniczna kategoria redakcyjna jest widoczna na stronie artykulu.'
+    );
+    renderer_assert(
+        !str_contains($editorialOnlyHtml, '?category=renderer-' . $token),
+        'Artykul prowadzi do publicznego filtra technicznej kategorii.'
+    );
+    renderer_assert(
+        !array_key_exists('articleSection', $editorialOnlyData),
+        'Techniczna kategoria redakcyjna trafila do JSON-LD.'
+    );
+    $listedEditorialPost = array_values(array_filter(
+        list_posts(null, true),
+        static fn (array $post): bool => (int) $post['id'] === (int) $first['id']
+    ))[0] ?? [];
+    renderer_assert(
+        (int) ($listedEditorialPost['category_is_editorial_only'] ?? 0) === 1,
+        'Lista postow nie przekazuje flagi kategorii redakcyjnej.'
+    );
 
     echo "POST_RENDERER_SMOKE_OK\n";
 } finally {

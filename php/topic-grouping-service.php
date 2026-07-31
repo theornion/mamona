@@ -132,7 +132,9 @@ function find_editorial_topic(int $topicId): ?array
         'SELECT editorial_topics.*, posts.status AS primary_post_status
          FROM editorial_topics
          INNER JOIN posts ON posts.id = editorial_topics.primary_post_id
-         WHERE editorial_topics.id = :id'
+         WHERE editorial_topics.id = :id
+           AND editorial_topics.trashed_at IS NULL
+           AND editorial_topics.purged_at IS NULL'
     );
     $statement->execute([':id' => $topicId]);
     $topic = $statement->fetch();
@@ -416,6 +418,8 @@ function group_discovered_feed_item(int $feedItemId): array
          WHERE other.id != :feed_item_id
            AND other.id < :feed_item_id
            AND memberships.topic_id != :current_topic_id
+           AND topics.trashed_at IS NULL
+           AND topics.purged_at IS NULL
            AND topic_posts.status != "rejected"
            AND (
                 other.source_url = :source_url
@@ -493,7 +497,10 @@ function run_topic_grouping(): array
         'SELECT items.id
          FROM discovered_feed_items AS items
          INNER JOIN posts ON posts.id = items.post_id
+         LEFT JOIN feed_topic_memberships AS current_membership ON current_membership.feed_item_id = items.id
+         LEFT JOIN editorial_topics AS current_topic ON current_topic.id = current_membership.topic_id
          WHERE posts.status != "rejected"
+           AND (current_topic.id IS NULL OR (current_topic.trashed_at IS NULL AND current_topic.purged_at IS NULL))
          ORDER BY datetime(COALESCE(items.published_at, items.first_detected_at)) ASC, items.id ASC'
     )->fetchAll();
     $result = ['processed' => 0, 'merged' => 0, 'suggested' => 0, 'single' => 0, 'failed' => 0, 'errors' => []];
@@ -643,9 +650,9 @@ function list_editorial_topics(int $limit = 200, string $filter = 'active'): arr
         throw new InvalidArgumentException('Nieprawidłowy filtr tematów.');
     }
     $where = match ($filter) {
-        'active' => ' WHERE posts.status != "rejected"',
-        'profile-rejected' => ' WHERE posts.status = "rejected" AND posts.rejection_reason = :profile_reason',
-        default => '',
+        'active' => ' WHERE topics.trashed_at IS NULL AND topics.purged_at IS NULL AND posts.status != "rejected"',
+        'profile-rejected' => ' WHERE topics.trashed_at IS NULL AND topics.purged_at IS NULL AND posts.status = "rejected" AND posts.rejection_reason = :profile_reason',
+        default => ' WHERE topics.trashed_at IS NULL AND topics.purged_at IS NULL',
     };
     $statement = bueno_database()->prepare(
         'SELECT topics.*, posts.status,
@@ -682,6 +689,8 @@ function list_suggested_topic_matches(int $limit = 100): array
          INNER JOIN posts ON posts.id = topics.primary_post_id
          WHERE candidates.status = "suggested"
            AND posts.status != "rejected"
+           AND topics.trashed_at IS NULL
+           AND topics.purged_at IS NULL
          ORDER BY candidates.confidence DESC, candidates.id DESC
          LIMIT :limit'
     );

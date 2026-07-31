@@ -46,6 +46,8 @@ function editorial_profile_cleanup_preview(): array
          INNER JOIN discovered_feed_items AS items ON items.id = memberships.feed_item_id
          INNER JOIN technical_sources AS sources ON sources.id = items.technical_source_id
          WHERE posts.status = "idea"
+           AND topics.trashed_at IS NULL
+           AND topics.purged_at IS NULL
          GROUP BY topics.id, posts.id
          HAVING SUM(
             CASE

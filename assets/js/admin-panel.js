@@ -38,9 +38,8 @@
 		}
 
 		main.dataset.navScrollBound = 'true';
-		main.addEventListener('scroll', syncAdminNavigation, {passive: true});
 		window.addEventListener('resize', function () {
-			window.setTimeout(syncAdminNavigation, 0);
+			window.requestAnimationFrame(syncAdminNavigation);
 		});
 		syncAdminNavigation();
 	}
@@ -73,6 +72,8 @@
 		var nextCard = nextMain ? nextMain.querySelector('.admin-card') : null;
 		var currentNav = document.querySelector('.admin-nav');
 		var nextNav = nextDocument.querySelector('.admin-nav');
+		var currentContext = document.querySelector('.admin-context');
+		var nextContext = nextDocument.querySelector('.admin-context');
 
 		if (!currentMain || !nextMain || !nextNav) {
 			window.location.assign(url);
@@ -92,6 +93,10 @@
 			currentNav.replaceWith(nextNav);
 		}
 
+		if (currentContext && nextContext) {
+			currentContext.replaceWith(nextContext);
+		}
+
 		document.title = nextDocument.title;
 
 		if (shouldPushHistory) {
@@ -99,6 +104,7 @@
 		}
 
 		bindAdminNavigationScroll();
+		closeAdminMenu();
 		if (typeof window.buenoInitPostEditor === 'function') {
 			window.buenoInitPostEditor();
 		}
@@ -106,6 +112,68 @@
 			window.buenoInitGalleryCrop();
 		}
 	}
+
+	function closeAdminMenu() {
+		document.body.classList.remove('admin-menu-open');
+		var toggle = document.querySelector('.admin-nav-toggle');
+		if (toggle) {
+			toggle.setAttribute('aria-expanded', 'false');
+		}
+	}
+
+	function dismissConfigReminder() {
+		var reminder = document.querySelector('[data-admin-config-reminder]');
+
+		if (!reminder) {
+			return;
+		}
+
+		reminder.hidden = true;
+		try {
+			window.sessionStorage.setItem('mamona-admin-config-reminder-dismissed', '1');
+		} catch (error) {
+			// The reminder is still dismissed for the current document when
+			// storage is unavailable (for example in strict privacy mode).
+		}
+	}
+
+	function restoreConfigReminderState() {
+		var reminder = document.querySelector('[data-admin-config-reminder]');
+
+		if (!reminder) {
+			return;
+		}
+
+		try {
+			reminder.hidden = window.sessionStorage.getItem('mamona-admin-config-reminder-dismissed') === '1';
+		} catch (error) {
+			reminder.hidden = false;
+		}
+	}
+
+	document.addEventListener('click', function (event) {
+		var toggle = event.target.closest('.admin-nav-toggle');
+
+		if (toggle) {
+			var isOpen = document.body.classList.toggle('admin-menu-open');
+			toggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+			return;
+		}
+
+		if (event.target.closest('.admin-nav-close, .admin-nav-backdrop')) {
+			closeAdminMenu();
+		}
+
+		if (event.target.closest('[data-admin-config-reminder-close]')) {
+			dismissConfigReminder();
+		}
+	});
+
+	document.addEventListener('keydown', function (event) {
+		if (event.key === 'Escape') {
+			closeAdminMenu();
+		}
+	});
 
 	function loadPanel(url, options) {
 		if (isLoading) {
@@ -252,4 +320,5 @@
 	});
 
 	bindAdminNavigationScroll();
+	restoreConfigReminderState();
 }());

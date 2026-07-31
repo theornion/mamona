@@ -418,9 +418,8 @@ function run_topic_scoring(?DateTimeImmutable $now = null, bool $includeRejected
     $sql = 'SELECT topics.id
             FROM editorial_topics AS topics
             INNER JOIN posts ON posts.id = topics.primary_post_id';
-    if (!$includeRejected) {
-        $sql .= ' WHERE posts.status != "rejected"';
-    }
+    $sql .= ' WHERE topics.trashed_at IS NULL AND topics.purged_at IS NULL';
+    if (!$includeRejected) $sql .= ' AND posts.status != "rejected"';
     $topicIds = bueno_database()->query($sql . ' ORDER BY topics.id ASC')->fetchAll();
     $result = ['processed' => 0, 'failed' => 0, 'high_risk' => 0, 'scores' => [], 'errors' => []];
     foreach ($topicIds as $row) {

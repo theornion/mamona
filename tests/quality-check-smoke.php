@@ -42,12 +42,19 @@ function quality_smoke_draft(string $suffix, string $practicalText, string $lead
 
     $draft = [
         'composition_mode' => 'informational',
-        'title' => 'Laboratorium opisuje kontrolowany pomiar ' . $suffix,
+        'title' => 'Kontrolowany pomiar ujawnia znaczenie i ograniczenia danych',
+        'brief' => 'Jeden wynik otwiera szerszy temat, którego sens staje się czytelny dopiero po zestawieniu faktów i ograniczeń.',
         'lead' => quality_smoke_section(
-            $leadText !== '' ? $leadText : 'Laboratorium przedstawiło kontrolowany wynik pomiaru ' . $suffix . '.'
+            $leadText !== ''
+                ? 'Kontrolowany pomiar jest punktem odniesienia. ' . $leadText
+                : 'Laboratorium przedstawiło kontrolowany wynik pomiaru ' . $suffix . '.'
         ),
         'why_important' => quality_smoke_section('Pomiar pokazuje znaczenie kontrolowanej metody ' . $suffix . '.'),
-        'key_facts' => [quality_smoke_section('Wynik został opisany przez źródło pierwotne ' . $suffix . '.')],
+        'key_facts' => [
+            quality_smoke_section('Wynik został opisany przez źródło pierwotne ' . $suffix . '.'),
+            quality_smoke_section('Drugi fakt rozwija znaczenie kontrolowanej metody ' . $suffix . '.'),
+            quality_smoke_section('Trzeci fakt opisuje ograniczenia dostępnych danych ' . $suffix . '.'),
+        ],
         'comparison_context' => $empty,
         'unknowns' => [[
             'text' => 'Pełny zestaw danych nadal nie jest dostępny ' . $suffix . '.',
@@ -68,6 +75,7 @@ function quality_smoke_draft(string $suffix, string $practicalText, string $lead
             'answer_and_punchline' => $empty,
         ],
     ];
+    $draft = [...$draft, ...build_article_title_strategy_fixture((string) $draft['title'])];
     $index = 1;
     while (article_draft_main_content_length($draft) < ARTICLE_MAIN_CONTENT_MIN_LENGTH) {
         $draft['practical_takeaway']['text'] .= ' Kontekst jakościowy ' . $index
@@ -111,6 +119,37 @@ function quality_smoke_result(int $score = 90): array
         'recommendation' => 'pass',
     ];
 }
+
+$rubric = quality_score_rubric();
+quality_smoke_assert(array_sum($rubric) === 100, 'Rubryka QC nie sumuje się do 100.');
+$schema = quality_check_schema();
+foreach ($rubric as $field => $maximum) {
+    $fieldSchema = $schema['properties']['scores']['properties'][$field] ?? [];
+    quality_smoke_assert(
+        ($fieldSchema['type'] ?? '') === 'integer'
+        && ($fieldSchema['minimum'] ?? null) === 0
+        && ($fieldSchema['maximum'] ?? null) === $maximum,
+        "Schema QC nie zachowuje zakresu {$field}: 0–{$maximum}."
+    );
+    validate_generation_value($maximum, $fieldSchema);
+    quality_smoke_expect(static fn () => validate_generation_value($maximum + 1, $fieldSchema), 'dozwolony zakres');
+}
+quality_smoke_assert(
+    $schema['properties']['total_score']['minimum'] === 0
+    && $schema['properties']['total_score']['maximum'] === 100,
+    'Schema total_score nie ma zakresu 0–100.'
+);
+foreach ([0, 5] as $validRisk) validate_generation_value($validRisk, $schema['properties']['scores']['properties']['risk_handling']);
+foreach ([-1, 6, 10] as $invalidRisk) quality_smoke_expect(
+    static fn () => validate_generation_value($invalidRisk, $schema['properties']['scores']['properties']['risk_handling']),
+    'dozwolony zakres'
+);
+$instructionText = implode("\n", quality_score_instructions());
+foreach (array_keys($rubric) as $field) quality_smoke_assert(str_contains($instructionText, $field . ': 0–'), "Prompt pomija zakres {$field}.");
+quality_smoke_assert(str_contains($instructionText, 'risk_handling: 0–5'), 'Prompt nie podaje jawnie risk_handling: 0–5.');
+quality_smoke_assert(generation_error_classification(new InvalidArgumentException('zakres'))['retryable'] === false, 'Walidacja jest błędnie retryable.');
+foreach ([429, 500, 599] as $status) quality_smoke_assert(generation_error_classification(new RuntimeException('transport'), $status)['retryable'] === true, "HTTP {$status} nie jest retryable.");
+quality_smoke_assert(generation_error_classification(new RuntimeException('timeout'))['retryable'] === true, 'Timeout nie jest retryable.');
 
 $database = bueno_database();
 $originalMode = generation_mode();
@@ -225,6 +264,11 @@ try {
             === find_generation_operation($manualCheckOperationId)['output_schema_json'],
         'Tryb manual i API używają różnych schematów kontroli.'
     );
+    $serializedSchema = json_decode((string) find_generation_operation($apiCheckOperationId)['output_schema_json'], true, 128, JSON_THROW_ON_ERROR);
+    quality_smoke_assert(
+        $serializedSchema['properties']['scores']['properties']['risk_handling']['maximum'] === 5,
+        'Serializacja schematu providera usunęła maximum risk_handling.'
+    );
     execute_generation_operation(
         $apiCheckOperationId,
         static fn (): array => [
@@ -246,6 +290,41 @@ try {
     quality_smoke_assert(
         (int) $apiCheck['check_number'] === 3 && $apiCheck['execution_mode'] === 'api',
         'Kolejna kontrola API nie została zachowana osobno.'
+    );
+
+    $invalidRiskOperationId = prepare_quality_check_operation((int) $cleanDraft['id']);
+    $operationIds[] = $invalidRiskOperationId;
+    $invalidRiskResult = $manualResult;
+    $invalidRiskResult['scores']['risk_handling'] = 10;
+    $invalidRiskResult['total_score'] = 100;
+    $invalidRiskCalls = 0;
+    quality_smoke_expect(
+        static function () use ($invalidRiskOperationId, &$invalidRiskCalls, $invalidRiskResult): void {
+            execute_generation_operation(
+                $invalidRiskOperationId,
+                static function () use (&$invalidRiskCalls, $invalidRiskResult): array {
+                    $invalidRiskCalls++;
+                    return [
+                        'status' => 200,
+                        'body' => generation_json(['responseId' => 'resp_invalid_risk', 'candidates' => [[
+                            'content' => ['parts' => [['text' => generation_json($invalidRiskResult)]]], 'finishReason' => 'STOP',
+                        ]]]),
+                        'headers' => [], 'network_error' => '',
+                    ];
+                },
+                'smoke-secret-key'
+            );
+        },
+        'risk_handling'
+    );
+    $invalidRiskCheck = find_quality_check_by_operation($invalidRiskOperationId);
+    $invalidRiskDiagnostics = json_decode((string) $invalidRiskCheck['validation_json'], true);
+    quality_smoke_assert($invalidRiskCalls === 1, 'Deterministyczny błąd zakresu uruchomił automatyczny retry.');
+    quality_smoke_assert(
+        ($invalidRiskDiagnostics['class'] ?? '') === 'validation_contract'
+        && ($invalidRiskDiagnostics['retryable'] ?? true) === false
+        && (int) ($invalidRiskDiagnostics['operation_id'] ?? 0) === $invalidRiskOperationId,
+        'risk_handling: 10 nie został sklasyfikowany jako non-retryable validation_contract.'
     );
 
     update_generation_mode('manual');
@@ -319,7 +398,7 @@ try {
 
     $checkCount = $database->prepare('SELECT COUNT(*) FROM quality_check_runs WHERE post_id = :post_id');
     $checkCount->execute([':post_id' => $postId]);
-    quality_smoke_assert((int) $checkCount->fetchColumn() === 5, 'Nie zachowano wszystkich kolejnych kontroli.');
+    quality_smoke_assert((int) $checkCount->fetchColumn() === 6, 'Nie zachowano wszystkich kolejnych kontroli.');
 
     echo "QUALITY_CHECK_SMOKE_OK\n";
 } finally {

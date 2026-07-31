@@ -2,9 +2,59 @@
 
 declare(strict_types=1);
 
-const FEED_RESPONSE_MAX_BYTES = 2097152;
-const FEED_REQUEST_TIMEOUT_SECONDS = 12;
+const FEED_RESPONSE_MAX_BYTES = 3145728;
 const FEED_MAX_ITEMS_PER_SOURCE = 50;
+
+final class FeedTransportException extends RuntimeException
+{
+    public function __construct(
+        string $message,
+        public readonly string $category,
+        public readonly bool $transient = false,
+        public readonly int $httpStatus = 0,
+        public readonly int $bytesReceived = 0,
+        public readonly ?int $retryAfterSeconds = null
+    ) {
+        parent::__construct($message);
+    }
+}
+
+function feed_transport_defaults(): array
+{
+    return [
+        'connect_timeout_seconds' => (int) app_config('feed_connect_timeout_seconds'),
+        'transfer_timeout_seconds' => (int) app_config('feed_transfer_timeout_seconds'),
+        'low_speed_limit' => (int) app_config('feed_low_speed_limit'),
+        'low_speed_time_seconds' => (int) app_config('feed_low_speed_time_seconds'),
+        'max_attempts' => (int) app_config('feed_max_attempts'),
+        'job_budget_seconds' => (int) app_config('feed_job_budget_seconds'),
+        'max_bytes' => FEED_RESPONSE_MAX_BYTES,
+        'max_redirects' => 3,
+    ];
+}
+
+function feed_source_transport_options(array $source): array
+{
+    $options = feed_transport_defaults();
+    foreach (array_keys($options) as $key) {
+        $column = 'feed_' . $key;
+        if (isset($source[$column]) && (int) $source[$column] > 0) $options[$key] = (int) $source[$column];
+    }
+    // Compatibility with the earlier source setting.
+    if (isset($source['request_timeout_seconds']) && (int) $source['request_timeout_seconds'] > 0) {
+        $options['transfer_timeout_seconds'] = (int) $source['request_timeout_seconds'];
+    }
+    if (isset($source['response_max_bytes']) && (int) $source['response_max_bytes'] > 0) {
+        $options['max_bytes'] = (int) $source['response_max_bytes'];
+    }
+    $options['connect_timeout_seconds'] = max(2, min(20, $options['connect_timeout_seconds']));
+    $options['transfer_timeout_seconds'] = max(10, min(90, $options['transfer_timeout_seconds']));
+    $options['low_speed_limit'] = max(1, min(65536, $options['low_speed_limit']));
+    $options['low_speed_time_seconds'] = max(5, min(60, $options['low_speed_time_seconds']));
+    $options['max_attempts'] = max(1, min(4, $options['max_attempts']));
+    $options['max_bytes'] = max(65536, min(10485760, $options['max_bytes']));
+    return $options;
+}
 
 function assert_public_feed_url(string $url): array
 {
@@ -42,11 +92,13 @@ function assert_public_feed_url(string $url): array
     return [$url, $host, $addresses[0]];
 }
 
-function fetch_remote_feed(string $url, int $redirectsRemaining = 2): string
+function feed_http_once(string $url, array $options, array $validators = [], int $redirectsRemaining = 3): array
 {
     [$url, $host, $address] = assert_public_feed_url($url);
     $port = (int) (parse_url($url, PHP_URL_PORT) ?: 443);
-    $body = '';
+    $temporary = tmpfile();
+    if ($temporary === false) throw new RuntimeException('Nie można utworzyć bufora kanału.');
+    $bytes = 0;
     $responseHeaders = [];
     $tooLarge = false;
     $curl = curl_init($url);
@@ -57,13 +109,18 @@ function fetch_remote_feed(string $url, int $redirectsRemaining = 2): string
     $curlOptions = [
         CURLOPT_RETURNTRANSFER => false,
         CURLOPT_FOLLOWLOCATION => false,
-        CURLOPT_CONNECTTIMEOUT => 5,
-        CURLOPT_TIMEOUT => FEED_REQUEST_TIMEOUT_SECONDS,
+        CURLOPT_CONNECTTIMEOUT => $options['connect_timeout_seconds'],
+        CURLOPT_TIMEOUT => $options['transfer_timeout_seconds'],
+        CURLOPT_LOW_SPEED_LIMIT => $options['low_speed_limit'],
+        CURLOPT_LOW_SPEED_TIME => $options['low_speed_time_seconds'],
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_CERTINFO => true,
         CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
         CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
         CURLOPT_SSL_OPTIONS => defined('CURLSSLOPT_NATIVE_CA') ? CURLSSLOPT_NATIVE_CA : 0,
-        CURLOPT_USERAGENT => 'Mozilla/5.0 (compatible; MamonaFeedReader/1.0; +https://example.com/)',
-        CURLOPT_HTTPHEADER => ['Accept: application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9'],
+        CURLOPT_USERAGENT => 'Mamona-Content-Studio/1.0 (+https://mamona.pl/kontakt)',
+        CURLOPT_ENCODING => '',
         CURLOPT_RESOLVE => [$host . ':' . $port . ':' . $resolveAddress],
         CURLOPT_HEADERFUNCTION => static function ($handle, string $line) use (&$responseHeaders): int {
             $position = strpos($line, ':');
@@ -72,15 +129,20 @@ function fetch_remote_feed(string $url, int $redirectsRemaining = 2): string
             }
             return strlen($line);
         },
-        CURLOPT_WRITEFUNCTION => static function ($handle, string $chunk) use (&$body, &$tooLarge): int {
-            if (strlen($body) + strlen($chunk) > FEED_RESPONSE_MAX_BYTES) {
+        CURLOPT_WRITEFUNCTION => static function ($handle, string $chunk) use ($temporary, &$bytes, &$tooLarge, $options): int {
+            if ($bytes + strlen($chunk) > $options['max_bytes']) {
                 $tooLarge = true;
                 return 0;
             }
-            $body .= $chunk;
-            return strlen($chunk);
+            $written = fwrite($temporary, $chunk);
+            if ($written !== false) $bytes += $written;
+            return $written === false ? 0 : $written;
         },
     ];
+    $headers = ['Accept: application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.1'];
+    if (($validators['etag'] ?? '') !== '') $headers[] = 'If-None-Match: ' . $validators['etag'];
+    if (($validators['last_modified'] ?? '') !== '') $headers[] = 'If-Modified-Since: ' . $validators['last_modified'];
+    $curlOptions[CURLOPT_HTTPHEADER] = $headers;
     $caBundle = trim((string) app_config('feed_ca_bundle'));
     if ($caBundle !== '') {
         if (!is_file($caBundle)) {
@@ -90,32 +152,78 @@ function fetch_remote_feed(string $url, int $redirectsRemaining = 2): string
         $curlOptions[CURLOPT_CAINFO] = $caBundle;
     }
     curl_setopt_array($curl, $curlOptions);
+    $started = microtime(true);
     $success = curl_exec($curl);
     $status = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+    $curlCode = curl_errno($curl);
+    $effectiveUrl = (string) curl_getinfo($curl, CURLINFO_EFFECTIVE_URL);
+    $certificateInfo = curl_getinfo($curl, CURLINFO_CERTINFO);
     $error = curl_error($curl);
     curl_close($curl);
 
     if ($tooLarge) {
-        throw new RuntimeException('Odpowiedź kanału przekracza limit 2 MB.');
+        fclose($temporary);
+        throw new FeedTransportException('Kanał przekracza limit rozmiaru.', 'size_limit', false, $status, $bytes);
     }
     if ($success === false) {
-        throw new RuntimeException('Błąd pobierania kanału: ' . ($error !== '' ? $error : 'nieznany błąd HTTP'));
+        fclose($temporary);
+        $tlsCodes = array_filter([defined('CURLE_SSL_CONNECT_ERROR') ? CURLE_SSL_CONNECT_ERROR : -1, defined('CURLE_PEER_FAILED_VERIFICATION') ? CURLE_PEER_FAILED_VERIFICATION : -1, defined('CURLE_SSL_CACERT_BADFILE') ? CURLE_SSL_CACERT_BADFILE : -1]);
+        $partial = defined('CURLE_PARTIAL_FILE') && $curlCode === CURLE_PARTIAL_FILE;
+        $timeout = $curlCode === CURLE_OPERATION_TIMEDOUT;
+        $tls = in_array($curlCode, $tlsCodes, true);
+        $category = $partial ? 'partial_transfer' : ($tls ? 'tls' : ($timeout ? ($bytes > 0 ? 'slow_transfer' : 'timeout') : 'transport'));
+        throw new FeedTransportException('Nie udało się pobrać pełnego kanału: ' . ($error ?: 'błąd transportu'), $category, $partial || $timeout || $tls || $curlCode === CURLE_COULDNT_CONNECT, $status, $bytes);
     }
     if ($status >= 300 && $status < 400) {
         $location = (string) ($responseHeaders['location'] ?? '');
         if ($redirectsRemaining <= 0 || $location === '' || !str_starts_with($location, 'https://')) {
-            throw new RuntimeException('Kanał zwrócił niedozwolone lub zbyt liczne przekierowanie.');
+            fclose($temporary);
+            throw new FeedTransportException('Kanał zwrócił niedozwolone lub zbyt liczne przekierowanie.', 'redirect', false, $status, $bytes);
         }
-        return fetch_remote_feed($location, $redirectsRemaining - 1);
+        fclose($temporary);
+        if ($redirectsRemaining <= 0 || $location === '') throw new FeedTransportException('Pętla lub brak adresu przekierowania.', 'redirect', false, $status, $bytes);
+        $next = str_starts_with($location, '/') ? 'https://' . $host . $location : $location;
+        return feed_http_once($next, $options, $validators, $redirectsRemaining - 1);
+    }
+    if ($status === 304) {
+        fclose($temporary);
+        return ['status'=>304, 'body'=>'', 'bytes'=>$bytes, 'duration_ms'=>(int)((microtime(true)-$started)*1000), 'url'=>$effectiveUrl ?: $url, 'headers'=>$responseHeaders, 'certificate_chain'=>feed_certificate_summary($certificateInfo)];
     }
     if ($status < 200 || $status >= 300) {
-        throw new RuntimeException('Kanał zwrócił HTTP ' . $status . '.');
+        fclose($temporary);
+        $retryable = in_array($status, [408, 425, 429], true) || $status >= 500;
+        $retryAfter = isset($responseHeaders['retry-after']) && ctype_digit($responseHeaders['retry-after']) ? (int) $responseHeaders['retry-after'] : null;
+        throw new FeedTransportException('Kanał zwrócił HTTP ' . $status . '.', $retryable ? 'http_temporary' : 'http_permanent', $retryable, $status, $bytes, $retryAfter);
     }
-    if (trim($body) === '') {
-        throw new RuntimeException('Kanał zwrócił pustą odpowiedź.');
-    }
+    rewind($temporary);
+    $body = stream_get_contents($temporary);
+    fclose($temporary);
+    if (!is_string($body) || trim($body) === '') throw new FeedTransportException('Kanał zwrócił pustą odpowiedź.', 'empty', false, $status, $bytes);
+    return ['status'=>$status, 'body'=>$body, 'bytes'=>$bytes, 'duration_ms'=>(int)((microtime(true)-$started)*1000), 'url'=>$effectiveUrl ?: $url, 'headers'=>$responseHeaders, 'certificate_chain'=>feed_certificate_summary($certificateInfo)];
+}
 
-    return $body;
+function fetch_remote_feed(string $url, array $source = [], ?callable $transport = null, ?callable $onRetry = null): array
+{
+    $options = feed_source_transport_options($source);
+    $transport ??= 'feed_http_once';
+    $validators = ['etag'=>(string)($source['feed_etag'] ?? ''), 'last_modified'=>(string)($source['feed_last_modified'] ?? '')];
+    $deadline = microtime(true) + min($options['job_budget_seconds'], $options['transfer_timeout_seconds'] * $options['max_attempts'] + 10);
+    $last = null;
+    for ($attempt = 1; $attempt <= $options['max_attempts']; $attempt++) {
+        try {
+            $response = $transport($url, $options, $validators, $options['max_redirects']);
+            $response['attempts'] = $attempt;
+            return $response;
+        } catch (FeedTransportException $exception) {
+            $last = $exception;
+            if (!$exception->transient || $attempt >= $options['max_attempts']) break;
+            $delayMs = $exception->retryAfterSeconds !== null ? min(30000, $exception->retryAfterSeconds * 1000) : min(8000, (500 * (2 ** ($attempt - 1))) + random_int(0, 350));
+            if (microtime(true) + ($delayMs / 1000) >= $deadline) break;
+            if ($onRetry !== null) $onRetry($attempt, $options['max_attempts'], $delayMs, $exception);
+            usleep($delayMs * 1000);
+        }
+    }
+    throw $last ?? new FeedTransportException('Przekroczono budżet pobierania kanału.', 'budget', true);
 }
 
 function feed_text(?DOMNode $context, string $expression, DOMXPath $xpath): string
@@ -365,34 +473,110 @@ function persist_discovered_feed_item(array $source, array $item): ?int
     }
 }
 
-function run_feed_ingestion(?callable $fetcher = null): array
+function run_feed_ingestion(?callable $fetcher = null, ?callable $progress = null): array
 {
-    $fetcher ??= static fn (string $url, array $source): string => fetch_remote_feed($url);
-    $result = ['sources' => [], 'created' => 0, 'duplicates' => 0, 'failed' => 0];
-    foreach (list_technical_sources(true) as $source) {
-        if ($source['source_type'] !== 'rss') {
-            continue;
+    $fetcher ??= static fn (string $url, array $source, ?callable $retry = null): array => fetch_remote_feed($url, $source, null, $retry);
+    $result = ['sources' => [], 'processed' => 0, 'succeeded' => 0, 'not_modified' => 0, 'retried' => 0, 'created' => 0, 'duplicates' => 0, 'failed' => 0];
+    $sources = array_values(array_filter(
+        list_technical_sources(true),
+        static fn (array $source): bool => $source['source_type'] === 'rss'
+            && (empty($source['muted_until']) || strtotime((string)$source['muted_until']) <= time())
+    ));
+    $total = count($sources);
+    foreach ($sources as $index => $source) {
+        if ($progress !== null) {
+            $progress($source, $index, $total, 'started', null);
         }
-        $sourceResult = ['source_id' => (int) $source['id'], 'name' => $source['name'], 'created' => 0, 'duplicates' => 0, 'error' => ''];
+        $sourceResult = ['source_id'=>(int)$source['id'], 'name'=>$source['name'], 'status'=>'running', 'category'=>'', 'advice'=>'', 'attempts'=>1, 'duration_ms'=>0, 'bytes'=>0, 'created'=>0, 'duplicates'=>0, 'error'=>''];
+        $started = microtime(true);
         try {
-            $items = parse_feed_document((string) $fetcher((string) $source['feed_url'], $source), $source);
-            foreach ($items as $item) {
-                if (persist_discovered_feed_item($source, $item) === null) {
-                    $sourceResult['duplicates']++;
-                    $result['duplicates']++;
-                } else {
-                    $sourceResult['created']++;
-                    $result['created']++;
+            $retryReporter = static function (int $attempt, int $maximum, int $delayMs, FeedTransportException $exception) use ($progress, $source, $index, $total, &$sourceResult, &$result): void {
+                $sourceResult['attempts'] = $attempt + 1;
+                $sourceResult['category'] = $exception->category;
+                $sourceResult['retry_in_ms'] = $delayMs;
+                $result['retried']++;
+                if ($progress !== null) $progress($source, $index, $total, 'retry', $sourceResult + ['attempt'=>$attempt, 'max_attempts'=>$maximum]);
+            };
+            $fetched = $fetcher((string) $source['feed_url'], $source, $retryReporter);
+            $response = is_array($fetched) ? $fetched : ['status'=>200, 'body'=>(string)$fetched, 'bytes'=>strlen((string)$fetched), 'duration_ms'=>(int)((microtime(true)-$started)*1000), 'headers'=>[], 'attempts'=>1];
+            $sourceResult['attempts'] = (int) ($response['attempts'] ?? $sourceResult['attempts']);
+            $sourceResult['duration_ms'] = (int) ($response['duration_ms'] ?? 0);
+            $sourceResult['bytes'] = (int) ($response['bytes'] ?? 0);
+            if ((int) ($response['status'] ?? 200) === 304) {
+                $sourceResult['status'] = 'not_modified';
+                $result['not_modified']++;
+                record_technical_source_check((int)$source['id'], true, '', ['http_status'=>304, 'diagnostics'=>feed_runtime_diagnostics()]);
+            } else {
+                $items = parse_feed_document((string) ($response['body'] ?? ''), $source);
+                foreach ($items as $item) {
+                    if (persist_discovered_feed_item($source, $item) === null) {
+                        $sourceResult['duplicates']++; $result['duplicates']++;
+                    } else {
+                        $sourceResult['created']++; $result['created']++;
+                    }
                 }
+                $sourceResult['status'] = 'succeeded';
+                $result['succeeded']++;
+                $headers = (array) ($response['headers'] ?? []);
+                record_technical_source_check((int)$source['id'], true, '', ['etag'=>$headers['etag'] ?? '', 'last_modified'=>$headers['last-modified'] ?? '', 'http_status'=>(int)($response['status'] ?? 200), 'diagnostics'=>feed_runtime_diagnostics() + ['certificate_chain'=>$response['certificate_chain'] ?? []]]);
             }
-            record_technical_source_check((int) $source['id'], true);
         } catch (Throwable $exception) {
+            $sourceResult['status'] = 'failed';
             $sourceResult['error'] = $exception->getMessage();
+            $sourceResult['duration_ms'] = (int)((microtime(true)-$started)*1000);
+            if ($exception instanceof FeedTransportException) {
+                $sourceResult['category'] = $exception->category;
+                $sourceResult['bytes'] = $exception->bytesReceived;
+            } else $sourceResult['category'] = str_contains($exception->getMessage(), 'XML') ? 'invalid_xml' : 'processing';
+            $sourceResult['advice'] = feed_error_advice($sourceResult['category'], $exception instanceof FeedTransportException ? $exception->httpStatus : 0);
             $result['failed']++;
-            record_technical_source_check((int) $source['id'], false, $exception->getMessage());
+            record_technical_source_check((int)$source['id'], false, $exception->getMessage(), ['http_status'=>$exception instanceof FeedTransportException ? $exception->httpStatus : 0, 'diagnostics'=>feed_runtime_diagnostics()]);
         }
+        $result['processed']++;
         $result['sources'][] = $sourceResult;
+        if ($progress !== null) {
+            $progress($source, $index + 1, $total, 'completed', $sourceResult);
+        }
     }
 
     return $result;
+}
+
+function feed_error_advice(string $category, int $status = 0): string
+{
+    return match ($category) {
+        'timeout', 'slow_transfer', 'partial_transfer', 'transport' => 'Serwer odpowiada zbyt wolno lub przerwał transfer — ponowimy automatycznie.',
+        'tls' => 'Nie udało się zweryfikować bezpiecznego połączenia TLS — sprawdź magazyn CA i certyfikat źródła.',
+        'http_permanent' => $status === 403 ? 'Źródło odmawia automatycznego dostępu (HTTP 403); nie będziemy obchodzić zabezpieczeń.' : 'Źródło odrzuciło żądanie trwale; sprawdź oficjalny endpoint.',
+        'http_temporary' => 'Źródło jest chwilowo niedostępne — ponowimy z bezpiecznym opóźnieniem.',
+        'invalid_xml' => 'Odpowiedź nie jest prawidłowym RSS/Atom; nie zapisano częściowych danych.',
+        'size_limit' => 'Kanał przekroczył skonfigurowany limit rozmiaru.',
+        'redirect' => 'Wykryto niedozwolone przekierowanie lub pętlę.',
+        default => 'Sprawdź konfigurację źródła i szczegóły diagnostyczne.',
+    };
+}
+
+function feed_runtime_diagnostics(): array
+{
+    $curl = curl_version();
+    $configured = trim((string) app_config('feed_ca_bundle'));
+    return [
+        'curl_version'=>(string)($curl['version'] ?? ''),
+        'ssl_version'=>(string)($curl['ssl_version'] ?? ''),
+        'ca_bundle'=>$configured !== '' ? $configured : (string)(ini_get('curl.cainfo') ?: ini_get('openssl.cafile') ?: 'system/native'),
+        'tls_verification'=>true,
+    ];
+}
+
+function feed_certificate_summary(mixed $certificateInfo): array
+{
+    if (!is_array($certificateInfo)) return [];
+    return array_map(static function (array $certificate): array {
+        return [
+            'subject'=>(string)($certificate['Subject'] ?? ''),
+            'issuer'=>(string)($certificate['Issuer'] ?? ''),
+            'start'=>(string)($certificate['Start date'] ?? ''),
+            'expire'=>(string)($certificate['Expire date'] ?? ''),
+        ];
+    }, $certificateInfo);
 }

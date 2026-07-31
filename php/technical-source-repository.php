@@ -47,7 +47,7 @@ function normalize_technical_source(array $input): array
         throw new InvalidArgumentException('Poziom wiarygodności musi mieścić się od 1 do 5.');
     }
 
-    return [
+    $normalized = [
         'name' => $name,
         'website_url' => normalize_technical_source_url((string) ($input['website_url'] ?? ''), 'URL strony'),
         'feed_url' => normalize_technical_source_url((string) ($input['feed_url'] ?? ''), 'URL kanału'),
@@ -58,6 +58,17 @@ function normalize_technical_source(array $input): array
         'is_primary' => !empty($input['is_primary']) ? 1 : 0,
         'is_active' => !empty($input['is_active']) ? 1 : 0,
     ];
+    foreach ([
+        'feed_connect_timeout_seconds'=>[2,20], 'feed_transfer_timeout_seconds'=>[10,90],
+        'feed_low_speed_limit'=>[1,65536], 'feed_low_speed_time_seconds'=>[5,60],
+        'feed_max_attempts'=>[1,4], 'feed_job_budget_seconds'=>[30,600],
+    ] as $field => [$minimum, $maximum]) {
+        $raw = trim((string)($input[$field] ?? ''));
+        $value = $raw === '' ? null : filter_var($raw, FILTER_VALIDATE_INT);
+        if ($value === false || ($value !== null && ($value < $minimum || $value > $maximum))) throw new InvalidArgumentException('Nieprawidłowa wartość transportu: ' . $field . '.');
+        $normalized[$field] = $value;
+    }
+    return $normalized;
 }
 
 function list_technical_sources(bool $activeOnly = false): array
@@ -91,6 +102,12 @@ function save_technical_source(array $input, int $sourceId = 0): int
                     source_type = :source_type, topic_category = :topic_category,
                     language = :language, credibility_level = :credibility_level,
                     is_primary = :is_primary, is_active = :is_active,
+                    feed_connect_timeout_seconds=:feed_connect_timeout_seconds,
+                    feed_transfer_timeout_seconds=:feed_transfer_timeout_seconds,
+                    feed_low_speed_limit=:feed_low_speed_limit,
+                    feed_low_speed_time_seconds=:feed_low_speed_time_seconds,
+                    feed_max_attempts=:feed_max_attempts,
+                    feed_job_budget_seconds=:feed_job_budget_seconds,
                     updated_at = CURRENT_TIMESTAMP
                  WHERE id = :id'
             );
@@ -100,10 +117,14 @@ function save_technical_source(array $input, int $sourceId = 0): int
         $statement = $database->prepare(
             'INSERT INTO technical_sources (
                 name, website_url, feed_url, source_type, topic_category,
-                language, credibility_level, is_primary, is_active
+                language, credibility_level, is_primary, is_active,
+                feed_connect_timeout_seconds, feed_transfer_timeout_seconds,
+                feed_low_speed_limit, feed_low_speed_time_seconds, feed_max_attempts, feed_job_budget_seconds
              ) VALUES (
                 :name, :website_url, :feed_url, :source_type, :topic_category,
-                :language, :credibility_level, :is_primary, :is_active
+                :language, :credibility_level, :is_primary, :is_active,
+                :feed_connect_timeout_seconds, :feed_transfer_timeout_seconds,
+                :feed_low_speed_limit, :feed_low_speed_time_seconds, :feed_max_attempts, :feed_job_budget_seconds
              )'
         );
         $statement->execute($source);
@@ -127,19 +148,36 @@ function set_technical_source_active(int $sourceId, bool $active): void
     }
 }
 
-function record_technical_source_check(int $sourceId, bool $success, string $error = ''): void
+function record_technical_source_check(int $sourceId, bool $success, string $error = '', array $metadata = []): void
 {
+    $threshold = (int) app_config('feed_failure_threshold');
     $statement = bueno_database()->prepare(
         'UPDATE technical_sources SET
             last_checked_at = CURRENT_TIMESTAMP,
             last_success_at = CASE WHEN CAST(:success AS INTEGER) = 1 THEN CURRENT_TIMESTAMP ELSE last_success_at END,
             last_error = CASE WHEN CAST(:success AS INTEGER) = 1 THEN "" ELSE :error END,
+            consecutive_failures = CASE WHEN CAST(:success AS INTEGER) = 1 THEN 0 ELSE consecutive_failures + 1 END,
+            health_status = CASE
+                WHEN CAST(:success AS INTEGER) = 1 THEN "healthy"
+                WHEN consecutive_failures + 1 >= :threshold THEN "unavailable"
+                ELSE "degraded" END,
+            muted_until = CASE WHEN CAST(:success AS INTEGER) = 0 AND consecutive_failures + 1 >= :threshold
+                THEN datetime("now", "+30 minutes") ELSE NULL END,
+            feed_etag = CASE WHEN :etag <> "" THEN :etag ELSE feed_etag END,
+            feed_last_modified = CASE WHEN :last_modified <> "" THEN :last_modified ELSE feed_last_modified END,
+            last_http_status = :http_status,
+            last_transport_diagnostics = :diagnostics,
             updated_at = CURRENT_TIMESTAMP
          WHERE id = :id'
     );
     $statement->execute([
         ':success' => $success ? 1 : 0,
         ':error' => mb_substr(trim($error), 0, 2000),
+        ':threshold' => $threshold,
+        ':etag' => mb_substr((string) ($metadata['etag'] ?? ''), 0, 500),
+        ':last_modified' => mb_substr((string) ($metadata['last_modified'] ?? ''), 0, 200),
+        ':http_status' => (int) ($metadata['http_status'] ?? 0),
+        ':diagnostics' => json_encode($metadata['diagnostics'] ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
         ':id' => $sourceId,
     ]);
     if ($statement->rowCount() !== 1) {

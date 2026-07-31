@@ -1,0 +1,490 @@
+﻿[
+    {
+        "path":  "assets/css/main.css",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:12:50.9169430+02:00",
+        "bytes":  199872,
+        "purpose":  "Style bazowe i administracyjne",
+        "sha256":  "cd740003df8b5b504f5236c55da9dc4e977d8362aa0000f9cf15f2216acb5e4d"
+    },
+    {
+        "path":  "assets/js/admin-content-studio.js",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:07:19.2586483+02:00",
+        "bytes":  16432,
+        "purpose":  "Interakcje panelu administratora",
+        "sha256":  "532d8074282aa09fad90c55b1c50fd8b3f53b9a7d6165f7ea14eb62b1b57326a"
+    },
+    {
+        "path":  "assets/js/admin-gallery-crop.js",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:40.9943906+02:00",
+        "bytes":  15095,
+        "purpose":  "Interakcje panelu administratora",
+        "sha256":  "bf7500610f262023a95408f272ce8c3198ca305d58273f76f4d443299f347fe8"
+    },
+    {
+        "path":  "assets/js/admin-generation.js",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:02:06.9025763+02:00",
+        "bytes":  2114,
+        "purpose":  "Interakcje panelu administratora",
+        "sha256":  "5693eac5210edc873357ae068461a99438189b04001f87b9c91d4c8db8850ac9"
+    },
+    {
+        "path":  "assets/js/admin-panel.js",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:40.9943906+02:00",
+        "bytes":  7240,
+        "purpose":  "Interakcje panelu administratora",
+        "sha256":  "fc7eb2026539b05fd0ce8efc72ddcc592df25dde80935f5ebd77657e3fc58d9c"
+    },
+    {
+        "path":  "assets/js/admin-post-editor.js",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:40.9943906+02:00",
+        "bytes":  22527,
+        "purpose":  "Interakcje panelu administratora",
+        "sha256":  "64def539d51d72960028c49f85f0dcf0f94a036cbba8a4da4cd716c9ab1c2644"
+    },
+    {
+        "path":  "assets/js/admin-sortable.js",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:40.9999713+02:00",
+        "bytes":  3216,
+        "purpose":  "Interakcje panelu administratora",
+        "sha256":  "f9cd50d9f1b90fd119fc8718cd1777ec7912a992a312a61661407d0cd78b2bc7"
+    },
+    {
+        "path":  "assets/js/breakpoints.min.js",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:40.9999713+02:00",
+        "bytes":  2440,
+        "purpose":  "Współdzielone zależności ładowane przez layout admina",
+        "sha256":  "5ded71f3fee787db62da0c174ff7f19b79205d88a9101d4a743d2a5085e733c8"
+    },
+    {
+        "path":  "assets/js/browser.min.js",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:40.9999713+02:00",
+        "bytes":  2052,
+        "purpose":  "Współdzielone zależności ładowane przez layout admina",
+        "sha256":  "dc65687eef86c01a745ec098e9fac1f93f425a3a380c5a447fd6fcaf4a30c743"
+    },
+    {
+        "path":  "assets/js/jquery.min.js",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.0094861+02:00",
+        "bytes":  89503,
+        "purpose":  "Współdzielone zależności ładowane przez layout admina",
+        "sha256":  "ce9d07500ad91ec2b524c270764ec4c9a33e78320d8d374ec400ede488f6251b"
+    },
+    {
+        "path":  "assets/js/main.js",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.0110193+02:00",
+        "bytes":  6751,
+        "purpose":  "Współdzielone zależności ładowane przez layout admina",
+        "sha256":  "adcaaad405376cc7dba5ef5ca487eb3ddec08d60927ac5c9b713399add49601d"
+    },
+    {
+        "path":  "assets/js/parallax.js",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-28T10:13:25.7376959+02:00",
+        "bytes":  14329,
+        "purpose":  "Współdzielone zależności ładowane przez layout admina",
+        "sha256":  "75804f146c08a541479389254e5f402465496b5a7a3aeb59f56d9e493fd35449"
+    },
+    {
+        "path":  "assets/js/util.js",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.0195600+02:00",
+        "bytes":  12433,
+        "purpose":  "Współdzielone zależności ładowane przez layout admina",
+        "sha256":  "c2e1e72b0de356f6ce184e3af4fa8ab6590a2581162905a27d77886b2d960e00"
+    },
+    {
+        "path":  "php/admin-auth.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1597307+02:00",
+        "bytes":  3149,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "edd689c5c66148c7d70f4896e551e3c5209beae542ed68b079f7c13d88d819e5"
+    },
+    {
+        "path":  "php/admin-cats.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1597307+02:00",
+        "bytes":  8684,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "d7e8416acd033e84dc60874078c068762d3844f15cf0af6789ff4092a86da59f"
+    },
+    {
+        "path":  "php/admin-contact.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1597307+02:00",
+        "bytes":  5558,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "f0072f64921ca50cc2d407763ba716793252013f0abb22098c09b1154a9ab198"
+    },
+    {
+        "path":  "php/admin-content-studio.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:15:51.1746969+02:00",
+        "bytes":  6768,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "ae469d432128183bdbb2c4db1faf4da1cd1256390e777ff663b03ee32a957a3b"
+    },
+    {
+        "path":  "php/admin-content-studio-api.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:06:23.2788107+02:00",
+        "bytes":  3978,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "bb39b7698a304c426c85fca847a6efc003ee6a33c193f68112c4f83eb040dff6"
+    },
+    {
+        "path":  "php/admin-database.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:10:45.3266063+02:00",
+        "bytes":  125987,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "c99dcf504c533da7722ea193992dfd9f06cce79d537fe5f372b7dd975b5724e8"
+    },
+    {
+        "path":  "php/admin-editorial-queue.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1698215+02:00",
+        "bytes":  9782,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "ea76aea273eeef86a592a592249bf7eae6b237a9f577364fb57b52d108204491"
+    },
+    {
+        "path":  "php/admin-editorial-topics.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T14:58:59.2444745+02:00",
+        "bytes":  14936,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "3d446366d11dadb8cd9cd8b15f84998e31f4ef761062ef4717bca8b4498f2c34"
+    },
+    {
+        "path":  "php/admin-gallery.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1698215+02:00",
+        "bytes":  5060,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "63c7f239fcfb02cd0fd239bf9b8aa8358cbf52d9471d395484167f4d7c220e2b"
+    },
+    {
+        "path":  "php/admin-gallery-editor.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1698215+02:00",
+        "bytes":  18249,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "77574f416ed83d08a31c9f31732bf30fb41706dedb2b2f5f62951be320471770"
+    },
+    {
+        "path":  "php/admin-gallery-image-editor.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1698215+02:00",
+        "bytes":  8470,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "bc607ae0651b52816f0d5d3478b02dc8fb02e653c004b4bd34639ca2fc15ef15"
+    },
+    {
+        "path":  "php/admin-generation.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-27T13:33:28.6001039+02:00",
+        "bytes":  32403,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "775a241babc97471052f0eadb23c7b1865c4d7b5748f5f685832618df769c45d"
+    },
+    {
+        "path":  "php/admin-generation-export.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1698215+02:00",
+        "bytes":  1552,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "9feffff51b9701d70e5464d9c646592f6c9d9b3389bdca5fe67535dc3c324c37"
+    },
+    {
+        "path":  "php/admin-login.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1755227+02:00",
+        "bytes":  3916,
+        "purpose":  "Layout logowania",
+        "sha256":  "b6bd1efde67845947671a73e2d5e3182913c77e196faf87ce3f3af45d51b889a"
+    },
+    {
+        "path":  "php/admin-mailer.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1755227+02:00",
+        "bytes":  3712,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "8b9cccfadc96bc81cc23dc8cbdd140495d8bbf17641a02cef09190148548554c"
+    },
+    {
+        "path":  "php/admin-messages.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1755227+02:00",
+        "bytes":  25087,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "a1ebebdb32d2d6c542429599d57d7c83b665fba2a12ef9b9e79ea5da9cdfd9d2"
+    },
+    {
+        "path":  "php/admin-nav.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T14:58:03.8968077+02:00",
+        "bytes":  2403,
+        "purpose":  "Nawigacja admina",
+        "sha256":  "466cfdb965c77856472fecd0da55965c5293c574d7673db4445324c3115dad3f"
+    },
+    {
+        "path":  "php/admin-post-category-editor.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1795295+02:00",
+        "bytes":  6338,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "1e984c254c9f05477b001d36f878e66f1325533301e344826dd149bb6382ce6b"
+    },
+    {
+        "path":  "php/admin-post-editor.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1795295+02:00",
+        "bytes":  28310,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "621764634804e12426d8bdd37f82a1c2605a440620b0a3d016a20737d38d8aa5"
+    },
+    {
+        "path":  "php/admin-post-preview.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1795295+02:00",
+        "bytes":  653,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "49a101e77e5a4b1f831e060c3698e3c29b9a9d88fc7c0877f75ac18a2371a95e"
+    },
+    {
+        "path":  "php/admin-posts.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1795295+02:00",
+        "bytes":  5179,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "6c7e169655ae1491e6eed949580d0273855ab0915ec1ecc65dd36c77d2c750d9"
+    },
+    {
+        "path":  "php/admin-profile.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1835441+02:00",
+        "bytes":  4509,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "0b0631da0eebf49c1325df3d9391ff8cff46a4d2e6c43b031428f1f9592b0520"
+    },
+    {
+        "path":  "php/admin-proposals.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:14:59.1000502+02:00",
+        "bytes":  23376,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "170fefb65497c604d3c928a4e1dfdc27419cf5f3456cd780a85230e5cfdf3afb"
+    },
+    {
+        "path":  "php/admin-social.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1835441+02:00",
+        "bytes":  11424,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "34bf491eaf0630fa8df7438f564789bc4932642178a9b712da8668b54e1fa54b"
+    },
+    {
+        "path":  "php/admin-styles.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1835441+02:00",
+        "bytes":  6923,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "722ef6b0655c8ee5a6cdd9ff793c7fe6b347d84f0fa3027edfc6d1cd72f43ec3"
+    },
+    {
+        "path":  "php/admin-technical-sources.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1835441+02:00",
+        "bytes":  8270,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "f5fecf7ea2edcaaaa8311f32b97bc42ed8b53e05f4a84e14d1a7392c4d5276fc"
+    },
+    {
+        "path":  "php/admin-trash.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1835441+02:00",
+        "bytes":  4837,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "f5ff6e91a4ec98b30429dded70d44ccf6912ffac00393f75973be4b0cfb24e37"
+    },
+    {
+        "path":  "php/admin-trash-preview.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-25T06:15:41.1835441+02:00",
+        "bytes":  3645,
+        "purpose":  "Widok/formularz strony admina — kopia referencyjna",
+        "sha256":  "5f33eda0e0638011284f8200e5ad4f5541fcee33d617b00dcf65eae4ba6d5a46"
+    },
+    {
+        "path":  "php/admin-ui.php",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:05:57.9127697+02:00",
+        "bytes":  3209,
+        "purpose":  "Współdzielony layout admina",
+        "sha256":  "171224e36c488c86d9f1556256f2c4c933237e9621f2da150340abb0382088a9"
+    },
+    {
+        "path":  "README.md",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:16:55.3909064+02:00",
+        "bytes":  1384,
+        "purpose":  "Instrukcja bezpiecznego rollbacku",
+        "sha256":  "b2d6b69ac8369461caf81382ae7d0bf35ad3cd01393d650c44482956b92452f5"
+    },
+    {
+        "path":  "screenshots/before/gallery-1440.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:20:32.3418020+02:00",
+        "bytes":  9201,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "3d7190050dba58b24e6a9d09a3a6d48c063dc2f431a870eb10d47081d404a0f4"
+    },
+    {
+        "path":  "screenshots/before/gallery-375.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:20:31.0606031+02:00",
+        "bytes":  65652,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "a364fd41d76648004be9b45743e9f4a41a3f8bfad4ebf64e85b1b09bef6b737a"
+    },
+    {
+        "path":  "screenshots/before/login-1024.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:17:45.8228903+02:00",
+        "bytes":  6627,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "0dcd9a63c145051e17e0225920f08262681b4cd47d54c13d90a1a4d29b82d1d3"
+    },
+    {
+        "path":  "screenshots/before/login-1440.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:17:47.3444353+02:00",
+        "bytes":  183744,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "20e0870762e33d81593eec41147a79a43ed8568289fab99f01dce8a466565e82"
+    },
+    {
+        "path":  "screenshots/before/login-1920.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:17:48.6231985+02:00",
+        "bytes":  12352,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "f0d9eee8cf5681addcc8861c49c8ccffc132c9614a75fc1abe379c59233bd41c"
+    },
+    {
+        "path":  "screenshots/before/login-375.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:17:42.6962591+02:00",
+        "bytes":  65591,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "49696ed4240ba1ac9b5b3e447b6cee5b9a138f6395c4babed30419561fc2dd90"
+    },
+    {
+        "path":  "screenshots/before/login-768.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:17:44.3673840+02:00",
+        "bytes":  132016,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "94d0ac893787fa5fc418d12bb03253ab3a83182a7d10813b5eb8887eb89994f9"
+    },
+    {
+        "path":  "screenshots/before/posts-1440.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:20:21.3140796+02:00",
+        "bytes":  9201,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "3d7190050dba58b24e6a9d09a3a6d48c063dc2f431a870eb10d47081d404a0f4"
+    },
+    {
+        "path":  "screenshots/before/posts-375.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:20:19.4936509+02:00",
+        "bytes":  22876,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "9b79af13100ce4795e1906a3e577151a37e1166d81fdd110568e5aebdd9bdb08"
+    },
+    {
+        "path":  "screenshots/before/proposals-1440.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:20:28.9483063+02:00",
+        "bytes":  9201,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "3d7190050dba58b24e6a9d09a3a6d48c063dc2f431a870eb10d47081d404a0f4"
+    },
+    {
+        "path":  "screenshots/before/proposals-375.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:20:27.5516336+02:00",
+        "bytes":  22876,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "9b79af13100ce4795e1906a3e577151a37e1166d81fdd110568e5aebdd9bdb08"
+    },
+    {
+        "path":  "screenshots/before/queue-1440.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:20:24.9966179+02:00",
+        "bytes":  9201,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "3d7190050dba58b24e6a9d09a3a6d48c063dc2f431a870eb10d47081d404a0f4"
+    },
+    {
+        "path":  "screenshots/before/queue-375.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:20:23.5742917+02:00",
+        "bytes":  65652,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "a364fd41d76648004be9b45743e9f4a41a3f8bfad4ebf64e85b1b09bef6b737a"
+    },
+    {
+        "path":  "screenshots/before/studio-1024.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:20:13.5779227+02:00",
+        "bytes":  6627,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "0dcd9a63c145051e17e0225920f08262681b4cd47d54c13d90a1a4d29b82d1d3"
+    },
+    {
+        "path":  "screenshots/before/studio-1440.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:20:15.0391922+02:00",
+        "bytes":  9201,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "3d7190050dba58b24e6a9d09a3a6d48c063dc2f431a870eb10d47081d404a0f4"
+    },
+    {
+        "path":  "screenshots/before/studio-1920.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:20:16.6733141+02:00",
+        "bytes":  12352,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "f0d9eee8cf5681addcc8861c49c8ccffc132c9614a75fc1abe379c59233bd41c"
+    },
+    {
+        "path":  "screenshots/before/studio-375.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:20:08.6060870+02:00",
+        "bytes":  65652,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "a364fd41d76648004be9b45743e9f4a41a3f8bfad4ebf64e85b1b09bef6b737a"
+    },
+    {
+        "path":  "screenshots/before/studio-768.png",
+        "captured_at":  "2026-07-31T15:30:00+02:00",
+        "last_write_time":  "2026-07-31T15:20:12.2850883+02:00",
+        "bytes":  5043,
+        "purpose":  "Referencyjny screenshot przed redesignem",
+        "sha256":  "01a8740c96f507bc4c389b5894f6f4e334e9199f6734e1acb2da486aa19c8386"
+    }
+]

@@ -1,8 +1,64 @@
 # Mamona — dokumentacja operacyjna
 
+## Kosz tematów — retencja 10 dni
+
+Migracje `20260731_020_topic_trash` i `20260731_021_topic_trash_snapshots` dodają stan kosza, snapshot statusu/score, trwały audyt i historię cleanup. Daty są zapisywane i porównywane w UTC; kwalifikuje się rekord z `trashed_at <= now UTC - 10 days`.
+
+Podstawą jest jawny, idempotentny job CLI (otwarcie panelu nie jest wymagane):
+
+```powershell
+C:\xampp\php\php.exe C:\xampp\htdocs\mamona\php\cleanup-topic-trash.php
+```
+
+W Harmonogramie zadań Windows ustaw uruchomienie codziennie, np. 03:15: program `C:\xampp\php\php.exe`, argument `C:\xampp\htdocs\mamona\php\cleanup-topic-trash.php`, katalog roboczy `C:\xampp\htdocs\mamona`. Konto zadania musi mieć dostęp do `data/cms.sqlite`. Kod `0` oznacza sukces, `1` błędy pojedynczych rekordów. Podsumowanie `deleted/skipped/errors` trafia na stdout/stderr i do `topic_trash_cleanup_runs`; błąd jednego tematu nie zatrzymuje pozostałych.
+
+„Trwałe usunięcie” tworzy nieodwracalny tombstone (`purged_at`), ponieważ FK łączą temat z feedem, batchami, research, szkicami, QC i obrazami. Nie wykonujemy cascade delete: publikacje, źródła, dane licencyjne i audyt pozostają. Koszowanie jest blokowane przy aktywnym, queued lub rate-limited elemencie batcha.
+
+Rollback: przed migracją wykonaj kopię `data/cms.sqlite`. Bezpieczny rollback aplikacyjny przywraca poprzedni kod i pozostawia dodatkowe kolumny/tabele (starszy kod je ignoruje). Pełny rollback danych wymaga odtworzenia kopii; nie usuwaj ręcznie audytu ani tombstone'ów.
+
+Decyzja nawigacyjna: główna „Praca redakcyjna” to `Studio / RSS → Tematy → Gotowe propozycje → Kosz`. `Generowanie / Batch` pozostaje jako `Operacje API / Diagnostyka`, a stary URL `admin-editorial-queue.php` jest drugorzędnym `Procesy / Historia` bez akcji review i publikacji.
+
 Ten dokument opisuje uruchomienie, obsługę i odzyskiwanie procesu redakcyjnego
 ukończonego w TASK-22. Specyfikacja funkcjonalna pozostaje w
 `NIEUSUWAĆ-TASKI.txt`, a skrócony opis architektury w `README.md`.
+
+## Worker pobierania RSS
+
+Przycisk w Studio zapisuje job w SQLite i na Windows uruchamia osobny proces PHP CLI.
+W XAMPP ustaw `CMS_PHP_CLI=C:\\xampp\\php\\php.exe`. Jako zabezpieczenie po
+restarcie Apache dodaj w Harmonogramie zadaĹ„ Windows wywoĹ‚anie co minutÄ™:
+
+```text
+C:\xampp\php\php.exe C:\Ĺ›cieĹĽka\do\mamona\php\content-studio-worker.php --next
+```
+
+Worker pobierze tylko oczekujÄ…cy job; blokada w SQLite nie pozwala uruchomiÄ‡
+dwĂłch ingestionĂłw. Utracony heartbeat po 90 sekundach oznacza job jako
+`interrupted`, po czym administrator moĹĽe bezpiecznie kliknÄ…Ä‡ ponownie. Skrypt
+`php/fetch-feeds.php` pozostaje niezaleĹĽnym narzÄ™dziem CLI.
+
+## Worker generowania batch
+
+Zakładka `Tematy` wysyła akcje `research`, `draft`, `quality`, `images` oraz
+`generate_all` do wspólnej kolejki `generation_batch_items`. Domyślnie panel
+promuje wybór 10 tematów, natomiast `CMS_BATCH_MAX_TOPICS` (domyślnie 50,
+maksymalnie 500) ustala twardy limit jednego requestu. Większa zaakceptowana
+partia nadal jest wykonywana przez worker, nigdy równolegle w requestcie HTTP.
+
+Studio redakcyjne uruchamia trwały batch 1–10 tematów. Na XAMPP/Windows ustaw opcjonalnie
+`CMS_PHP_CLI=C:\\xampp\\php\\php.exe`; panel uruchomi worker w tle. Dla odpornego
+wznowienia po restarcie dodaj w Harmonogramie zadań Windows wywołanie co minutę:
+
+```text
+C:\xampp\php\php.exe C:\ścieżka\do\mamona\php\generation-batch-worker.php --drain
+```
+
+`CMS_BATCH_WORKER_CONCURRENCY` ma wartość 1 i może wynosić maksymalnie 2. Leasing
+w SQLite pilnuje limitu również przy dwóch workerach. `CMS_BATCH_LEASE_SECONDS`
+steruje odzyskaniem elementu po awarii, a `CMS_BATCH_RATE_LIMIT_BACKOFF_SECONDS`
+bazowym opóźnieniem po 429 lub timeout. Nagłówek `Retry-After` ma pierwszeństwo
+przed tym minimum. Odświeżenie panelu nie uruchamia ponownie Gemini.
+`GEMINI_API_MOCK=true` wraz z `CMS_SOURCE_IMAGE_MOCK=true` uruchamia pełny test bez sieci i kosztów.
 
 ## 1. Wymagania
 

@@ -1,4 +1,5 @@
 (function () {
+    if (window.MamonaPerformance && window.MamonaPerformance.shouldReduceEffects()) return;
     const main = document.querySelector('body.menu-page:not(.admin-page) #main');
     const wrapper = document.querySelector('#wrapper');
 

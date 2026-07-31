@@ -8,6 +8,8 @@ if (getenv('CMS_ALLOW_SSR_SMOKE') !== '1') {
 }
 
 putenv('CMS_PUBLIC_URL=https://example.test');
+putenv('CMS_ADS_ENABLED=false');
+putenv('CMS_ADS_PREVIEW=false');
 putenv('CMS_SKIP_PUBLIC_SYNC=1');
 require_once dirname(__DIR__) . '/php/admin-database.php';
 
@@ -29,6 +31,13 @@ $manifestPath = app_path('data/generated-news-pages.json');
 $rootBefore = is_file($rootPath) ? file_get_contents($rootPath) : null;
 $archiveBefore = is_file($archivePath) ? file_get_contents($archivePath) : null;
 $manifestBefore = is_file($manifestPath) ? file_get_contents($manifestPath) : null;
+$generatedPagesBefore = [];
+foreach (array_merge(
+    glob(app_path('pages/aktualnosci-*.html')) ?: [],
+    glob(app_path('pages/kategoria-*.html')) ?: []
+) as $generatedPage) {
+    $generatedPagesBefore[$generatedPage] = file_get_contents($generatedPage);
+}
 
 try {
     $database->prepare(
@@ -73,6 +82,32 @@ try {
     ssr_assert(preg_match('/<img[^>]+width="[1-9][0-9]*"[^>]+height="[1-9][0-9]*"/', $root) === 1, 'Obraz nie ma wymiarów.');
     ssr_assert(str_contains($root, 'data-news-source="php/posts.php"'), 'JavaScript nie może progresywnie ulepszyć feedu.');
 
+    ssr_assert(!str_contains($root, 'data-ad-placement='), 'Wyłączone reklamy zostawiają slot w SSR.');
+    putenv('CMS_ADS_ENABLED=true');
+    putenv('CMS_ADS_PREVIEW=true');
+    $previewFeed = render_server_news_feed(list_posts(null, true), null, 1, 'aktualnosci-%d.html');
+    ssr_assert(str_contains($previewFeed, 'data-ad-placement="page-top"'), 'Feed nie renderuje placementu page-top.');
+    ssr_assert(str_contains($previewFeed, 'data-ad-placement="feed-inline"'), 'Feed nie renderuje slotu po trzeciej karcie.');
+    ssr_assert(substr_count($previewFeed, 'aria-label="Reklama"') === 2, 'Feed ma nieprawidłową liczbę placeholderów.');
+    putenv('CMS_ADS_MAX_SLOTS_PER_PAGE=1');
+    $limitedPreviewFeed = render_server_news_feed(list_posts(null, true), null, 1, 'aktualnosci-%d.html');
+    ssr_assert(substr_count($limitedPreviewFeed, 'aria-label="Reklama"') === 1, 'Feed przekracza globalny limit slotów.');
+    putenv('CMS_ADS_MAX_SLOTS_PER_PAGE');
+    putenv('CMS_ADS_ENABLED=false');
+    putenv('CMS_ADS_PREVIEW=false');
+
+    $database->prepare('UPDATE post_categories SET is_editorial_only = 1 WHERE id = :id')
+        ->execute([':id' => $categoryId]);
+    $editorialFeed = render_server_news_feed(list_posts(null, true), null, 1, 'aktualnosci-%d.html');
+    ssr_assert(
+        str_contains($editorialFeed, $token),
+        'Post z kategorii redakcyjnej zniknal z publicznego feedu.'
+    );
+    ssr_assert(
+        !str_contains($editorialFeed, '<p class="news-feed-category">SSR ' . $token . '</p>'),
+        'Techniczna kategoria redakcyjna jest widoczna na karcie postu.'
+    );
+
     echo "SERVER_RENDERED_FEED_SMOKE_OK\n";
 } finally {
     foreach ($postIds as $postId) {
@@ -97,6 +132,11 @@ try {
     }
     foreach (glob(app_path('pages/kategoria-ssr-' . $token . '*.html')) ?: [] as $path) {
         unlink($path);
+    }
+    foreach ($generatedPagesBefore as $path => $contents) {
+        if (is_string($contents)) {
+            write_public_file_atomically($path, $contents);
+        }
     }
     if (is_string($manifestBefore)) {
         write_public_file_atomically($manifestPath, $manifestBefore);

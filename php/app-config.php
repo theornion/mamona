@@ -153,9 +153,16 @@ function app_config(?string $key = null): mixed
                 ]
             ),
             'feed_ca_bundle' => app_environment_value('CMS_FEED_CA_BUNDLE') ?? '',
+            'feed_connect_timeout_seconds' => app_environment_int('CMS_FEED_CONNECT_TIMEOUT_SECONDS', 8, 2, 20),
+            'feed_transfer_timeout_seconds' => app_environment_int('CMS_FEED_TRANSFER_TIMEOUT_SECONDS', 45, 10, 90),
+            'feed_low_speed_limit' => app_environment_int('CMS_FEED_LOW_SPEED_LIMIT', 32, 1, 65536),
+            'feed_low_speed_time_seconds' => app_environment_int('CMS_FEED_LOW_SPEED_TIME_SECONDS', 20, 5, 60),
+            'feed_max_attempts' => app_environment_int('CMS_FEED_MAX_ATTEMPTS', 3, 1, 4),
+            'feed_job_budget_seconds' => app_environment_int('CMS_FEED_JOB_BUDGET_SECONDS', 150, 30, 600),
+            'feed_failure_threshold' => app_environment_int('CMS_FEED_FAILURE_THRESHOLD', 3, 1, 20),
             'generation_mode' => app_generation_mode_from_environment(),
             'generation_provider' => app_generation_provider_from_environment(),
-            'gemini_model' => app_environment_value('GEMINI_MODEL') ?? 'gemini-2.5-flash-lite',
+            'gemini_model' => app_environment_value('GEMINI_MODEL') ?? 'gemini-3.1-flash-lite',
             'gemini_api_base_url' => app_normalize_public_url(
                 app_environment_value('GEMINI_API_BASE_URL') ?? 'https://generativelanguage.googleapis.com/v1beta'
             ),
@@ -163,6 +170,10 @@ function app_config(?string $key = null): mixed
             'gemini_max_attempts' => app_environment_int('GEMINI_MAX_ATTEMPTS', 3, 1, 4),
             'gemini_initial_backoff_ms' => app_environment_int('GEMINI_INITIAL_BACKOFF_MS', 750, 100, 10000),
             'gemini_mock' => app_environment_bool('GEMINI_API_MOCK', false),
+            'batch_worker_concurrency' => app_environment_int('CMS_BATCH_WORKER_CONCURRENCY', 1, 1, 2),
+            'batch_max_topics' => app_environment_int('CMS_BATCH_MAX_TOPICS', 50, 10, 500),
+            'batch_lease_seconds' => app_environment_int('CMS_BATCH_LEASE_SECONDS', 900, 120, 1800),
+            'batch_rate_limit_backoff_seconds' => app_environment_int('CMS_BATCH_RATE_LIMIT_BACKOFF_SECONDS', 60, 5, 3600),
             'openai_model' => app_environment_value('OPENAI_MODEL') ?? 'gpt-5.6-terra',
             'openai_image_model' => app_environment_value('OPENAI_IMAGE_MODEL') ?? 'gpt-image-2',
             'image_processor_python' => app_environment_value('CMS_IMAGE_PROCESSOR_PYTHON') ?? '',
@@ -171,15 +182,19 @@ function app_config(?string $key = null): mixed
             ),
             'openai_timeout_seconds' => app_environment_int('OPENAI_TIMEOUT_SECONDS', 60, 10, 180),
             'openai_max_attempts' => app_environment_int('OPENAI_MAX_ATTEMPTS', 3, 1, 4),
+            'title_repair_max_attempts' => app_environment_int('TITLE_REPAIR_MAX_ATTEMPTS', 2, 1, 5),
             'openai_mock' => app_environment_bool('OPENAI_API_MOCK', false),
             'openai_ca_bundle' => app_environment_value('OPENAI_CA_BUNDLE') ?? '',
             'ai_image_generation_enabled' => app_environment_bool('CMS_AI_IMAGE_GENERATION_ENABLED', false),
             'source_image_provider' => strtolower(app_environment_value('CMS_SOURCE_IMAGE_PROVIDER') ?? 'wikimedia'),
+            'source_image_mock' => app_environment_bool('CMS_SOURCE_IMAGE_MOCK', false),
             'source_image_timeout_seconds' => app_environment_int('CMS_SOURCE_IMAGE_TIMEOUT_SECONDS', 20, 5, 60),
             'source_image_max_bytes' => app_environment_int('CMS_SOURCE_IMAGE_MAX_BYTES', 12582912, 1048576, 26214400),
             'source_image_min_width' => app_environment_int('CMS_SOURCE_IMAGE_MIN_WIDTH', 800, 320, 4000),
             'source_image_min_height' => app_environment_int('CMS_SOURCE_IMAGE_MIN_HEIGHT', 450, 240, 3000),
             'source_image_max_redirects' => app_environment_int('CMS_SOURCE_IMAGE_MAX_REDIRECTS', 3, 0, 5),
+            'source_image_query_budget_per_slot' => app_environment_int('CMS_SOURCE_IMAGE_QUERY_BUDGET_PER_SLOT', 12, 1, 40),
+            'source_image_candidate_budget_per_query' => app_environment_int('CMS_SOURCE_IMAGE_CANDIDATE_BUDGET_PER_QUERY', 20, 1, 50),
         ];
 
         date_default_timezone_set((string) $configuration['timezone']);

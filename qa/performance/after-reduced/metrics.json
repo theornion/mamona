@@ -1,0 +1,308 @@
+[
+  {
+    "version": 1,
+    "target": "/index.html",
+    "viewport": {
+      "width": 375,
+      "height": 812,
+      "dpr": 1.0000000149011612
+    },
+    "mode": "reduced",
+    "scroller": "html",
+    "scrollRange": 1074,
+    "samples": 217,
+    "frameTimeMs": {
+      "median": 16.7,
+      "p95": 16.8,
+      "max": 16.9
+    },
+    "slowFrames": {
+      "over16_7ms": 52,
+      "over33_3ms": 0,
+      "over50ms": 0
+    },
+    "longTasks": {
+      "count": 0,
+      "totalMs": 0,
+      "maxMs": 0
+    },
+    "lcpMs": 332,
+    "cls": 0.0179,
+    "maxEventDurationMs": 0,
+    "scrollEvents": 0,
+    "backgroundStyleMutations": 0,
+    "resources": {
+      "count": 27,
+      "transferBytes": 1327021,
+      "decodedBytes": 1320412,
+      "imageDecodedBytes": 0
+    },
+    "memory": {
+      "usedJsHeapBytes": 12701506,
+      "totalJsHeapBytes": 15501062
+    },
+    "cssAudit": {
+      "backdropFilters": 0,
+      "filters": 1,
+      "fixed": 5,
+      "sticky": 1,
+      "willChange": 0
+    },
+    "timestamp": "2026-07-31T13:44:57.123Z"
+  },
+  {
+    "version": 1,
+    "target": "/index.html",
+    "viewport": {
+      "width": 768,
+      "height": 900,
+      "dpr": 1.0000000149011612
+    },
+    "mode": "reduced",
+    "scroller": "html",
+    "scrollRange": 862,
+    "samples": 218,
+    "frameTimeMs": {
+      "median": 16.7,
+      "p95": 16.8,
+      "max": 16.9
+    },
+    "slowFrames": {
+      "over16_7ms": 55,
+      "over33_3ms": 0,
+      "over50ms": 0
+    },
+    "longTasks": {
+      "count": 0,
+      "totalMs": 0,
+      "maxMs": 0
+    },
+    "lcpMs": 536,
+    "cls": 0.0098,
+    "maxEventDurationMs": 0,
+    "scrollEvents": 0,
+    "backgroundStyleMutations": 0,
+    "resources": {
+      "count": 27,
+      "transferBytes": 1327021,
+      "decodedBytes": 1320412,
+      "imageDecodedBytes": 0
+    },
+    "memory": {
+      "usedJsHeapBytes": 5576559,
+      "totalJsHeapBytes": 10737187
+    },
+    "cssAudit": {
+      "backdropFilters": 0,
+      "filters": 1,
+      "fixed": 5,
+      "sticky": 1,
+      "willChange": 0
+    },
+    "timestamp": "2026-07-31T13:45:03.920Z"
+  },
+  {
+    "version": 1,
+    "target": "/index.html",
+    "viewport": {
+      "width": 1366,
+      "height": 768,
+      "dpr": 1.0000000149011612
+    },
+    "mode": "reduced",
+    "scroller": "html",
+    "scrollRange": 850,
+    "samples": 218,
+    "frameTimeMs": {
+      "median": 16.7,
+      "p95": 16.9,
+      "max": 17.4
+    },
+    "slowFrames": {
+      "over16_7ms": 62,
+      "over33_3ms": 0,
+      "over50ms": 0
+    },
+    "longTasks": {
+      "count": 0,
+      "totalMs": 0,
+      "maxMs": 0
+    },
+    "lcpMs": 532,
+    "cls": 0.0184,
+    "maxEventDurationMs": 0,
+    "scrollEvents": 0,
+    "backgroundStyleMutations": 0,
+    "resources": {
+      "count": 27,
+      "transferBytes": 2412383,
+      "decodedBytes": 2405774,
+      "imageDecodedBytes": 0
+    },
+    "memory": {
+      "usedJsHeapBytes": 8529178,
+      "totalJsHeapBytes": 13164110
+    },
+    "cssAudit": {
+      "backdropFilters": 0,
+      "filters": 1,
+      "fixed": 5,
+      "sticky": 1,
+      "willChange": 0
+    },
+    "timestamp": "2026-07-31T13:45:10.320Z"
+  },
+  {
+    "version": 1,
+    "target": "/index.html",
+    "viewport": {
+      "width": 1920,
+      "height": 1080,
+      "dpr": 1.0000000149011612
+    },
+    "mode": "reduced",
+    "scroller": "html",
+    "scrollRange": 744,
+    "samples": 216,
+    "frameTimeMs": {
+      "median": 16.7,
+      "p95": 16.8,
+      "max": 33.2
+    },
+    "slowFrames": {
+      "over16_7ms": 73,
+      "over33_3ms": 0,
+      "over50ms": 0
+    },
+    "longTasks": {
+      "count": 0,
+      "totalMs": 0,
+      "maxMs": 0
+    },
+    "lcpMs": 404,
+    "cls": 0.0065,
+    "maxEventDurationMs": 0,
+    "scrollEvents": 0,
+    "backgroundStyleMutations": 0,
+    "resources": {
+      "count": 27,
+      "transferBytes": 2412383,
+      "decodedBytes": 2405774,
+      "imageDecodedBytes": 0
+    },
+    "memory": {
+      "usedJsHeapBytes": 8781463,
+      "totalJsHeapBytes": 11066251
+    },
+    "cssAudit": {
+      "backdropFilters": 0,
+      "filters": 1,
+      "fixed": 5,
+      "sticky": 1,
+      "willChange": 0
+    },
+    "timestamp": "2026-07-31T13:45:17.607Z"
+  },
+  {
+    "version": 1,
+    "target": "/qa/article-preview.html",
+    "viewport": {
+      "width": 375,
+      "height": 812,
+      "dpr": 1.0000000149011612
+    },
+    "mode": "reduced",
+    "scroller": "html",
+    "scrollRange": 8085,
+    "samples": 218,
+    "frameTimeMs": {
+      "median": 16.7,
+      "p95": 16.8,
+      "max": 16.8
+    },
+    "slowFrames": {
+      "over16_7ms": 53,
+      "over33_3ms": 0,
+      "over50ms": 0
+    },
+    "longTasks": {
+      "count": 0,
+      "totalMs": 0,
+      "maxMs": 0
+    },
+    "lcpMs": 456,
+    "cls": 0.0063,
+    "maxEventDurationMs": 0,
+    "scrollEvents": 0,
+    "backgroundStyleMutations": 0,
+    "resources": {
+      "count": 31,
+      "transferBytes": 1821065,
+      "decodedBytes": 1813256,
+      "imageDecodedBytes": 499662
+    },
+    "memory": {
+      "usedJsHeapBytes": 10787899,
+      "totalJsHeapBytes": 13022499
+    },
+    "cssAudit": {
+      "backdropFilters": 0,
+      "filters": 1,
+      "fixed": 5,
+      "sticky": 1,
+      "willChange": 0
+    },
+    "timestamp": "2026-07-31T13:45:24.026Z"
+  },
+  {
+    "version": 1,
+    "target": "/qa/article-preview.html",
+    "viewport": {
+      "width": 1366,
+      "height": 768,
+      "dpr": 1.0000000149011612
+    },
+    "mode": "reduced",
+    "scroller": "html",
+    "scrollRange": 5695,
+    "samples": 218,
+    "frameTimeMs": {
+      "median": 16.7,
+      "p95": 16.8,
+      "max": 16.9
+    },
+    "slowFrames": {
+      "over16_7ms": 63,
+      "over33_3ms": 0,
+      "over50ms": 0
+    },
+    "longTasks": {
+      "count": 0,
+      "totalMs": 0,
+      "maxMs": 0
+    },
+    "lcpMs": 708,
+    "cls": 0.0165,
+    "maxEventDurationMs": 0,
+    "scrollEvents": 0,
+    "backgroundStyleMutations": 0,
+    "resources": {
+      "count": 31,
+      "transferBytes": 3744922,
+      "decodedBytes": 3737113,
+      "imageDecodedBytes": 1338157
+    },
+    "memory": {
+      "usedJsHeapBytes": 12486579,
+      "totalJsHeapBytes": 14978463
+    },
+    "cssAudit": {
+      "backdropFilters": 0,
+      "filters": 1,
+      "fixed": 5,
+      "sticky": 1,
+      "willChange": 0
+    },
+    "timestamp": "2026-07-31T13:45:31.390Z"
+  }
+]

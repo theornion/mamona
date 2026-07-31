@@ -76,6 +76,26 @@ function trust_contact_values(): array
     ];
 }
 
+function trust_contact_form_html(): string
+{
+    return '<section class="trust-contact-form-section" aria-labelledby="contact-form-title">'
+        . '<h2 id="contact-form-title">Napisz do nas</h2>'
+        . '<form id="contactForm" class="trust-contact-form" method="post" action="../php/contact.php" data-turnstile-sitekey="">'
+        . '<div class="fields">'
+        . '<div class="field"><label for="name">Imię</label><input type="text" name="name" id="name" autocomplete="name" placeholder="Wpisz swoje imię..." required></div>'
+        . '<div class="field"><label for="email">E-mail</label><input type="email" name="email" id="email" autocomplete="email" inputmode="email" placeholder="Wpisz swój adres e-mail..." required></div>'
+        . '<div class="field"><label for="subject">Temat</label><input type="text" name="subject" id="subject" maxlength="150" placeholder="Wpisz temat wiadomości..." required></div>'
+        . '<div class="field"><label for="message">Wiadomość</label><textarea name="message" id="message" rows="5" required></textarea></div>'
+        . '<div class="field hp-field" aria-hidden="true"><label for="website">Strona WWW</label><input type="text" name="website" id="website" tabindex="-1" autocomplete="off"></div>'
+        . '</div><ul class="actions"><li class="contact-action-row"><input type="submit" value="Wyślij wiadomość">'
+        . '<div id="contactCaptcha" class="contact-captcha" hidden></div>'
+        . '<input type="hidden" name="cf-turnstile-response" id="cf-turnstile-response">'
+        . '<span id="contactStatus" class="contact-status" aria-live="polite"></span></li></ul>'
+        . '<p class="contact-privacy-note">Wysyłając wiadomość, przekazujesz dane potrzebne do jej obsługi. '
+        . 'Szczegóły znajdziesz w <a href="polityka-prywatnosci.html">polityce prywatności</a>.</p>'
+        . '</form></section>';
+}
+
 function trust_configuration_issues(?bool $production = null): array
 {
     $production ??= trust_is_production();
@@ -230,8 +250,9 @@ function trust_render_contact(): string
     }
 
     return '<p>W sprawie artykułów, współpracy i danych osobowych skorzystaj z poniższych danych albo z formularza '
-        . 'w stopce strony.</p>' . implode('', $parts)
-        . '<p>Zgłaszasz błąd w tekście? Zobacz <a href="korekty-i-aktualizacje.html">dokładną procedurę korekt</a>.</p>';
+        . 'na tej stronie.</p>' . implode('', $parts)
+        . '<p>Zgłaszasz błąd w tekście? Zobacz <a href="korekty-i-aktualizacje.html">dokładną procedurę korekt</a>.</p>'
+        . trust_contact_form_html();
 }
 
 function trust_render_privacy(): string
@@ -327,6 +348,14 @@ function render_trust_page_html(string $title, string $description, string $body
         $template,
         1
     ) ?? $template;
+    if ($title === 'Kontakt') {
+        $template = str_replace(
+            '<script defer src="../assets/js/site-contact.js?v=cms-core-20260721"></script>',
+            '<script defer src="../assets/js/contact-form.js?v=cms-core-20260721"></script>' . "\n    "
+                . '<script defer src="../assets/js/site-contact.js?v=cms-core-20260721"></script>',
+            $template
+        );
+    }
 
     return $template;
 }

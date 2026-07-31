@@ -198,6 +198,10 @@ try {
         find_generation_operation($invalidApiId)['status'] === 'failed',
         'Niepoprawna odpowiedź API nie została oznaczona jako błąd.'
     );
+    generation_assert(
+        (int) find_generation_operation($invalidApiId)['attempt_count'] === 1,
+        'Deterministyczny błąd kontraktu został automatycznie ponowiony.'
+    );
 
     $quotaId = prepare_generation_operation('contract_test', $input, $schema);
     $operationIds[] = $quotaId;

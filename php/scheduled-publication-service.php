@@ -73,7 +73,11 @@ function list_due_scheduled_posts(DateTimeImmutable $now, int $limit): array
            AND post_categories.deleted_at IS NULL
            AND posts.scheduled_at IS NOT NULL
            AND datetime(posts.scheduled_at) <= datetime(:now)
-           AND (editorial_topics.id IS NULL OR editorial_topics.automatic_eligible = 1)
+           AND (editorial_topics.id IS NULL OR (
+                editorial_topics.automatic_eligible = 1
+                AND editorial_topics.trashed_at IS NULL
+                AND editorial_topics.purged_at IS NULL
+           ))
          ORDER BY datetime(posts.scheduled_at) ASC, posts.id ASC
          LIMIT :limit"
     );

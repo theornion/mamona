@@ -54,6 +54,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $result['affected_count'],
                 $result['preview_count']
             );
+        } elseif ($action === 'run_workflow') {
+            $workflow = create_generation_workflow_batch(
+                $_POST['topic_ids'] ?? null,
+                trim((string) ($_POST['workflow_action'] ?? '')),
+                trim((string) ($_POST['request_key'] ?? '')) ?: null,
+                'admin'
+            );
+            if (is_array($workflow['batch'])) generation_batch_launch_worker();
+            $_SESSION['topic_grouping_result'] = sprintf(
+                'Uruchomiono %d tematów; pominięto %d.',
+                (int) ($workflow['batch']['item_count'] ?? 0),
+                count($workflow['skipped'])
+            );
+        } elseif ($action === 'trash_topic') {
+            trash_editorial_topic(filter_input(INPUT_POST, 'topic_id', FILTER_VALIDATE_INT) ?: 0, 'admin', trim((string) ($_POST['reason'] ?? '')), 'topic_card');
+            $_SESSION['topic_grouping_result'] = 'Temat przeniesiono do Kosza na 10 dni.';
+        } elseif ($action === 'trash_selected') {
+            $rawIds = $_POST['topic_ids'] ?? [];
+            if (!is_array($rawIds) || $rawIds === []) throw new InvalidArgumentException('Zaznacz co najmniej jeden temat.');
+            $ids = [];
+            foreach ($rawIds as $rawId) {
+                $id = filter_var($rawId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+                if ($id === false) throw new InvalidArgumentException('Lista tematów zawiera nieprawidłowy identyfikator.');
+                $ids[(int) $id] = (int) $id;
+            }
+            $moved = 0;
+            $blocked = [];
+            foreach ($ids as $id) {
+                try { trash_editorial_topic($id, 'admin', '', 'topics_bulk'); $moved++; }
+                catch (Throwable $exception) { $blocked[] = '#' . $id . ': ' . $exception->getMessage(); }
+            }
+            $_SESSION['topic_grouping_result'] = sprintf('Przeniesiono do Kosza: %d.', $moved);
+            if ($blocked !== []) $_SESSION['topic_grouping_error'] = implode(' ', $blocked);
         } else {
             throw new InvalidArgumentException('Nieprawidłowa akcja.');
         }
@@ -70,6 +103,7 @@ if (!in_array($topicFilter, ['active', 'profile-rejected', 'all'], true)) {
     $topicFilter = 'active';
 }
 $topics = list_editorial_topics(200, $topicFilter);
+$topicWorkflow = generation_topics_workflow_payload($topics);
 $suggestions = list_suggested_topic_matches();
 $cleanupPreview = editorial_profile_cleanup_preview();
 $cleanupRuns = list_editorial_profile_cleanup_runs(5);
@@ -167,29 +201,80 @@ admin_page_open('Grupowanie tematów', 'topics');
         <a href="admin-editorial-topics.php?filter=active"<?php echo $topicFilter === 'active' ? ' class="is-active" aria-current="page"' : ''; ?>>Aktywne</a>
         <a href="admin-editorial-topics.php?filter=profile-rejected"<?php echo $topicFilter === 'profile-rejected' ? ' class="is-active" aria-current="page"' : ''; ?>>Odrzucone przy zmianie profilu</a>
         <a href="admin-editorial-topics.php?filter=all"<?php echo $topicFilter === 'all' ? ' class="is-active" aria-current="page"' : ''; ?>>Wszystkie</a>
+        <label for="topic-search">Szukaj</label><input id="topic-search" type="search" placeholder="ID, tytuł lub źródło">
+        <label for="topic-ready-filter">Stan</label><select id="topic-ready-filter"><option value="open">Do pracy</option><option value="all">Wszystkie</option><option value="ready">Gotowe</option></select>
     </nav>
 
-    <h2>Tematy (<?php echo count($topics); ?>)</h2>
-    <div class="technical-source-list">
-        <?php foreach ($topics as $topic): ?>
+    <form class="topic-bulk-toolbar" id="topic-bulk-toolbar" method="post" action="admin-editorial-topics.php" data-api="admin-editorial-topics-api.php" data-filter="<?php echo escape_html($topicFilter); ?>" data-limit="<?php echo CONTENT_STUDIO_BATCH_LIMIT; ?>">
+        <input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>">
+        <input type="hidden" name="action" value="run_workflow">
+        <input type="hidden" name="request_key" value="fallback-<?php echo escape_html(bin2hex(random_bytes(8))); ?>">
+        <div class="topic-bulk-select"><label><input id="topic-select-visible" type="checkbox"> Zaznacz wszystkie widoczne</label><button type="button" id="topic-select-top">Zaznacz <?php echo CONTENT_STUDIO_BATCH_LIMIT; ?></button><button type="button" id="topic-clear-selection">Wyczyść wybór</button><strong class="topic-selected-counter" aria-live="polite">Zaznaczono: <span id="topic-selected-count">0</span></strong></div>
+        <div class="topic-action-toolbar" role="group" aria-label="Akcje dla zaznaczonych tematów">
+            <button name="workflow_action" value="research" disabled>Research</button><button name="workflow_action" value="draft" disabled>Szkic</button><button name="workflow_action" value="quality" disabled>Kontrola jakości</button><button name="workflow_action" value="images" disabled>Grafiki</button><button name="workflow_action" value="generate_all" class="topic-generate-all" disabled>Wygeneruj całość</button>
+            <button type="submit" form="topic-trash-bulk-form" id="topic-trash-selected" class="topic-trash-selected admin-danger-action" title="Przenieś zaznaczone tematy do Kosza na 10 dni" aria-label="Przenieś zaznaczone tematy do Kosza na 10 dni" disabled><span aria-hidden="true">🗑</span><span>Do kosza</span></button>
+            <a class="topic-trash-link" href="admin-topic-trash.php">Otwórz Kosz</a>
+        </div>
+        <p id="topic-bulk-scope">Wybierz tematy. Bezpieczny limit partii: <?php echo CONTENT_STUDIO_BATCH_LIMIT; ?>.</p><div id="topic-hidden-ids"></div>
+    </form>
+    <form id="topic-trash-bulk-form" class="topic-trash-bulk-form" method="post" action="admin-editorial-topics.php">
+        <input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>"><input type="hidden" name="action" value="trash_selected">
+        <div id="topic-trash-hidden-ids"></div>
+    </form>
+
+    <div class="topic-list-heading"><h2>Tematy (<span id="topic-visible-count"><?php echo count($topics); ?></span>)</h2><span>Malejąco według punktacji</span></div>
+    <p id="topic-live" class="topic-live" aria-live="polite" tabindex="-1"></p>
+    <div class="technical-source-list topic-control-list" id="topic-control-list">
+        <?php foreach ($topics as $index => $topic): ?>
             <?php
             $items = topic_feed_items((int) $topic['id']);
             $breakdown = topic_score_breakdown($topic);
+            $state = $topicWorkflow[$index];
+            $workflow = $state['workflow'];
             ?>
-            <article class="technical-source-card">
+            <article class="technical-source-card topic-control-card<?php echo $workflow['ready'] ? ' is-ready' : ''; ?>" id="topic-<?php echo (int) $topic['id']; ?>" data-topic-id="<?php echo (int) $topic['id']; ?>" data-search="<?php echo escape_html(mb_strtolower('#' . (int) $topic['id'] . ' ' . (string) $topic['title'] . ' ' . (string) $topic['source_names'])); ?>" data-ready="<?php echo $workflow['ready'] ? '1' : '0'; ?>" data-selectable="<?php echo $state['selectable'] ? '1' : '0'; ?>" data-selected="false">
                 <header>
                     <div>
+                        <div class="topic-card-selector">
+                            <label class="topic-checkbox-hitbox" for="topic-check-<?php echo (int) $topic['id']; ?>"><input class="topic-checkbox" id="topic-check-<?php echo (int) $topic['id']; ?>" type="checkbox" value="<?php echo (int) $topic['id']; ?>"<?php echo $state['selectable'] ? '' : ' disabled'; ?> aria-labelledby="topic-title-<?php echo (int) $topic['id']; ?>"><span class="visually-hidden">Zaznacz temat</span></label>
+                            <span class="topic-selected-badge" aria-hidden="true">✓ Zaznaczony</span>
                         <span class="editorial-status"><?php echo (int) $topic['item_count']; ?> wpisów / <?php echo (int) $topic['source_count']; ?> źródeł</span>
-                        <h3>#<?php echo (int) $topic['id']; ?> — <?php echo escape_html((string) $topic['title']); ?></h3>
+                            <?php if ($workflow['ready']): ?><span class="topic-ready-badge">Gotowe</span><?php endif; ?>
+                        </div>
+                        <h3 id="topic-title-<?php echo (int) $topic['id']; ?>">#<?php echo (int) $topic['id']; ?> — <?php echo escape_html((string) $topic['title']); ?></h3>
                     </div>
                     <a class="button admin-preview-action" href="admin-post-preview.php?post=<?php echo (int) $topic['primary_post_id']; ?>" target="_blank" rel="noopener">Podgląd</a>
                 </header>
+                <?php if (!$state['selectable'] && $state['unavailable_reason'] !== ''): ?><p class="topic-unavailable">Niedostępny: <?php echo escape_html($state['unavailable_reason']); ?></p><?php endif; ?>
                 <p>
                     <strong>Wynik: <?php echo $topic['score'] === null ? 'nie oceniono' : (int) $topic['score'] . '/100'; ?></strong>
                     · ryzyko: <?php echo escape_html((string) $topic['risk_level']); ?>
                     · automatyzacja: <?php echo (int) $topic['automatic_eligible'] === 1 ? 'dozwolona' : 'zablokowana'; ?>
                 </p>
                 <p><?php echo escape_html((string) $topic['source_names']); ?> · status: <?php echo escape_html((string) $topic['status']); ?><?php echo (int) $topic['grouping_locked'] === 1 ? ' · grupowanie ręcznie zablokowane' : ''; ?></p>
+                <ol class="topic-workflow-path" aria-label="Stan workflow">
+                    <li class="<?php echo $workflow['research']['done'] ? 'is-done' : ''; ?>">Research <?php echo $workflow['research']['done'] ? '✓' : '—'; ?></li>
+                    <li class="<?php echo $workflow['draft']['done'] ? 'is-done' : ''; ?>">Szkic <?php echo $workflow['draft']['done'] ? 'v' . (int) $workflow['draft']['version'] . ' ✓' : '—'; ?></li>
+                    <li class="<?php echo $workflow['quality']['done'] ? 'is-done' : ''; ?>">QC <?php echo $workflow['quality']['done'] ? '✓' : '—'; ?></li>
+                    <li class="<?php echo $workflow['images']['done'] ? 'is-done' : ''; ?>">Grafiki <?php echo $workflow['images']['done'] ? '✓' : '—'; ?></li>
+                    <li class="<?php echo $workflow['ready'] ? 'is-done' : ''; ?>">Gotowe <?php echo $workflow['ready'] ? '✓' : '—'; ?></li>
+                </ol>
+                <?php if (is_array($state['job'])): ?>
+                    <div class="topic-job-status<?php echo $state['job']['status'] === 'failed' ? ' is-error' : ''; ?>">
+                        <strong><?php echo escape_html((string) $state['job']['stage']); ?> · <?php echo (int) $state['job']['progress']; ?>%</strong>
+                        <progress max="100" value="<?php echo (int) $state['job']['progress']; ?>"><?php echo (int) $state['job']['progress']; ?>%</progress>
+                        <?php if ($state['job']['reason'] !== ''): ?><span><?php echo escape_html((string) $state['job']['reason']); ?></span><?php endif; ?>
+                        <?php if (($state['job']['technical_error'] ?? '') !== '' && $state['job']['technical_error'] !== $state['job']['reason']): ?><details><summary>Szczegóły techniczne</summary><code><?php echo escape_html((string) $state['job']['technical_error']); ?></code></details><?php endif; ?>
+                        <?php if ($state['job']['retryable']): ?><button type="button" class="topic-retry" data-retry-item="<?php echo (int) $state['job']['id']; ?>"><?php echo ($state['job']['repair_scope'] ?? '') === 'titles' ? 'Popraw tytuł' : 'Ponów etap'; ?></button><?php endif; ?>
+                    </div>
+                <?php endif; ?>
+                <form class="topic-card-actions" method="post" action="admin-editorial-topics.php" aria-label="Generowanie dla tematu <?php echo escape_html((string) $topic['title']); ?>">
+                    <input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>"><input type="hidden" name="action" value="run_workflow"><input type="hidden" name="topic_ids[]" value="<?php echo (int) $topic['id']; ?>"><input type="hidden" name="request_key" value="topic-<?php echo (int) $topic['id']; ?>-<?php echo escape_html(bin2hex(random_bytes(5))); ?>">
+                    <?php foreach (['research' => 'Research', 'draft' => 'Szkic', 'quality' => 'Kontrola jakości', 'images' => 'Grafiki', 'generate_all' => 'Wygeneruj całość'] as $actionKey => $actionLabel): $actionState = $state['actions'][$actionKey]; ?>
+                        <button name="workflow_action" value="<?php echo $actionKey; ?>"<?php echo $actionState['enabled'] ? '' : ' disabled'; ?> title="<?php echo escape_html($actionState['enabled'] ? $actionLabel : $actionState['reason']); ?>"<?php echo $actionKey === 'generate_all' ? ' class="topic-generate-all"' : ''; ?>><?php echo escape_html($actionLabel); ?></button>
+                    <?php endforeach; ?>
+                </form>
+                <?php if ($workflow['ready'] && $state['proposal_url']): ?><a class="topic-proposal-link" href="<?php echo escape_html((string) $state['proposal_url']); ?>">Otwórz gotową propozycję →</a><?php endif; ?>
                 <?php if ($breakdown !== []): ?>
                     <details>
                         <summary>Składowe punktacji i uzasadnienie</summary>
@@ -206,8 +291,9 @@ admin_page_open('Grupowanie tematów', 'topics');
                         </dl>
                     </details>
                 <?php endif; ?>
-                <details>
-                    <summary>Źródła i ręczne rozdzielanie</summary>
+                <details class="topic-source-tools">
+                    <summary>Źródła, łączenie i ręczne rozdzielanie</summary>
+                    <div class="topic-source-tools__content">
                     <ul>
                         <?php foreach ($items as $item): ?>
                             <li>
@@ -225,19 +311,25 @@ admin_page_open('Grupowanie tematów', 'topics');
                             </li>
                         <?php endforeach; ?>
                     </ul>
-                </details>
-                <form method="post" action="admin-editorial-topics.php">
-                    <input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>">
-                    <input type="hidden" name="action" value="merge_topics">
-                    <input type="hidden" name="source_topic_id" value="<?php echo (int) $topic['id']; ?>">
-                    <label for="target-<?php echo (int) $topic['id']; ?>">Połącz cały temat z ID:</label>
-                    <div class="editorial-action-row">
-                        <input id="target-<?php echo (int) $topic['id']; ?>" type="number" name="target_topic_id" min="1" required>
-                        <button type="submit">Połącz ręcznie</button>
+                    <form class="topic-merge-form" method="post" action="admin-editorial-topics.php">
+                        <input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>">
+                        <input type="hidden" name="action" value="merge_topics">
+                        <input type="hidden" name="source_topic_id" value="<?php echo (int) $topic['id']; ?>">
+                        <label for="target-<?php echo (int) $topic['id']; ?>">Połącz cały temat z ID:</label>
+                        <div class="editorial-action-row">
+                            <input id="target-<?php echo (int) $topic['id']; ?>" type="number" name="target_topic_id" min="1" required>
+                            <button type="submit">Połącz ręcznie</button>
+                        </div>
+                    </form>
                     </div>
+                </details>
+                <form class="topic-trash-form" method="post" action="admin-editorial-topics.php">
+                    <input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>"><input type="hidden" name="action" value="trash_topic"><input type="hidden" name="topic_id" value="<?php echo (int) $topic['id']; ?>">
+                    <button type="submit" class="topic-trash" title="Przenieś do Kosza na 10 dni" aria-label="Przenieś temat do Kosza: <?php echo escape_html((string) $topic['title']); ?>">🗑</button>
                 </form>
             </article>
         <?php endforeach; ?>
     </div>
+    <script type="application/json" id="topic-workflow-data"><?php echo json_encode($topicWorkflow, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG); ?></script>
 </section>
 <?php admin_page_close(); ?>

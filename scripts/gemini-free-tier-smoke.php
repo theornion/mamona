@@ -47,7 +47,15 @@ if ((int) $response['status'] === 429) {
     exit(3);
 }
 if ((int) $response['status'] < 200 || (int) $response['status'] >= 300) {
-    fwrite(STDERR, "GEMINI_SMOKE_HTTP_" . (int) $response['status'] . "\n");
+    $details = gemini_error_details($response);
+    fwrite(
+        STDERR,
+        "GEMINI_SMOKE_HTTP_" . (int) $response['status']
+        . " model=" . (string) app_config('gemini_model')
+        . ($details['code'] !== '' ? " code=" . $details['code'] : '')
+        . ($details['message'] !== '' ? "\n" . $details['message'] : '')
+        . "\n"
+    );
     exit(1);
 }
 $decoded = json_decode((string) $response['body'], true, 128, JSON_THROW_ON_ERROR);
@@ -59,4 +67,3 @@ if (($value['ok'] ?? false) !== true || ($value['provider'] ?? '') !== 'gemini')
 }
 
 echo "GEMINI_FREE_TIER_SMOKE_OK\n";
-

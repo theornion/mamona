@@ -1,142 +1,209 @@
+/*
+ * Mamona public design system: editorial clarity with restrained sci-tech
+ * character. All selectors are isolated from the administration panel.
+ */
 :root {
-    --theme-page-background: #e9edf1;
-    --theme-surface: #ffffff;
-    --theme-surface-alt: #f5f7f9;
-    --theme-text: #26313a;
-    --theme-heading: #1f2933;
-    --theme-muted: #66737f;
-    --theme-accent: #526576;
-    --theme-accent-hover: #34495a;
-    --theme-accent-contrast: #ffffff;
-    --theme-border: #d5dce2;
-    --theme-nav-background: #25313b;
-    --theme-nav-text: #ffffff;
-    --theme-footer-background: #eef2f5;
-    --theme-footer-text: #34424e;
-    --theme-input-background: #ffffff;
-    --theme-hero-background: #dfe5ea;
-    --theme-hero-text: #1f2933;
-    --theme-font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
-    --theme-font-heading: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
-    --theme-base-font-size: 16px;
-    --theme-line-height: 1.7;
-    --theme-heading-weight: 700;
-    --theme-content-width: 1180px;
-    --theme-section-spacing: 64px;
-    --theme-radius: 6px;
-    --theme-nav-height-public: 64px;
-    --theme-hero-height: 46vh;
-    --theme-card-shadow: 0 10px 30px rgba(31, 41, 51, 0.08);
-    --theme-background-image-public: none;
-    --theme-background-position-public: center;
-    --theme-background-size-public: cover;
-    --theme-transition-duration: 180ms;
+    --mamona-ink-950: #06101f;
+    --mamona-ink-900: #0a1628;
+    --mamona-ink-800: #12233b;
+    --mamona-paper: #f7f9fc;
+    --mamona-surface: #ffffff;
+    --mamona-surface-raised: #edf3f8;
+    --mamona-text: #182537;
+    --mamona-heading: #09182b;
+    --mamona-muted: #58687a;
+    --mamona-cyan: #007f9c;
+    --mamona-cyan-bright: #39d7f2;
+    --mamona-blue: #345cf5;
+    --mamona-violet: #7257d9;
+    --mamona-line: #d5e0ea;
+    --mamona-line-strong: #b6c8d8;
+    --mamona-focus: #005fcc;
+    --mamona-radius-sm: 0.45rem;
+    --mamona-radius: 0.85rem;
+    --mamona-radius-lg: 1.35rem;
+    --mamona-shadow-sm: 0 0.45rem 1.3rem rgba(6, 16, 31, 0.08);
+    --mamona-shadow-md: 0 1.1rem 3rem rgba(6, 16, 31, 0.13);
+    --mamona-shadow-glow: 0 0 0 1px rgba(57, 215, 242, 0.13), 0 1rem 3rem rgba(2, 14, 34, 0.3);
+    --mamona-shell: min(92vw, 78rem);
+    --mamona-reading: 58rem;
+    --mamona-gutter: clamp(1.15rem, 4vw, 4.5rem);
+    --mamona-section: clamp(3rem, 7vw, 6.5rem);
+    --mamona-nav-height: calc(var(--theme-nav-height-public, 4rem) * 0.6);
+    --mamona-ease: 180ms ease;
+    --mamona-space-background: url("../../images/nasa-pillars-of-creation.webp?v=20260728-fit");
 }
 
 html {
-    font-size: var(--theme-base-font-size);
+    font-size: var(--theme-base-font-size, 16px);
+    scroll-behavior: smooth;
 }
 
 body:not(.admin-page),
-body:not(.admin-page) input,
-body:not(.admin-page) select,
-body:not(.admin-page) textarea,
-body:not(.admin-page) button {
-    font-family: var(--theme-font-body);
+body:not(.admin-page) :where(input, select, textarea, button) {
+    font-family: var(--theme-font-body, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif);
 }
 
 body:not(.admin-page) {
-    background: var(--theme-page-background);
-    color: var(--theme-text);
+    min-width: 0;
+    background:
+        radial-gradient(circle at 12% 8%, rgba(52, 92, 245, 0.18), transparent 26rem),
+        radial-gradient(circle at 88% 24%, rgba(114, 87, 217, 0.14), transparent 30rem),
+        var(--mamona-ink-950);
+    color: var(--mamona-text);
     font-size: 1rem;
-    line-height: var(--theme-line-height);
+    line-height: 1.72;
+}
+
+body:not(.admin-page)::before {
+    content: "";
+    position: fixed;
+    z-index: -1;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+        linear-gradient(rgba(129, 205, 230, 0.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(129, 205, 230, 0.045) 1px, transparent 1px),
+        radial-gradient(circle, rgba(111, 228, 255, 0.18) 1px, transparent 1.5px);
+    background-size: 4rem 4rem, 4rem 4rem, 8rem 8rem;
+    mask-image: linear-gradient(to bottom, #000 0, transparent 72rem);
+}
+
+body:not(.admin-page) :where(p, li, h1, h2, h3, h4, a, label, figcaption) {
+    overflow-wrap: anywhere;
 }
 
 body:not(.admin-page) p {
     color: inherit;
-    line-height: var(--theme-line-height);
+    line-height: inherit;
     text-align: left;
 }
 
-body:not(.admin-page) h1,
-body:not(.admin-page) h2,
-body:not(.admin-page) h3,
-body:not(.admin-page) h4,
-body:not(.admin-page) h5,
-body:not(.admin-page) h6 {
-    color: var(--theme-heading);
-    font-family: var(--theme-font-heading);
-    font-weight: var(--theme-heading-weight);
-    letter-spacing: 0;
+body:not(.admin-page) :where(h1, h2, h3, h4, h5, h6) {
+    color: var(--mamona-heading);
+    font-family: var(--theme-font-heading, "Grenze SemiBold", Georgia, serif);
+    font-weight: var(--theme-heading-weight, 650);
+    letter-spacing: -0.025em;
+    text-wrap: balance;
     text-shadow: none;
 }
 
 body:not(.admin-page) a {
-    border-bottom-color: color-mix(in srgb, var(--theme-accent) 45%, transparent);
-    transition-duration: var(--theme-transition-duration);
+    border-bottom-color: rgba(0, 127, 156, 0.38);
+    color: var(--mamona-cyan);
+    text-underline-offset: 0.17em;
+    transition: color var(--mamona-ease), border-color var(--mamona-ease), background-color var(--mamona-ease), transform var(--mamona-ease), box-shadow var(--mamona-ease);
 }
 
-body:not(.admin-page) a:hover,
-body:not(.admin-page) a:focus-visible {
-    color: var(--theme-accent-hover);
+body:not(.admin-page) a:hover {
+    color: #005e7d;
 }
 
-body:not(.admin-page) #wrapper > .bg {
-    background-color: var(--theme-page-background) !important;
-    background-image: linear-gradient(color-mix(in srgb, var(--theme-page-background) 86%, transparent), color-mix(in srgb, var(--theme-page-background) 86%, transparent)), var(--theme-background-image-public) !important;
-    background-position: center, var(--theme-background-position-public) !important;
-    background-repeat: no-repeat !important;
-    background-size: cover, var(--theme-background-size-public) !important;
+body:not(.admin-page) :where(a, button, input, select, textarea):focus-visible {
+    outline: 3px solid var(--mamona-focus);
+    outline-offset: 3px;
 }
 
-body:not(.admin-page) #wrapper.fade-in::before {
-    background: var(--theme-page-background);
+body:not(.admin-page) :where(a, button, input, select, textarea) {
+    touch-action: manipulation;
 }
 
-body:not(.admin-page) #intro {
-    min-height: var(--theme-hero-height);
-    padding: clamp(3rem, 8vw, 7rem) 2rem;
-    justify-content: center;
-    background: var(--theme-hero-background);
-    color: var(--theme-hero-text);
-}
-
-body:not(.admin-page) #intro .intro-stamp-filters,
-body:not(.admin-page) #intro .image.logo {
+body:not(.admin-page) [hidden] {
     display: none !important;
 }
 
-body:not(.admin-page) #intro p,
-body:not(.admin-page) #intro .intro-brand {
+body:not(.admin-page) #wrapper {
+    width: 100%;
+    max-width: none;
+}
+
+body:not(.admin-page) #wrapper > .bg {
+    background:
+        radial-gradient(circle at 50% -10%, rgba(57, 215, 242, 0.11), transparent 38rem),
+        linear-gradient(155deg, rgba(10, 22, 40, 0.16), rgba(6, 16, 31, 0.58)),
+        var(--mamona-space-background) center / var(--bg-responsive-width, 100vw) auto no-repeat !important;
+    background-position: center, center, var(--bg-responsive-x, 50%) var(--bg-responsive-y, 0px) !important;
+    image-rendering: auto;
+}
+
+body:not(.admin-page) #wrapper.fade-in::before {
+    background: var(--mamona-ink-950);
+}
+
+/* Hero: masthead with quiet orbital geometry. */
+body:not(.admin-page) #intro {
+    position: relative;
+    min-height: clamp(27rem, 66vh, 47rem);
+    padding: clamp(5rem, 12vw, 10rem) var(--mamona-gutter);
+    justify-content: center;
+    overflow: hidden;
+    background:
+        radial-gradient(circle at 50% 45%, rgba(52, 92, 245, 0.2), transparent 19rem),
+        linear-gradient(145deg, rgba(18, 35, 59, 0.96), rgba(6, 16, 31, 0.98));
+    color: #eefaff;
+}
+
+body:not(.admin-page) #intro::before,
+body:not(.admin-page) #intro::after {
+    content: "";
+    position: absolute;
+    width: min(70vw, 45rem);
+    aspect-ratio: 1;
+    top: 50%;
+    left: 50%;
+    pointer-events: none;
+    border: 1px solid rgba(90, 220, 244, 0.18);
+    border-radius: 50%;
+    transform: translate(-50%, -50%) rotate(-16deg) scaleY(0.42);
+}
+
+body:not(.admin-page) #intro::after {
+    width: min(42vw, 25rem);
+    border-color: rgba(155, 125, 255, 0.22);
+    transform: translate(-50%, -50%) rotate(24deg) scaleY(0.48);
+}
+
+body:not(.admin-page) #intro :where(.intro-stamp-filters, .image.logo) {
+    display: none !important;
+}
+
+body:not(.admin-page) #intro :where(p, .intro-brand) {
+    position: relative;
+    z-index: 1;
     visibility: visible !important;
     opacity: 1 !important;
     animation: none !important;
     transform: none !important;
-    color: var(--theme-hero-text) !important;
-    text-shadow: none !important;
+    color: inherit !important;
 }
 
 body:not(.admin-page) #intro p {
     order: 2;
-    margin: 0.8rem 0 0;
-    font-family: var(--theme-font-body);
-    font-size: clamp(1rem, 1.7vw, 1.25rem);
-    font-weight: 400;
+    max-width: 38rem;
+    margin: 1rem 0 0;
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: clamp(0.82rem, 1.4vw, 1rem);
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    line-height: 1.7;
+    text-align: center;
+    text-transform: uppercase;
     white-space: normal;
 }
 
 body:not(.admin-page) #intro .intro-brand {
     order: 1;
     margin: 0;
-    max-width: 18ch;
-    font-family: var(--theme-font-heading);
-    font-size: clamp(2.75rem, 7vw, 5.75rem);
-    font-weight: var(--theme-heading-weight);
-    line-height: 1.04;
-    letter-spacing: -0.04em;
-    background: none !important;
-    -webkit-text-fill-color: currentColor !important;
-    filter: none !important;
+    max-width: 15ch;
+    font-size: clamp(4.2rem, 12vw, 9.5rem);
+    font-weight: 600;
+    line-height: 0.84;
+    letter-spacing: -0.055em;
+    background: linear-gradient(105deg, #fff 15%, #9defff 58%, #c9baff 100%) !important;
+    background-clip: text !important;
+    -webkit-background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+    filter: drop-shadow(0 0 1.5rem rgba(57, 215, 242, 0.14));
 }
 
 body:not(.admin-page).is-preload #intro:not(.hidden) + #header + #nav,
@@ -150,12 +217,16 @@ body:not(.admin-page) #intro + #header {
 }
 
 body:not(.admin-page) #header {
+    width: var(--mamona-shell) !important;
+    max-width: var(--mamona-shell) !important;
     height: auto;
-    min-height: 5rem;
-    padding: 1.25rem 2rem calc(1.25rem + var(--theme-nav-height-public));
-    justify-content: center;
-    background: var(--theme-surface);
-    color: var(--theme-heading);
+    min-height: 6rem;
+    margin-right: auto !important;
+    margin-left: auto !important;
+    padding: 1.5rem var(--mamona-gutter);
+    justify-content: flex-start;
+    background: rgba(10, 22, 40, 0.96);
+    box-sizing: border-box;
 }
 
 body:not(.admin-page) #header .logo,
@@ -165,276 +236,786 @@ body:not(.admin-page) #intro.hidden + #header .logo {
     opacity: 1 !important;
     transform: none !important;
     padding: 0;
-    color: var(--theme-heading) !important;
-    font-family: var(--theme-font-heading);
-    font-size: clamp(1.6rem, 3vw, 2.4rem);
-    font-weight: var(--theme-heading-weight);
-    letter-spacing: -0.025em;
+    border: 0;
+    color: #f4fbff !important;
+    font-size: clamp(1.7rem, 3vw, 2.35rem);
+    font-weight: 600;
+    letter-spacing: -0.035em;
 }
 
-body:not(.admin-page) #header .logo:hover,
-body:not(.admin-page) #intro + #header .logo:hover {
-    color: var(--theme-accent-hover) !important;
-    transform: none;
-    text-shadow: none;
+body:not(.admin-page) #header .logo::after {
+    content: " / NAUKA · TECH · PRZYSZŁOŚĆ";
+    margin-left: 0.75rem;
+    color: var(--mamona-cyan-bright);
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 0.58rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    vertical-align: middle;
 }
 
 body:not(.admin-page) #nav {
-    height: var(--theme-nav-height-public);
-    line-height: var(--theme-nav-height-public);
-    max-width: var(--theme-content-width);
+    position: sticky !important;
+    top: 0 !important;
+    left: auto !important;
+    z-index: 9999;
+    width: var(--mamona-shell) !important;
+    max-width: var(--mamona-shell) !important;
+    height: var(--mamona-nav-height);
     padding-right: 1rem;
-    background: var(--theme-nav-background) !important;
-    color: var(--theme-nav-text) !important;
-    box-shadow: var(--theme-card-shadow);
+    margin: 0 auto !important;
+    border-top: 1px solid rgba(151, 218, 239, 0.12);
+    background: rgba(10, 22, 40, 0.96) !important;
+    box-shadow: var(--mamona-shadow-glow);
+    color: #eaf7fb !important;
+    line-height: var(--mamona-nav-height);
+    border-radius: var(--site-shell-radius, var(--mamona-radius-lg)) var(--site-shell-radius, var(--mamona-radius-lg)) 0 0 !important;
+    box-sizing: border-box;
+    transform: none !important;
+    translate: none !important;
+}
+
+body:not(.admin-page) #nav::before {
+    background: rgba(10, 22, 40, 0.96) !important;
+    border-radius: inherit;
+}
+
+body:not(.admin-page).page-no-intro #intro + #header + #nav {
+    left: auto !important;
+    transform: none !important;
+    translate: none !important;
 }
 
 body:not(.admin-page) #nav ul.links {
-    font-family: var(--theme-font-body);
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    text-transform: none;
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-weight: 650;
+    letter-spacing: 0.055em;
+    text-transform: uppercase;
 }
 
 body:not(.admin-page) #nav ul.links li a {
-    color: var(--theme-nav-text);
-    font-size: 0.85rem;
+    color: #dcecf4;
+    font-size: 0.72rem;
 }
 
 body:not(.admin-page) #nav ul.links li.active,
 body:not(.admin-page) #nav ul.links li a:hover,
 body:not(.admin-page) #nav ul.links li a:focus-visible {
-    background: color-mix(in srgb, var(--theme-nav-text) 12%, transparent);
-    color: var(--theme-nav-text) !important;
-    text-shadow: none;
+    background: linear-gradient(180deg, rgba(57, 215, 242, 0.12), rgba(52, 92, 245, 0.08));
+    color: #fff !important;
+}
+
+body:not(.admin-page) #nav ul.links li.active {
+    box-shadow: inset 0 -2px var(--mamona-cyan-bright);
 }
 
 body:not(.admin-page) .nav-dropdown-menu {
-    border-color: var(--theme-border);
-    background: var(--theme-nav-background);
-    box-shadow: var(--theme-card-shadow);
+    border: 1px solid rgba(151, 218, 239, 0.18);
+    background: var(--mamona-ink-900);
+    box-shadow: var(--mamona-shadow-md);
 }
 
-body:not(.admin-page) #main,
-body:not(.admin-page) #footer,
-body:not(.admin-page) #copyright {
-    max-width: var(--theme-content-width);
+body:not(.admin-page) :where(#main, #footer, #copyright) {
+    width: var(--mamona-shell) !important;
+    max-width: var(--mamona-shell) !important;
+    margin-right: auto !important;
+    margin-left: auto !important;
+    box-sizing: border-box;
+}
+
+body.menu-page:not(.admin-page) :is(#header, #nav, #main, #footer, #copyright) {
+    width: var(--mamona-shell) !important;
+    max-width: var(--mamona-shell) !important;
+    margin-right: auto !important;
+    margin-left: auto !important;
+}
+
+html body.menu-page:not(.admin-page) #wrapper > #nav {
+    right: auto !important;
+    left: 0 !important;
+    margin-bottom: calc(-1 * var(--mamona-nav-height)) !important;
+    transform: none !important;
 }
 
 body:not(.admin-page) #main {
-    background: var(--theme-surface);
-    color: var(--theme-text);
-    box-shadow: var(--theme-card-shadow);
+    position: relative;
+    margin-top: 0 !important;
+    overflow-x: clip;
+    background:
+        linear-gradient(90deg, rgba(57, 215, 242, 0.025), transparent 22%, transparent 78%, rgba(114, 87, 217, 0.035)),
+        rgba(4, 12, 26, 0.56);
+    -webkit-backdrop-filter: blur(1px);
+    backdrop-filter: blur(1px);
+    color: #e7f2f7;
+    border-radius: var(--site-shell-radius, var(--mamona-radius-lg)) !important;
+    box-shadow: var(--mamona-shadow-md);
 }
 
-body:not(.admin-page) #main > * {
-    padding: var(--theme-section-spacing);
-    border-color: var(--theme-border);
+body:not(.admin-page) #main::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto;
+    height: 3px;
+    background: linear-gradient(90deg, var(--mamona-cyan-bright), var(--mamona-blue) 55%, var(--mamona-violet));
 }
 
+body:not(.admin-page) #main > *,
 body:not(.admin-page) #main > .post {
-    padding: clamp(2.5rem, 7vw, var(--theme-section-spacing));
+    padding: var(--mamona-section) var(--mamona-gutter);
+    border-color: var(--mamona-line);
 }
 
-body:not(.admin-page) #main > .post.featured,
-body:not(.admin-page) #main > .post.featured p,
-body:not(.admin-page) #main > .post.featured strong,
-body:not(.admin-page) #main > .post.featured b {
-    background: var(--theme-surface);
-    color: var(--theme-text);
+body:not(.admin-page) #main > .post.featured {
+    background: transparent;
+    color: #e7f2f7;
 }
 
-body:not(.admin-page) #main > .post.featured::before {
+body:not(.admin-page) #main > .post.featured::before,
+body:not(.admin-page) #main > .post.featured h2::after {
     display: none;
 }
 
-body:not(.admin-page) #main > .post.featured h1,
-body:not(.admin-page) #main > .post.featured h2,
-body:not(.admin-page) #main > .post.featured h3,
-body:not(.admin-page) #main > .post.featured h2 span,
-body:not(.admin-page) #main > .post.featured h2:hover span,
-body:not(.admin-page) #main > .post.featured h2.is-scroll-lit span {
-    color: var(--theme-heading) !important;
-    background: none;
+body:not(.admin-page) #main > .post.featured :where(h1, h2, h3, h4, h2 span) {
+    color: #f8fcff !important;
+    background: transparent;
     -webkit-text-fill-color: currentColor;
     text-shadow: none;
     transform: none;
 }
 
-body:not(.admin-page) #main > .post.featured h2::after {
-    display: none;
+body:not(.admin-page) #main > .post.featured :where(p, li, strong, b, em, blockquote),
+body:not(.admin-page) #main .post-page-body :where(p, li, strong, b, em),
+body:not(.admin-page) #main :where(.trust-page-body, .trust-page-body p, .trust-page-body li) {
+    color: #e7f2f7 !important;
+    text-shadow: 0 1px 1px rgba(0, 0, 0, 0.2);
 }
 
-body:not(.admin-page) .news-feed-heading,
-body:not(.admin-page) .news-feed-heading p,
-body:not(.admin-page) .news-feed-kicker,
-body:not(.admin-page) .news-feed-category {
-    color: var(--theme-muted) !important;
+body:not(.admin-page) #main :where(a, .post-byline a) {
+    color: #7fe9fb;
 }
 
-body:not(.admin-page) .news-feed-kicker,
-body:not(.admin-page) .news-feed-category {
-    font-family: var(--theme-font-body);
-    letter-spacing: 0.08em;
+body:not(.admin-page) #main :where(a, .post-byline a):hover {
+    color: #c5f6ff;
+}
+
+body:not(.admin-page) .news-feed-heading {
+    max-width: 52rem;
+    margin: 0 auto clamp(2.5rem, 6vw, 4.5rem);
+    text-align: center;
+}
+
+body:not(.admin-page) .news-feed-heading h1 {
+    margin-bottom: 1rem;
+    font-size: clamp(2.6rem, 7vw, 5.75rem);
+    line-height: 0.96;
+}
+
+body:not(.admin-page) .news-feed-heading > p:not(.news-feed-kicker) {
+    max-width: 38rem;
+    margin-inline: auto;
+    color: #c5d7e1 !important;
+    font-size: clamp(1rem, 1.6vw, 1.18rem);
+    text-align: center;
+}
+
+body:not(.admin-page) :where(.news-feed-kicker, .news-feed-category) {
+    color: #7fe9fb !important;
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 0.72rem;
+    font-weight: 750;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+body:not(.admin-page) .news-feed-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: clamp(1rem, 2.5vw, 2rem);
+}
+
+body:not(.admin-page) .news-feed-item {
+    min-width: 0;
 }
 
 body:not(.admin-page) .news-feed-card {
     overflow: hidden;
-    border: 1px solid var(--theme-border);
-    border-radius: var(--theme-radius);
-    background: var(--theme-surface-alt);
-    box-shadow: var(--theme-card-shadow);
-    color: var(--theme-text);
-    transition-duration: var(--theme-transition-duration);
+    border: 1px solid var(--mamona-line);
+    border-radius: var(--mamona-radius-lg);
+    background: var(--mamona-surface);
+    box-shadow: var(--mamona-shadow-sm);
+    color: var(--mamona-text);
+}
+
+body:not(.admin-page) a.news-feed-card.news-feed-post-link,
+body:not(.admin-page) a.news-feed-card.gallery-overview-card {
+    min-height: clamp(19rem, 34vw, 27rem);
+    border: 1px solid rgba(111, 228, 255, 0.16);
+    border-radius: var(--mamona-radius-lg);
+    background: linear-gradient(145deg, rgba(18, 35, 59, 0.98), rgba(6, 16, 31, 0.98)) !important;
+    color: #eaf5fa !important;
+    clip-path: inset(0 round var(--mamona-radius-lg));
+}
+
+body:not(.admin-page) a.news-feed-card.news-feed-post-link::before,
+body:not(.admin-page) a.news-feed-card.gallery-overview-card::before {
+    content: "";
+    position: absolute;
+    z-index: 0;
+    inset: 0;
+    background: linear-gradient(180deg, transparent 10%, rgba(4, 12, 26, 0.16) 45%, rgba(4, 12, 26, 0.96)), linear-gradient(120deg, rgba(52, 92, 245, 0.13), rgba(114, 87, 217, 0.12));
+}
+
+body:not(.admin-page) .news-feed-card .news-feed-content {
+    z-index: 1;
+    padding: clamp(1.3rem, 3.5vw, 2.2rem);
+    padding-bottom: 3.6rem;
+    background: transparent !important;
+    color: #eaf5fa !important;
+}
+
+body:not(.admin-page) .news-feed-card h2 {
+    max-width: 21ch;
+    color: #f8fcff !important;
+    font-size: clamp(1.55rem, 3vw, 2.25rem);
+    line-height: 1.05;
+}
+
+body:not(.admin-page) .news-feed-card :where(p, time) {
+    color: #dceaf1 !important;
+    text-shadow: none;
+}
+
+body:not(.admin-page) .news-feed-card .news-feed-category {
+    color: #8beafa !important;
 }
 
 body:not(.admin-page) .news-feed-card:hover,
 body:not(.admin-page) .news-feed-card:focus-visible {
-    border-color: var(--theme-accent);
-    color: var(--theme-text);
-    transform: translateY(-2px);
+    border-color: rgba(57, 215, 242, 0.7);
+    color: #fff;
+    transform: translateY(-0.3rem);
+    box-shadow: 0 1.25rem 2.6rem rgba(3, 13, 28, 0.25), 0 0 0 1px rgba(57, 215, 242, 0.22);
 }
 
-body:not(.admin-page) .news-feed-card h2,
-body:not(.admin-page) .news-feed-card p,
-body:not(.admin-page) .news-feed-card time,
-body:not(.admin-page) .gallery-overview-action {
-    color: inherit !important;
-    text-shadow: none;
+body:not(.admin-page) .news-feed-pagination {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.65rem;
+    margin-top: 3rem;
 }
 
 body:not(.admin-page) .news-feed-pagination a,
-body:not(.admin-page) input[type="submit"],
-body:not(.admin-page) input[type="reset"],
-body:not(.admin-page) input[type="button"],
-body:not(.admin-page) button,
-body:not(.admin-page) .button {
-    border-radius: var(--theme-radius);
-    background: var(--theme-accent);
-    box-shadow: none;
-    color: var(--theme-accent-contrast) !important;
-    font-family: var(--theme-font-body);
-    font-weight: 650;
-    letter-spacing: 0.02em;
+body:not(.admin-page) :where(input[type="submit"], input[type="reset"], input[type="button"], button, .button) {
+    border: 1px solid transparent;
+    border-radius: var(--mamona-radius-sm);
+    background: linear-gradient(120deg, var(--mamona-cyan), var(--mamona-blue));
+    box-shadow: 0 0.55rem 1.3rem rgba(20, 77, 150, 0.16);
+    color: #fff !important;
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-weight: 700;
+    letter-spacing: 0.045em;
     text-shadow: none;
-    transition-duration: var(--theme-transition-duration);
 }
 
 body:not(.admin-page) .news-feed-pagination a:hover,
-body:not(.admin-page) .news-feed-pagination a:focus-visible,
-body:not(.admin-page) input[type="submit"]:hover,
-body:not(.admin-page) input[type="reset"]:hover,
-body:not(.admin-page) input[type="button"]:hover,
-body:not(.admin-page) button:hover,
-body:not(.admin-page) .button:hover {
-    background: var(--theme-accent-hover);
-    color: var(--theme-accent-contrast) !important;
+body:not(.admin-page) :where(input[type="submit"], input[type="reset"], input[type="button"], button, .button):hover {
+    background: linear-gradient(120deg, #006f8a, #284bd1);
+    color: #fff !important;
+    transform: translateY(-1px);
+}
+
+body:not(.admin-page) .news-feed-pagination a.is-active {
+    border-color: var(--mamona-blue);
+    background: var(--mamona-surface);
+    color: var(--mamona-blue) !important;
     box-shadow: none;
-    transform: none;
 }
 
-body:not(.admin-page) input[type="text"],
-body:not(.admin-page) input[type="password"],
-body:not(.admin-page) input[type="email"],
-body:not(.admin-page) input[type="tel"],
-body:not(.admin-page) input[type="url"],
-body:not(.admin-page) select,
-body:not(.admin-page) textarea {
-    border: 1px solid var(--theme-border);
-    border-radius: var(--theme-radius);
-    background: var(--theme-input-background);
-    color: var(--theme-text);
+/* Long-form editorial rhythm. */
+body:not(.admin-page) .bueno-post-page {
+    padding-top: clamp(3rem, 7vw, 6rem) !important;
 }
 
-body:not(.admin-page) input:focus,
-body:not(.admin-page) select:focus,
-body:not(.admin-page) textarea:focus {
-    border-color: var(--theme-accent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-accent) 18%, transparent);
+body:not(.admin-page) .bueno-post-page > .news-feed-heading {
+    max-width: 58rem;
+}
+
+body:not(.admin-page) .post-byline {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.45rem 1.15rem;
+    margin-top: 1.4rem;
+    color: #bdd0db;
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 0.76rem;
+}
+
+body:not(.admin-page) .post-page-body {
+    width: 100%;
+    max-width: var(--mamona-reading);
+    margin: 0 auto 3rem;
+    font-size: clamp(1.04rem, 1.2vw, 1.13rem);
+    line-height: 1.82;
+    color: #e7f2f7;
+}
+
+body:not(.admin-page) .post-page-body :where(h2, h3) {
+    margin-top: 2.8em;
+    margin-bottom: 0.75em;
+    line-height: 1.12;
+}
+
+body:not(.admin-page) .post-page-body h2 {
+    position: relative;
+    padding-left: 1rem;
+    font-size: clamp(1.75rem, 3.5vw, 2.55rem);
+}
+
+body:not(.admin-page) .post-page-body h2::before {
+    content: "";
+    position: absolute;
+    top: 0.12em;
+    bottom: 0.12em;
+    left: 0;
+    width: 3px;
+    border-radius: 99px;
+    background: linear-gradient(var(--mamona-cyan), var(--mamona-violet));
+}
+
+body:not(.admin-page) .post-page-body :where(ul, ol) {
+    padding-left: 1.3rem;
+}
+
+body:not(.admin-page) .post-page-body li {
+    margin-bottom: 0.6rem;
+}
+
+body:not(.admin-page) .post-page-body blockquote {
+    margin: 2.5rem 0;
+    padding: 1.4rem 1.6rem;
+    border: 0;
+    border-left: 4px solid var(--mamona-violet);
+    border-radius: 0 var(--mamona-radius) var(--mamona-radius) 0;
+    background: linear-gradient(100deg, rgba(114, 87, 217, 0.11), rgba(52, 92, 245, 0.035));
+    background: linear-gradient(100deg, rgba(114, 87, 217, 0.24), rgba(52, 92, 245, 0.08));
+    color: #eef8fc;
+    font-size: 1.08em;
+}
+
+/* Callout surfaces own their colour; direct children stay transparent. */
+body:not(.admin-page) :where(
+    .article-section--importance,
+    .article-section--fact,
+    .article-section--context,
+    .article-section--unknowns,
+    .article-section--takeaway
+) {
+    border: 1px solid var(--mamona-line);
+    border-radius: var(--mamona-radius);
+    box-shadow: var(--mamona-shadow-sm);
+}
+
+body:not(.admin-page) .article-section--importance {
+    border-left: 0.3rem solid var(--mamona-violet);
+    border-color: rgba(171, 145, 255, 0.34);
+    border-left-color: var(--mamona-violet);
+    background: linear-gradient(110deg, rgba(48, 37, 88, 0.76), rgba(15, 26, 49, 0.68));
+    color: #f2efff;
+}
+
+body:not(.admin-page) .article-section--fact {
+    border-color: rgba(91, 220, 242, 0.3);
+    background: linear-gradient(115deg, rgba(9, 65, 79, 0.74), rgba(11, 29, 49, 0.68));
+    color: #e6faff;
+}
+
+body:not(.admin-page) .article-section--fact::before {
+    background: var(--mamona-cyan);
+    box-shadow: 0 0 0 0.34rem rgba(0, 127, 156, 0.14);
+}
+
+body:not(.admin-page) .article-section--context {
+    border-color: rgba(113, 152, 255, 0.3);
+    background: linear-gradient(115deg, rgba(28, 52, 96, 0.75), rgba(12, 28, 50, 0.68));
+    color: #edf3ff;
+}
+
+body:not(.admin-page) .article-section--unknowns {
+    border-color: rgba(230, 177, 99, 0.32);
+    background: linear-gradient(115deg, rgba(91, 58, 18, 0.72), rgba(31, 32, 39, 0.66));
+    color: #fff3df;
+}
+
+body:not(.admin-page) .article-section--unknown {
+    color: #f7e4c4;
+}
+
+body:not(.admin-page) .article-section--takeaway {
+    border-color: rgba(105, 220, 241, 0.28);
+    background: radial-gradient(circle at 90% 0, rgba(114, 87, 217, 0.28), transparent 14rem), linear-gradient(135deg, var(--mamona-ink-800), var(--mamona-ink-950));
+    box-shadow: var(--mamona-shadow-glow);
+    color: #effbff;
+}
+
+body:not(.admin-page) :where(
+    .article-section--importance,
+    .article-section--fact,
+    .article-section--context,
+    .article-section--unknowns,
+    .article-section--takeaway
+) > :where(p, ul, ol, h2, h3, h4, strong, em) {
+    background: transparent !important;
+    color: inherit !important;
+}
+
+body:not(.admin-page) :where(.article-section--importance, .article-section--fact, .article-section--context, .article-section--unknowns, .article-section--takeaway) > :last-child {
+    margin-bottom: 0;
+}
+
+body:not(.admin-page) :where(.article-illustration, .post-content-image, .post-page-image) {
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+body:not(.admin-page) .bueno-post-page > :where(.article-illustration--hero, .post-page-image) {
+    width: min(73.6vw, 62.4rem) !important;
+    max-width: none;
+    margin-right: auto;
+    margin-left: auto;
+}
+
+body:not(.admin-page) .article-illustration {
+    clear: none;
+}
+
+/* Standard inline illustration: centered within the reading column.
+   Hero, breakout, floated variants and gallery items keep their own layouts. */
+body:not(.admin-page) .article-illustration--full:not(.article-illustration--hero) {
+    clear: both;
+    width: 80%;
+    max-width: 52rem;
+    margin: 2.25rem auto;
+}
+
+body:not(.admin-page) .article-illustration--full:not(.article-illustration--hero) > img {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    object-fit: contain;
+}
+
+body:not(.admin-page) .article-mini-gallery .article-illustration--full {
+    width: 100%;
+    max-width: none;
+    margin: 0;
+}
+
+body:not(.admin-page) .article-section > :where(
+    .article-illustration--left,
+    .article-illustration--right
+) {
+    margin-top: 4rem;
+}
+
+body:not(.admin-page) :where(
+    .article-illustration--full,
+    .article-illustration--hero,
+    .article-illustration--breakout,
+    .article-mini-gallery
+) {
+    clear: both;
+}
+
+body:not(.admin-page) :where(.article-illustration, .post-content-image, .post-page-image) figcaption {
+    margin: 0.7rem auto 0;
+    padding: 0;
+    border: 0;
+    background: transparent !important;
+    color: #c5d7e1;
+    font-size: 0.78em;
+    text-align: center !important;
+}
+
+body:not(.admin-page) :where(.article-illustration, .post-content-image, .post-page-image) figcaption :where(small, p) {
+    color: inherit !important;
+    text-align: center !important;
+}
+
+body:not(.admin-page) .post-cropped-image {
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+body:not(.admin-page) .article-illustration--breakout {
+    margin-inline: clamp(-4rem, -5vw, -1.5rem);
+}
+
+body:not(.admin-page) :where(.post-sources, .post-related, .post-ai-disclosure) {
+    max-width: var(--mamona-reading);
+    margin: 1.25rem auto 0;
+    padding: 1.35rem 1.5rem;
+    border: 1px solid var(--mamona-line);
+    border-radius: var(--mamona-radius);
+    background: rgba(8, 21, 38, 0.84);
+    color: #dcecf4;
+    text-align: left;
+}
+
+body:not(.admin-page) .post-sources { border-left: 3px solid var(--mamona-cyan); }
+body:not(.admin-page) .post-related { border-left: 3px solid var(--mamona-violet); }
+body:not(.admin-page) .post-ai-disclosure { color: #c5d7e1; font-size: 0.9rem; }
+
+body:not(.admin-page) :where(.post-sources, .post-related) h2 {
+    margin-bottom: 0.75rem;
+    font-size: 1.15rem;
+}
+
+body:not(.admin-page) :where(input[type="text"], input[type="password"], input[type="email"], input[type="tel"], input[type="url"], select, textarea) {
+    border: 1px solid var(--mamona-line-strong);
+    border-radius: var(--mamona-radius-sm);
+    background: var(--mamona-surface);
+    color: var(--mamona-text);
+}
+
+body:not(.admin-page) :where(input, select, textarea):focus {
+    border-color: var(--mamona-focus);
+    box-shadow: 0 0 0 3px rgba(0, 95, 204, 0.16);
 }
 
 body:not(.admin-page) #footer {
-    border-color: var(--theme-border);
-    background: var(--theme-footer-background);
-    color: var(--theme-footer-text);
+    border-color: rgba(151, 218, 239, 0.13);
+    background: radial-gradient(circle at 75% 20%, rgba(52, 92, 245, 0.12), transparent 22rem), var(--mamona-ink-900);
+    color: #c6d7e2;
 }
 
 body:not(.admin-page) #footer > section,
 body:not(.admin-page) #footer > section.split > section {
-    border-color: var(--theme-border);
+    border-color: rgba(151, 218, 239, 0.13);
 }
 
-body:not(.admin-page) #footer h1,
-body:not(.admin-page) #footer h2,
-body:not(.admin-page) #footer h3,
-body:not(.admin-page) #footer label,
-body:not(.admin-page) #footer p,
-body:not(.admin-page) #footer a {
-    color: var(--theme-footer-text);
+body:not(.admin-page) #footer :where(h1, h2, h3, label) { color: #f2faff; }
+body:not(.admin-page) #footer :where(p, a) { color: #c6d7e2; }
+
+body:not(.admin-page) #footer :where(input, textarea) {
+    border-color: rgba(151, 218, 239, 0.26);
+    background: rgba(255, 255, 255, 0.055);
+    color: #f4fbff;
 }
 
-body:not(.admin-page) #copyright,
-body:not(.admin-page) #copyright p {
-    color: var(--theme-muted);
+body:not(.admin-page) #footer :where(input, textarea)::placeholder { color: #94a9b7; }
+
+body:not(.admin-page) #copyright {
+    margin-top: 0;
+    padding: 2.5rem var(--mamona-gutter);
+    color: #94a8b7;
     text-shadow: none;
 }
 
-body:not(.admin-page) .trust-footer-links {
-    margin: 0 0 1rem;
-}
+body:not(.admin-page) .trust-footer-links { margin: 0 0 1rem; }
 
 body:not(.admin-page) .trust-footer-links ul {
     display: flex;
     flex-wrap: wrap;
     justify-content: center;
-    gap: 0.45rem 1rem;
+    gap: 0.5rem 1.15rem;
     margin: 0;
     padding: 0;
     list-style: none;
 }
 
-body:not(.admin-page) .trust-footer-links a,
-body:not(.admin-page) .contact-privacy-note a {
+body:not(.admin-page) :where(.trust-footer-links a, .contact-privacy-note a) {
     color: inherit;
     text-decoration: underline;
     text-underline-offset: 0.18em;
 }
 
-body:not(.admin-page) .trust-page {
-    text-align: left;
-}
+body:not(.admin-page) .trust-page { text-align: left; }
 
 body:not(.admin-page) .trust-page-body {
-    max-width: 52rem;
+    max-width: var(--mamona-reading);
     margin: 0 auto;
+    font-size: 1.05rem;
 }
 
-body:not(.admin-page) .trust-page-body h2 {
-    margin-top: 2rem;
-}
+body:not(.admin-page) .trust-page-body h2 { margin-top: 2.5rem; }
 
 body:not(.admin-page) .trust-placeholder {
     margin: 1.25rem 0;
     padding: 1rem 1.15rem;
-    border: 2px solid #b45309;
-    border-radius: var(--theme-radius);
-    background: #fff7ed;
-    color: #7c2d12;
+    border: 1px solid rgba(241, 177, 83, 0.42);
+    border-left-width: 4px;
+    border-radius: var(--mamona-radius);
+    background: linear-gradient(110deg, rgba(91, 58, 18, 0.72), rgba(21, 29, 42, 0.68));
+    color: #fff1dc;
 }
+
+body:not(.admin-page) .trust-placeholder strong { color: #fff7eb; }
 
 body:not(.admin-page) .trust-author-card,
 body:not(.admin-page) .trust-contact-item {
     margin-top: 1.25rem;
     padding-top: 1.25rem;
-    border-top: 1px solid var(--theme-border);
+    border-top: 1px solid var(--mamona-line);
 }
 
-body:not(.admin-page) .contact-privacy-note {
-    margin: 0.75rem 0 0;
-    font-size: 0.85rem;
+body:not(.admin-page) .contact-privacy-note { margin: 0.75rem 0 0; font-size: 0.85rem; }
+
+body:not(.admin-page) .trust-contact-form-section {
+    margin-top: 3rem;
+    padding: clamp(1.25rem, 4vw, 2rem);
+    border: 1px solid rgba(151, 218, 239, 0.2);
+    border-radius: var(--mamona-radius-lg);
+    background: rgba(8, 21, 38, 0.62);
+}
+
+body:not(.admin-page) .trust-contact-form-section > h2 {
+    margin-top: 0;
+    padding-left: 0;
+    color: #f4fbff;
+}
+
+body:not(.admin-page) .trust-contact-form-section > h2::before { display: none; }
+
+body:not(.admin-page) .trust-contact-form {
+    margin: 0;
+}
+
+body:not(.admin-page) .trust-contact-form .fields {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+    margin: 0 0 1.25rem;
+}
+
+body:not(.admin-page) .trust-contact-form .field {
+    width: auto;
+    padding: 0;
+}
+
+body:not(.admin-page) .trust-contact-form .field:has(textarea),
+body:not(.admin-page) .trust-contact-form .hp-field {
+    grid-column: 1 / -1;
+}
+
+body:not(.admin-page) .trust-contact-form label {
+    margin-bottom: 0.45rem;
+    color: #dcecf4;
+}
+
+body:not(.admin-page) .trust-contact-form :where(input, textarea) {
+    width: 100%;
+    background: rgba(255, 255, 255, 0.075);
+    color: #f5fbff;
+}
+
+body:not(.admin-page) .trust-contact-form :where(input, textarea)::placeholder {
+    color: #9eb1be;
+}
+
+body:not(.admin-page) .trust-contact-form .actions {
+    margin-bottom: 0;
+}
+
+body:not(.admin-page) #footer {
+    min-height: 0;
+}
+
+body:not(.admin-page) #footer > .split.contact:only-child {
+    flex: 1 1 100%;
+}
+
+body:not(.admin-page) #navPanel {
+    background: var(--mamona-ink-900);
+    color: #eaf7fb;
+}
+
+body:not(.admin-page) #navPanel :where(a, .close) { color: #eaf7fb !important; }
+
+body:not(.admin-page) :where(.cat-slide, .burger-slide) {
+    background-color: var(--mamona-paper);
+    color: var(--mamona-text);
+}
+
+@media screen and (max-width: 980px) {
+    :root {
+        --mamona-space-background: url("../../images/nasa-pillars-of-creation-mobile.webp?v=20260728-fit");
+    }
+
+    body:not(.admin-page) #intro { min-height: clamp(25rem, 62vh, 38rem); }
+
+    body:not(.admin-page) #header {
+        width: 100%;
+        min-height: 5.25rem;
+        padding: 1.15rem max(4.5rem, var(--mamona-gutter)) 1.15rem var(--mamona-gutter);
+    }
+
+    body:not(.admin-page) #header .logo::after { display: none; }
+
+    body:not(.admin-page) :where(#main, #footer, #copyright) {
+        width: 100%;
+        max-width: 100%;
+    }
+
+    body:not(.admin-page) #main > *,
+    body:not(.admin-page) #main > .post {
+        padding: clamp(2.6rem, 8vw, 4.5rem) var(--mamona-gutter);
+    }
+
+    body:not(.admin-page) .news-feed-list,
+    body:not(.admin-page) .gallery-overview .news-feed-list { grid-template-columns: 1fr; }
+    body:not(.admin-page) .article-illustration--breakout { margin-inline: 0; }
+    body:not(.admin-page) .bueno-post-page > :where(.article-illustration--hero, .post-page-image) { width: 100% !important; }
+    body:not(.admin-page) .article-illustration--full:not(.article-illustration--hero) {
+        width: 100%;
+        margin-right: auto;
+        margin-left: auto;
+    }
+    body:not(.admin-page) .article-section > :where(.article-illustration--left, .article-illustration--right) { margin-top: 1.5rem; }
+}
+
+@media screen and (min-width: 981px) {
+    body:not(.admin-page) :where(.article-illustration--left, .article-illustration--right) {
+        width: 38%;
+        max-width: 28rem;
+        margin-bottom: 1.4rem;
+        shape-outside: margin-box;
+    }
+
+    body:not(.admin-page) .article-illustration--left { margin-right: 2rem; }
+    body:not(.admin-page) .article-illustration--right { margin-left: 2rem; }
+}
+
+@media (hover: none), (pointer: coarse), (max-width: 980px) {
+    body:not(.admin-page) :where(#navPanelToggle, #navPanel .close, #navPanel .links a, .button, button, input[type="submit"], input[type="reset"], input[type="button"], select) {
+        min-width: 44px;
+        min-height: 44px;
+    }
+
+    body:not(.admin-page) :where(input[type="text"], input[type="password"], input[type="email"], input[type="tel"], input[type="url"], textarea) {
+        min-height: 44px;
+        font-size: 1rem;
+    }
 }
 
 @media screen and (max-width: 736px) {
+    body:not(.admin-page) { font-size: 0.98rem; }
+    body:not(.admin-page) #intro { padding-inline: 1rem; }
+    body:not(.admin-page) #intro p { letter-spacing: 0.045em; }
+    body:not(.admin-page) .news-feed-card .news-feed-content { padding: 1.25rem 1.25rem 3.6rem; }
+    body:not(.admin-page) .post-page-body { line-height: 1.74; }
+
+    body:not(.admin-page) :where(.article-section--importance, .article-section--fact, .article-section--context, .article-section--unknowns, .article-section--takeaway) {
+        padding: 1.2rem;
+    }
+
+    body:not(.admin-page) .article-section--fact { padding-left: 3rem; }
+
+    body:not(.admin-page) .trust-contact-form .fields { grid-template-columns: 1fr; }
+
     body:not(.admin-page) .trust-footer-links ul {
         flex-direction: column;
         align-items: center;
@@ -442,173 +1023,79 @@ body:not(.admin-page) .contact-privacy-note {
     }
 }
 
-body:not(.admin-page) #navPanel {
-    background: var(--theme-nav-background);
-    color: var(--theme-nav-text);
-}
-
-body:not(.admin-page) #navPanel a,
-body:not(.admin-page) #navPanel .close {
-    color: var(--theme-nav-text) !important;
-}
-
-body:not(.admin-page) .post-byline {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 0.4rem 1.2rem;
-    margin-top: 1.25rem;
-    color: var(--theme-muted);
-    font-size: 0.85rem;
-}
-
-body:not(.admin-page) .post-sources,
-body:not(.admin-page) .post-related,
-body:not(.admin-page) .post-ai-disclosure {
-    margin-top: 2rem;
-    padding: 1.25rem;
-    border: 1px solid var(--theme-border);
-    border-radius: var(--theme-radius);
-    background: var(--theme-surface-alt);
-    text-align: left;
-}
-
-body:not(.admin-page) .post-sources h2,
-body:not(.admin-page) .post-related h2 {
-    margin-bottom: 0.75rem;
-    font-size: 1.1rem;
-}
-
-body:not(.admin-page) .post-sources ul,
-body:not(.admin-page) .post-related ul {
-    margin-bottom: 0;
-}
-
-body:not(.admin-page) .post-ai-disclosure {
-    color: var(--theme-muted);
-    font-size: 0.9rem;
-}
-
-body:not(.admin-page) .news-feed-item {
-    min-width: 0;
-}
-
-body:not(.admin-page) .news-feed-visual {
-    overflow: hidden;
-    aspect-ratio: 16 / 9;
-}
-
-body:not(.admin-page) .news-feed-visual img {
-    display: block;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-}
-
-body:not(.admin-page) .cat-slide,
-body:not(.admin-page) .burger-slide {
-    background-color: var(--theme-surface-alt);
-    color: var(--theme-text);
-}
-
-body:not(.admin-page) .cat-slide h1,
-body:not(.admin-page) .burger-slide h1,
-body:not(.admin-page) .burger-slide p,
-body:not(.admin-page) .burger-section {
-    color: inherit !important;
-    text-shadow: none;
-}
-
-@media screen and (max-width: 980px) {
-    body:not(.admin-page) #intro {
-        min-height: max(22rem, var(--theme-hero-height));
-    }
-
-    body:not(.admin-page) #header {
-        padding-bottom: 1.25rem;
-    }
-
+@media screen and (max-width: 480px) {
     body:not(.admin-page) #main > *,
-    body:not(.admin-page) #main > .post {
-        padding: clamp(2rem, 8vw, 4rem) clamp(1.25rem, 6vw, 3rem);
-    }
-}
+    body:not(.admin-page) #main > .post,
+    body:not(.admin-page) #footer > section,
+    body:not(.admin-page) #footer > section:first-child { padding-inline: 1rem; }
 
-@media (prefers-reduced-motion: reduce) {
-    body:not(.admin-page) *,
-    body:not(.admin-page) *::before,
-    body:not(.admin-page) *::after {
-        animation: none !important;
-        transition-duration: 0ms !important;
-    }
-}
-
-/* TASK-21: mobile stability, readable controls and keyboard visibility. */
-body:not(.admin-page) :where(p, li, h1, h2, h3, h4, a, label) {
-    overflow-wrap: anywhere;
-}
-
-body:not(.admin-page) :where(a, button, input, select, textarea):focus-visible {
-    outline: 3px solid var(--theme-accent);
-    outline-offset: 3px;
-}
-
-body:not(.admin-page) :where(a, button, input, select, textarea) {
-    touch-action: manipulation;
-}
-
-@media (hover: none), (pointer: coarse), (max-width: 980px) {
-    body:not(.admin-page) #navPanelToggle,
-    body:not(.admin-page) #navPanel .close,
-    body:not(.admin-page) #navPanel .links a,
-    body:not(.admin-page) .button,
-    body:not(.admin-page) button,
-    body:not(.admin-page) input[type="submit"],
-    body:not(.admin-page) input[type="reset"],
-    body:not(.admin-page) input[type="button"],
-    body:not(.admin-page) select {
-        min-width: 44px;
-        min-height: 44px;
-    }
-
-    body:not(.admin-page) input[type="text"],
-    body:not(.admin-page) input[type="password"],
-    body:not(.admin-page) input[type="email"],
-    body:not(.admin-page) input[type="tel"],
-    body:not(.admin-page) input[type="url"],
-    body:not(.admin-page) textarea {
-        min-height: 44px;
-        font-size: 1rem;
-    }
-
-    body:not(.admin-page) .post-byline,
-    body:not(.admin-page) .contact-privacy-note {
-        font-size: 0.9375rem;
-    }
+    body:not(.admin-page) .news-feed-heading h1 { font-size: clamp(2.35rem, 13vw, 3.6rem); }
+    body:not(.admin-page) :where(.post-sources, .post-related, .post-ai-disclosure) { padding: 1.1rem; }
 }
 
 @media screen and (max-width: 360px) {
     html,
     body:not(.admin-page) {
-        min-width: 0;
         width: 100%;
+        min-width: 0;
         max-width: 100%;
-    }
-
-    body:not(.admin-page) #intro {
-        min-height: 24rem;
-        padding-inline: 1rem;
     }
 
     body:not(.admin-page) #header,
     body:not(.admin-page) #main > *,
     body:not(.admin-page) #main > .post,
-    body:not(.admin-page) #footer > section,
-    body:not(.admin-page) #footer > section:first-child {
-        padding-inline: 1rem;
+    body:not(.admin-page) #footer > section {
+        padding-inline: 0.85rem;
     }
+}
 
-    body:not(.admin-page) .news-feed-content {
-        padding-inline: 1rem;
+@media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+
+    body:not(.admin-page) *,
+    body:not(.admin-page) *::before,
+    body:not(.admin-page) *::after {
+        animation: none !important;
+        transition-duration: 0.01ms !important;
+        transition-delay: 0ms !important;
+    }
+}
+
+body:not(.admin-page) :where(.news-feed-card,.article-section,.ad-slot) {
+    contain: layout paint style;
+}
+
+body:not(.admin-page) .news-feed-card {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 24rem;
+}
+
+html[data-effects-mode="reduced"] body:not(.admin-page) #main {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: rgba(5, 15, 31, 0.92);
+    box-shadow: 0 0 0 1px rgba(57, 215, 242, 0.12);
+}
+
+html[data-effects-mode="reduced"] body:not(.admin-page)::before {
+    position: absolute;
+    opacity: 0.55;
+}
+
+html[data-effects-mode="reduced"] body:not(.admin-page) :where(a,button,input,select,textarea) {
+    transition:none;
+}
+
+html[data-effects-mode="reduced"] body:not(.admin-page) :where(#main,.news-feed-card,.article-illustration) {
+    box-shadow:none;
+}
+
+@media (forced-colors: active) {
+    body:not(.admin-page) #main::before,
+    body:not(.admin-page) #intro::before,
+    body:not(.admin-page) #intro::after { display: none; }
+
+    body:not(.admin-page) :where(.article-section--importance, .article-section--fact, .article-section--context, .article-section--unknowns, .article-section--takeaway) {
+        border: 2px solid CanvasText;
     }
 }

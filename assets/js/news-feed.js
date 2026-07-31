@@ -68,9 +68,6 @@
 
         const content = document.createElement('div');
         content.className = 'news-feed-content';
-        const categoryLabel = document.createElement('p');
-        categoryLabel.className = 'news-feed-category';
-        categoryLabel.textContent = post.category;
         const title = document.createElement('h2');
         title.textContent = post.title;
         const date = document.createElement('time');
@@ -84,7 +81,13 @@
         body.className = 'news-feed-body';
         body.textContent = previewContent;
 
-        content.append(categoryLabel, title, excerpt, body, date);
+        if (post.category) {
+            const categoryLabel = document.createElement('p');
+            categoryLabel.className = 'news-feed-category';
+            categoryLabel.textContent = post.category;
+            content.appendChild(categoryLabel);
+        }
+        content.append(title, excerpt, body, date);
         article.appendChild(content);
 
         return article;

@@ -208,8 +208,9 @@ ustawiać jej w produkcji.
   320 px, cele dotykowe 44 px, czytelny focus i dozwolony zoom. Obrazy
   rezerwują miejsce i nadają priorytet pierwszemu istotnemu obrazowi, fonty
   używają `font-display: swap`, a skrypty są odroczone. Kanał SSR nie jest
-  ponownie przebudowywany w przeglądarce; ciężki `snap.js` pozostał wyłącznie
-  na stronach galerii. Apache otrzymał kompresję oraz cache zasobów.
+  ponownie przebudowywany w przeglądarce. `snap.js` jest odroczony i ponownie
+  działa na wszystkich stronach publicznych; galerie dodatkowo korzystają z
+  wewnętrznego snapowania slajdów. Apache otrzymał kompresję oraz cache zasobów.
   Wyniki przed/po i ograniczenia pomiaru są w `AUDYT-TASK-21.md`; rzeczywiste
   LCP/INP/CLS trzeba potwierdzić po wdrożeniu na publicznym adresie.
 - **TASK-22 — test E2E i dokumentacja operacyjna:** wykonany. Test

@@ -1,0 +1,37 @@
+<?php
+declare(strict_types=1);
+require_once dirname(__DIR__) . '/php/app-config.php';
+require_once dirname(__DIR__) . '/php/technical-source-repository.php';
+require_once dirname(__DIR__) . '/php/feed-ingestion-service.php';
+require_once dirname(__DIR__) . '/php/source-enrichment-service.php';
+function source_test(bool $ok, string $message): void { if (!$ok) throw new RuntimeException($message); }
+$html = '<html><head><meta itemprop="sameAs" content="https://doi.org/10.1234/ABC.9"></head><body><a href="https://pubmed.ncbi.nlm.nih.gov/123/">publication</a> DOI 10.5555/test.42</body></html>';
+$candidates = extract_source_candidates($html, 'https://news.example.org/item');
+source_test(count($candidates) === 3, 'DOI/citation/schema.org extraction failed.');
+source_test(verify_source_candidate(['url'=>'https://127.0.0.1/fake'], static fn()=>[]) === null, 'SSRF candidate accepted.');
+$primary = [['verification_status'=>'verified','is_primary'=>1,'completeness'=>'complete','publisher'=>'Institute A','canonical_url'=>'https://a.example.org/work']];
+source_test(research_policy_decision($primary)['decision'] === 'continue', 'One complete primary low-risk source should pass.');
+source_test(research_policy_decision([], 'low')['decision'] === 'blocked', 'RSS excerpt should not pass.');
+source_test(research_policy_decision($primary, 'high')['decision'] === 'review', 'High-risk single source should require review.');
+$two = [...$primary, ['verification_status'=>'verified','is_primary'=>0,'completeness'=>'complete','publisher'=>'Institute B','canonical_url'=>'https://b.example.org/work']];
+source_test(research_policy_decision($two, 'high')['decision'] === 'continue', 'Two independent sources should pass.');
+source_test(research_policy_decision($two, 'low', false, true)['decision'] === 'review', 'Contradictions should require review.');
+source_test(SOURCE_PAGE_MAX_REDIRECTS <= 3 && SOURCE_PAGE_TIMEOUT_SECONDS <= 20 && SOURCE_PAGE_MAX_BYTES <= 1572864, 'Fetch safety limits regressed.');
+$articleText = str_repeat('Caltech researchers measured primitive meteorite minerals and documented reproducible laboratory evidence about early solar system formation. ', 18);
+$articleHtml = '<html><head><title>Ancient Stardust Were Seeds for the Earliest Solids in the Solar System</title><link rel="canonical" href="https://www.caltech.edu/about/news/ancient-stardust"><meta property="og:type" content="article"><meta property="og:title" content="Ancient Stardust Were Seeds for the Earliest Solids in the Solar System"><meta property="article:published_time" content="2026-07-29"></head><body><nav>menu</nav><article><h1>Ancient Stardust Were Seeds for the Earliest Solids in the Solar System</h1><p>'.$articleText.'</p><footer>cookies</footer></article></body></html>';
+$caltech = ['id'=>14,'name'=>'Caltech Research News','website_url'=>'https://www.caltech.edu/about/news','feed_url'=>'https://www.caltech.edu/about/news/rss','is_primary'=>1,'credibility_level'=>5];
+$feed = ['source_url'=>'https://www.caltech.edu/about/news/ancient-stardust','title'=>'Ancient Stardust Were Seeds for the Earliest Solids in the Solar System'];
+$page = ['url'=>$feed['source_url'],'body'=>$articleHtml,'transfer_complete'=>true];
+$release = verify_discovery_institutional_page($page,$feed,$caltech);
+source_test(is_array($release) && $release['source_kind']==='institutional_release' && $release['is_peer_reviewed']===0 && $release['completeness']==='complete', 'Complete configured Caltech release without DOI was not verified.');
+source_test(mb_strlen((string)$release['content_excerpt']) < mb_strlen(strip_tags($articleHtml)), 'Full institutional article was stored instead of bounded evidence.');
+source_test(verify_discovery_institutional_page(['url'=>$feed['source_url'],'body'=>'<html><title>Short excerpt</title><article>short</article></html>','transfer_complete'=>true],$feed,$caltech)===null, 'Short excerpt/listing passed.');
+source_test(verify_discovery_institutional_page($page,$feed,[...$caltech,'name'=>'Untrusted University','website_url'=>'https://www.caltech.edu','is_primary'=>0])===null, 'Untrusted .edu passed based on TLD.');
+$foreign = str_replace('https://www.caltech.edu/about/news/ancient-stardust','https://foreign.example.org/article',$articleHtml);
+source_test(verify_discovery_institutional_page([...$page,'body'=>$foreign],$feed,$caltech)===null, 'Foreign canonical domain passed.');
+source_test(verify_discovery_institutional_page([...$page,'truncated'=>true],$feed,$caltech)===null, 'Partial transfer passed as complete.');
+$doiHtml = str_replace('</article>','<a href="https://doi.org/10.1234/example.1">paper</a></article>',$articleHtml);
+$doiCandidates=extract_source_candidates($doiHtml,$feed['source_url']);
+$paper=verify_source_candidate($doiCandidates[0],static fn(string $kind,string $id):array=>['canonical_url'=>'https://doi.org/10.1234/example.1','title'=>'Peer reviewed paper','publisher'=>'Journal','is_primary'=>1,'is_peer_reviewed'=>1,'verification_method'=>'test_registry','completeness'=>'complete']);
+source_test($release['source_kind']==='institutional_release' && $paper['source_kind']==='journal_article' && $release['canonical_url']!==$paper['canonical_url'], 'Institutional release and DOI paper were not kept distinct.');
+echo "SOURCE_ENRICHMENT_POLICY_SMOKE_OK\n";

@@ -6,6 +6,33 @@ const ARTICLE_IMAGE_ROLES = ['hero', 'inline'];
 const ARTICLE_IMAGE_LAYOUTS = ['full', 'left', 'right', 'breakout'];
 const ARTICLE_IMAGE_STATUSES = ['planned', 'selected', 'downloaded', 'manual_review', 'missing'];
 const ARTICLE_IMAGE_SAFE_LICENSES = ['cc0', 'public-domain', 'cc-by'];
+const ARTICLE_IMAGE_RELATIONS = ['exact_subject', 'mechanism', 'apparatus', 'analogy_scale', 'related_context'];
+const ARTICLE_BLOCK_SECTION_VARIANTS = [
+    'default', 'lead', 'importance', 'facts', 'fact', 'context',
+    'unknowns', 'unknown', 'narrative', 'takeaway',
+];
+const ARTICLE_IMAGE_CANONICAL_SECTION_IDS = [
+    'lead',
+    'why-important',
+    'fact-1',
+    'fact-2',
+    'fact-3',
+    'fact-4',
+    'fact-5',
+    'comparison',
+    'unknown-1',
+    'unknown-2',
+    'unknown-3',
+    'narrative-opening-question',
+    'narrative-pursuit',
+    'narrative-topic-b',
+    'narrative-apparent-dead-end',
+    'narrative-return-to-topic-a',
+    'narrative-close-topic-b',
+    'narrative-answer-and-punchline',
+    'takeaway',
+];
+const ARTICLE_IMAGE_ALWAYS_AVAILABLE_SECTION_IDS = ['lead', 'why-important', 'fact-1', 'takeaway'];
 
 function article_image_schema(): array
 {
@@ -40,13 +67,120 @@ function article_image_schema(): array
     ];
 }
 
+function article_planned_image_schema(string $role): array
+{
+    if (!in_array($role, ARTICLE_IMAGE_ROLES, true)) {
+        throw new InvalidArgumentException('Nieprawidłowa rola planowanej ilustracji.');
+    }
+
+    $schema = article_image_schema();
+    $schema['properties']['role'] = ['type' => 'string', 'enum' => [$role]];
+    $schema['properties']['status'] = ['type' => 'string', 'enum' => ['planned']];
+    $schema['properties']['search_queries']['minItems'] = 1;
+    foreach ([
+        'source_page_url',
+        'source_file_url',
+        'local_path',
+        'author',
+        'license',
+        'license_url',
+        'attribution',
+    ] as $field) {
+        $schema['properties'][$field] = ['type' => 'string', 'enum' => ['']];
+    }
+    if ($role === 'hero') {
+        $schema['properties']['section_id'] = ['type' => 'string', 'enum' => ['article']];
+        $schema['properties']['layout'] = ['type' => 'string', 'enum' => ['full']];
+    } else {
+        $schema['properties']['section_id'] = [
+            'type' => 'string',
+            'enum' => ARTICLE_IMAGE_CANONICAL_SECTION_IDS,
+        ];
+    }
+
+    return $schema;
+}
+
 function article_inline_image_target_count(int $characterCount): int
 {
     if ($characterCount <= 0) {
         return 0;
     }
 
-    return max(1, (int) round($characterCount / 775));
+    return max(1, (int) floor(($characterCount + 100) / 1000));
+}
+
+/** Builds a bounded, non-repeating semantic cascade. Model queries remain hints; the search uses real providers. */
+function article_image_semantic_queries(array $plannedImage, ?int $budget = null): array
+{
+    $budget ??= (int) app_config('source_image_query_budget_per_slot');
+    $base = array_values(array_unique(array_filter(array_map(
+        static fn ($query): string => trim((string) $query),
+        (array) ($plannedImage['search_queries'] ?? [])
+    ))));
+    $intent = trim((string) ($plannedImage['expected_content'] ?? $plannedImage['visual_intent'] ?? ''));
+    if ($intent !== '') {
+        $base[] = $intent;
+    }
+    $seed = trim((string) ($base[0] ?? $intent));
+    $levels = [
+        'exact_subject' => $base,
+        'mechanism' => [$seed . ' mechanism diagram', $seed . ' phenomenon illustration'],
+        'apparatus' => [$seed . ' scientific apparatus laboratory', $seed . ' experiment equipment'],
+        'analogy_scale' => [$seed . ' scale spectrum nanostructure educational illustration'],
+        'related_context' => [$seed . ' research context science'],
+    ];
+    $queries = [];
+    $seen = [];
+    foreach ($levels as $relation => $items) {
+        foreach ($items as $query) {
+            $query = trim(preg_replace('/\s+/', ' ', (string) $query) ?? '');
+            $key = mb_strtolower($query);
+            if ($query === '' || isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            $queries[] = ['query' => mb_substr($query, 0, 200), 'relation' => $relation];
+            if (count($queries) >= max(1, $budget)) {
+                return $queries;
+            }
+        }
+    }
+    return $queries;
+}
+
+function article_image_candidate_score(array $candidate, array $plannedImage, string $query, string $relation): int
+{
+    if (!article_image_license_is_auto_safe((string) ($candidate['license'] ?? ''))
+        || !source_image_candidate_is_suitable_for_role($candidate, $plannedImage)) {
+        return PHP_INT_MIN;
+    }
+    $relationScore = array_search($relation, ARTICLE_IMAGE_RELATIONS, true);
+    $score = $relationScore === false ? 0 : (500 - ($relationScore * 70));
+    $score += min(160, (int) floor(min((int) ($candidate['width'] ?? 0), 3200) / 20));
+    $score += source_image_candidate_matches_query($candidate, $query, 1) ? 250 : 0;
+    $text = mb_strtolower((string) ($candidate['title'] ?? '') . ' ' . (string) ($candidate['source_page_url'] ?? ''));
+    if (preg_match('/watermark|stock photo|shutterstock|alamy/', $text)) $score -= 1000;
+    if ((string) ($plannedImage['role'] ?? '') === 'inline' && preg_match('/diagram|schematic|micrograph|spectrum|plot|chart/', $text)) $score += 80;
+    return $score;
+}
+
+function article_image_honest_copy(array $plannedImage, string $relation, array $candidate): array
+{
+    $title = trim((string) ($candidate['title'] ?? 'ilustracja źródłowa'));
+    $prefix = match ($relation) {
+        'apparatus' => 'Typowa aparatura lub środowisko badawcze; nie jest to urządzenie opisane w badaniu.',
+        'related_context' => 'Ilustracja pokazuje powiązany kontekst, a nie dokładny obiekt opisany w tekście.',
+        'analogy_scale' => 'Ilustracja objaśnia skalę lub analogię związaną z opisywanym zjawiskiem.',
+        'mechanism' => 'Ilustracja przedstawia mechanizm związany z opisywanym zjawiskiem.',
+        default => '',
+    };
+    return [
+        ...$plannedImage,
+        'relationship' => $relation,
+        'alt' => $prefix !== '' ? $prefix . ' ' . $title : (string) $plannedImage['alt'],
+        'caption' => $prefix !== '' ? $prefix . ' ' . $title : (string) $plannedImage['caption'],
+    ];
 }
 
 function article_section_blocks(array $draft): array
@@ -80,13 +214,30 @@ function article_section_blocks(array $draft): array
     return $sections;
 }
 
-function article_illustration_plan_schema(): array
+function article_illustration_plan_schema(?int $inlineCount = null, ?array $inlineSectionIds = null): array
 {
+    $inlineSchema = ['type' => 'array', 'items' => article_planned_image_schema('inline')];
+    if ($inlineCount !== null) {
+        if ($inlineCount < 0 || $inlineCount > 20) {
+            throw new InvalidArgumentException('Nieprawidłowa liczba ilustracji inline w schemacie.');
+        }
+        $inlineSchema['minItems'] = $inlineCount;
+        $inlineSchema['maxItems'] = $inlineCount;
+    }
+    if ($inlineSectionIds !== null) {
+        $inlineSectionIds = array_values(array_unique($inlineSectionIds));
+        if ($inlineSectionIds === []
+            || array_diff($inlineSectionIds, ARTICLE_IMAGE_CANONICAL_SECTION_IDS) !== []) {
+            throw new InvalidArgumentException('Schemat zawiera nieprawidłowe identyfikatory sekcji inline.');
+        }
+        $inlineSchema['items']['properties']['section_id']['enum'] = $inlineSectionIds;
+    }
+
     return [
         'type' => 'object',
         'properties' => [
-            'hero' => article_image_schema(),
-            'inline' => ['type' => 'array', 'items' => article_image_schema()],
+            'hero' => article_planned_image_schema('hero'),
+            'inline' => $inlineSchema,
         ],
         'required' => ['hero', 'inline'],
         'additionalProperties' => false,
@@ -99,7 +250,9 @@ function build_planned_illustration_fixture(array $draft): array
         'role' => $role,
         'section_id' => $sectionId,
         'visual_intent' => $intent,
-        'search_queries' => ['popular science ' . str_replace('-', ' ', $sectionId)],
+        'search_queries' => [$role === 'hero'
+            ? 'documentary photograph natural scene scientific subject'
+            : 'popular science ' . str_replace('-', ' ', $sectionId)],
         'expected_content' => $intent,
         'source_page_url' => '',
         'source_file_url' => '',
@@ -114,11 +267,30 @@ function build_planned_illustration_fixture(array $draft): array
         'status' => 'planned',
     ];
     $plan = [
-        'hero' => $makeImage('hero', 'article', 'full', 'Reprezentatywny obraz całego tematu artykułu'),
+        'hero' => $makeImage(
+            'hero',
+            'article',
+            'full',
+            'Atrakcyjna pozioma fotografia okładkowa z jednym czytelnym motywem przedstawiająca temat: '
+                . trim((string) ($draft['title'] ?? 'artykuł popularnonaukowy'))
+        ),
         'inline' => [],
     ];
     $target = article_inline_image_target_count(article_draft_main_content_length($draft));
-    foreach (array_slice(article_section_blocks($draft), 0, $target) as $index => $section) {
+    $sections = article_section_blocks($draft);
+    $sectionsById = [];
+    foreach ($sections as $section) {
+        $sectionsById[(string) $section['id']] = $section;
+    }
+    $orderedSections = [];
+    foreach (ARTICLE_IMAGE_ALWAYS_AVAILABLE_SECTION_IDS as $sectionId) {
+        if (isset($sectionsById[$sectionId])) {
+            $orderedSections[] = $sectionsById[$sectionId];
+            unset($sectionsById[$sectionId]);
+        }
+    }
+    array_push($orderedSections, ...array_values($sectionsById));
+    foreach (array_slice($orderedSections, 0, $target) as $index => $section) {
         $plan['inline'][] = $makeImage(
             'inline',
             (string) $section['id'],
@@ -187,6 +359,9 @@ function normalize_reuse_license(string $license): string
     }
     if (preg_match('/\bcc0(?:-1\.0)?\b/', $license) === 1) {
         return 'cc0';
+    }
+    if (preg_match('/^by(?:-[0-9.]+)?$/', $license) === 1) {
+        return 'cc-by';
     }
     if (preg_match('/\bcc-by(?:-[0-9.]+)?\b/', $license) === 1
         && !str_contains($license, '-sa')
@@ -266,34 +441,45 @@ function search_wikimedia_commons_images(string $query, ?callable $transport = n
 {
     $transport ??= 'source_image_json_transport';
     $url = 'https://commons.wikimedia.org/w/api.php?action=query&generator=search'
-        . '&gsrnamespace=6&gsrlimit=12&prop=imageinfo&iiprop=url%7Csize%7Cextmetadata'
-        . '&format=json&origin=*&gsrsearch=' . rawurlencode($query);
+        . '&gsrnamespace=6&gsrlimit=20&prop=imageinfo&iiprop=url%7Csize%7Cextmetadata'
+        . '&iiurlwidth=1600&format=json&origin=*&gsrsearch=' . rawurlencode($query);
     $response = $transport($url);
     $results = [];
     foreach ((array) ($response['query']['pages'] ?? []) as $page) {
         $info = (array) ($page['imageinfo'][0] ?? []);
         $meta = (array) ($info['extmetadata'] ?? []);
         $value = static fn (string $key): string => trim(strip_tags((string) ($meta[$key]['value'] ?? '')));
-        $fileUrl = (string) ($info['url'] ?? '');
+        $fileUrl = (string) ($info['thumburl'] ?? $info['url'] ?? '');
         $pageUrl = (string) ($info['descriptionurl'] ?? '');
         $licenseUrl = $value('LicenseUrl');
         $author = $value('Artist') ?: $value('Credit');
         $license = $value('LicenseShortName') ?: $value('UsageTerms');
+        $normalizedLicense = normalize_reuse_license($license);
+        if ($licenseUrl === '' && $normalizedLicense === 'public-domain') {
+            $licenseUrl = 'https://creativecommons.org/publicdomain/mark/1.0/';
+        } elseif ($licenseUrl === '' && $normalizedLicense === 'cc0') {
+            $licenseUrl = 'https://creativecommons.org/publicdomain/zero/1.0/';
+        }
         if ($fileUrl === '' || $pageUrl === '' || $licenseUrl === '' || $author === '' || $license === '') {
             continue;
         }
-        $results[] = validate_source_image_candidate([
-            'source_page_url' => $pageUrl,
-            'source_file_url' => $fileUrl,
-            'author' => $author,
-            'license' => $license,
-            'license_url' => $licenseUrl,
-            'attribution' => trim($value('Attribution')) ?: trim($author . ', ' . $license),
-            'width' => (int) ($info['width'] ?? 0),
-            'height' => (int) ($info['height'] ?? 0),
-            'provider' => 'wikimedia',
-            'provider_id' => (string) ($page['pageid'] ?? sha1($pageUrl)),
-        ]);
+        try {
+            $results[] = validate_source_image_candidate([
+                'title' => (string) ($page['title'] ?? ''),
+                'source_page_url' => $pageUrl,
+                'source_file_url' => $fileUrl,
+                'author' => $author,
+                'license' => $license,
+                'license_url' => $licenseUrl,
+                'attribution' => trim($value('Attribution')) ?: trim($author . ', ' . $license),
+                'width' => (int) ($info['thumbwidth'] ?? $info['width'] ?? 0),
+                'height' => (int) ($info['thumbheight'] ?? $info['height'] ?? 0),
+                'provider' => 'wikimedia',
+                'provider_id' => (string) ($page['pageid'] ?? sha1($pageUrl)),
+            ]);
+        } catch (InvalidArgumentException) {
+            continue;
+        }
     }
 
     return $results;
@@ -303,7 +489,8 @@ function search_openverse_images(string $query, ?callable $transport = null): ar
 {
     $transport ??= 'source_image_json_transport';
     $response = $transport(
-        'https://api.openverse.org/v1/images/?page_size=12&mature=false&q=' . rawurlencode($query)
+        'https://api.openverse.org/v1/images/?page_size=20&mature=false&license=cc0%2Cpdm%2Cby&q='
+        . rawurlencode($query)
     );
     $results = [];
     foreach ((array) ($response['results'] ?? []) as $item) {
@@ -313,6 +500,7 @@ function search_openverse_images(string $query, ?callable $transport = null): ar
             $license .= '-' . $version;
         }
         $candidate = [
+            'title' => trim((string) ($item['title'] ?? '')),
             'source_page_url' => (string) ($item['foreign_landing_url'] ?? ''),
             'source_file_url' => (string) ($item['url'] ?? ''),
             'author' => trim((string) ($item['creator'] ?? '')),
@@ -361,6 +549,13 @@ function select_source_image_from_results(array $plannedImage, array $results, s
             continue;
         }
         $candidate = validate_source_image_candidate($result);
+        if (!source_image_candidate_is_suitable_for_role($candidate, $plannedImage)) {
+            throw new InvalidArgumentException(
+                ($plannedImage['role'] ?? '') === 'hero'
+                    ? 'Wybrany obraz nie spełnia wymagań atrakcyjnej grafiki głównej.'
+                    : 'Wybrany obraz nie pasuje do roli ilustracji.'
+            );
+        }
 
         return array_merge($plannedImage, [
             'source_page_url' => $candidate['source_page_url'],
@@ -377,6 +572,84 @@ function select_source_image_from_results(array $plannedImage, array $results, s
         ]);
     }
     throw new InvalidArgumentException('Wybrany obraz nie występuje w rzeczywistych wynikach źródła.');
+}
+
+function source_image_candidate_is_suitable_for_role(array $candidate, array $plannedImage): bool
+{
+    $sourcePath = mb_strtolower(rawurldecode(
+        (string) parse_url((string) ($candidate['source_page_url'] ?? ''), PHP_URL_PATH)
+    ));
+    if (str_ends_with($sourcePath, '.pdf')) {
+        return false;
+    }
+    if ((string) ($plannedImage['role'] ?? '') !== 'hero') {
+        return true;
+    }
+    $width = max(1, (int) ($candidate['width'] ?? 0));
+    $height = max(1, (int) ($candidate['height'] ?? 0));
+    if (($width / $height) < 1.35) {
+        return false;
+    }
+    $title = mb_strtolower(
+        (string) ($candidate['title'] ?? '') . ' '
+        . rawurldecode((string) ($candidate['source_page_url'] ?? ''))
+    );
+    $ascii = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $title);
+    $title = strtolower(is_string($ascii) ? $ascii : $title);
+    if (preg_match(
+        '/(?:^|[^a-z])(?:diagram|schematic|infographic|flow-?chart|graph|chart|plot|components|presentation|slide|poster|screenshot|equation)(?:[^a-z]|$)/',
+        $title
+    ) === 1) {
+        return false;
+    }
+
+    return true;
+}
+
+function source_image_candidate_matches_query(array $candidate, string $query, int $minimumDistinctiveMatches = 1): bool
+{
+    $tokens = static function (string $value): array {
+        $value = mb_strtolower($value);
+        $ascii = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $value);
+        $parts = preg_split(
+            '/[^a-z0-9]+/',
+            strtolower(is_string($ascii) ? $ascii : $value),
+            -1,
+            PREG_SPLIT_NO_EMPTY
+        ) ?: [];
+        $stop = [
+            'image', 'photo', 'picture', 'view', 'diagram', 'graph', 'chart',
+            'illustration', 'file', 'commons', 'wikimedia', 'wikipedia',
+            'over', 'under', 'with', 'from', 'into', 'near', 'above', 'below',
+        ];
+        $result = [];
+        foreach ($parts as $part) {
+            if (strlen($part) < 4 || in_array($part, $stop, true)) {
+                continue;
+            }
+            if (strlen($part) > 5 && str_ends_with($part, 's')) {
+                $part = substr($part, 0, -1);
+            }
+            $result[$part] = true;
+        }
+
+        return array_keys($result);
+    };
+    $queryTokens = $tokens($query);
+    if ($queryTokens === []) {
+        return false;
+    }
+    $candidateText = (string) ($candidate['title'] ?? '') . ' '
+        . rawurldecode((string) ($candidate['source_page_url'] ?? ''));
+    $candidateTokens = $tokens($candidateText);
+    $matches = array_values(array_intersect($queryTokens, $candidateTokens));
+    $generic = ['feedback', 'climate', 'change', 'mechanism', 'model', 'dynamic'];
+    $distinctiveMatches = array_values(array_filter(
+        $matches,
+        static fn (string $match): bool => !in_array($match, $generic, true)
+    ));
+
+    return count($distinctiveMatches) >= max(1, $minimumDistinctiveMatches);
 }
 
 function article_image_ip_is_public(string $ip): bool
@@ -557,6 +830,7 @@ function download_source_image(
             }
         }
     }
+    create_article_image_variants($path);
     $relative = str_starts_with(str_replace('\\', '/', $path), str_replace('\\', '/', app_project_root()) . '/')
         ? substr(str_replace('\\', '/', $path), strlen(str_replace('\\', '/', app_project_root())) + 1)
         : $path;
@@ -577,18 +851,19 @@ function persist_article_image(int $postId, array $image, string $query = ''): i
 {
     $statement = bueno_database()->prepare(
         'INSERT INTO article_images (
-            post_id, role, section_id, visual_intent, search_queries_json,
+            post_id, role, section_id, visual_intent, expected_content, search_queries_json,
             source_page_url, source_file_url, local_path, author, license,
             license_url, attribution, alt, caption, layout, status,
-            width, height, downloaded_at
+            width, height, downloaded_at, relationship, search_audit_json
          ) VALUES (
-            :post_id, :role, :section_id, :visual_intent, :search_queries_json,
+            :post_id, :role, :section_id, :visual_intent, :expected_content, :search_queries_json,
             :source_page_url, :source_file_url, :local_path, :author, :license,
             :license_url, :attribution, :alt, :caption, :layout, :status,
-            :width, :height, :downloaded_at
+            :width, :height, :downloaded_at, :relationship, :search_audit_json
          )
          ON CONFLICT(post_id, role, section_id) DO UPDATE SET
             visual_intent = excluded.visual_intent,
+            expected_content = excluded.expected_content,
             search_queries_json = excluded.search_queries_json,
             source_page_url = excluded.source_page_url,
             source_file_url = excluded.source_file_url,
@@ -604,6 +879,8 @@ function persist_article_image(int $postId, array $image, string $query = ''): i
             width = excluded.width,
             height = excluded.height,
             downloaded_at = excluded.downloaded_at,
+            relationship = excluded.relationship,
+            search_audit_json = excluded.search_audit_json,
             updated_at = CURRENT_TIMESTAMP'
     );
     $queries = (array) ($image['search_queries'] ?? []);
@@ -615,6 +892,7 @@ function persist_article_image(int $postId, array $image, string $query = ''): i
         ':role' => $image['role'],
         ':section_id' => $image['section_id'],
         ':visual_intent' => $image['visual_intent'],
+        ':expected_content' => $image['expected_content'] ?? $image['visual_intent'],
         ':search_queries_json' => generation_json($queries),
         ':source_page_url' => $image['source_page_url'] ?? '',
         ':source_file_url' => $image['source_file_url'] ?? '',
@@ -630,6 +908,9 @@ function persist_article_image(int $postId, array $image, string $query = ''): i
         ':width' => $image['width'] ?? null,
         ':height' => $image['height'] ?? null,
         ':downloaded_at' => $image['downloaded_at'] ?? null,
+        ':relationship' => in_array((string) ($image['relationship'] ?? ''), ARTICLE_IMAGE_RELATIONS, true)
+            ? (string) $image['relationship'] : 'exact_subject',
+        ':search_audit_json' => generation_json((array) ($image['search_audit'] ?? [])),
     ]);
 
     $idStatement = bueno_database()->prepare(
@@ -655,6 +936,232 @@ function list_article_images(int $postId): array
     return $statement->fetchAll();
 }
 
+function refresh_article_image_rendering(int $postId): void
+{
+    $post = find_post($postId);
+    if ($post === null) {
+        throw new RuntimeException('Nie znaleziono posta do odświeżenia obrazów.');
+    }
+    $images = list_article_images($postId);
+    $blocks = json_decode((string) ($post['content_blocks'] ?? '[]'), true);
+    $blocks = is_array($blocks) ? $blocks : [];
+    $content = $blocks !== [] ? render_article_blocks($blocks, $images) : (string) $post['content'];
+    $heroPath = '';
+    $heroAlt = (string) ($post['image_alt'] ?? '');
+    foreach ($images as $image) {
+        if ((string) $image['role'] === 'hero' && (string) $image['status'] === 'downloaded') {
+            $heroPath = (string) $image['local_path'];
+            $heroAlt = (string) $image['alt'];
+            break;
+        }
+    }
+    bueno_database()->prepare(
+        'UPDATE posts
+         SET content = :content, image_path = :image_path, image_alt = :image_alt,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = :id'
+    )->execute([
+        ':id' => $postId,
+        ':content' => $content,
+        ':image_path' => $heroPath,
+        ':image_alt' => $heroAlt,
+    ]);
+}
+
+function reject_article_source_image(int $imageId): int
+{
+    $statement = bueno_database()->prepare('SELECT * FROM article_images WHERE id = :id');
+    $statement->execute([':id' => $imageId]);
+    $image = $statement->fetch();
+    if (!is_array($image)) {
+        throw new RuntimeException('Nie znaleziono obrazu źródłowego.');
+    }
+    $postId = (int) $image['post_id'];
+    $localPath = trim((string) $image['local_path']);
+    bueno_database()->prepare(
+        'UPDATE article_images
+         SET source_page_url = "", source_file_url = "", local_path = "",
+             author = "", license = "", license_url = "", attribution = "",
+             status = "missing", width = NULL, height = NULL, downloaded_at = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = :id'
+    )->execute([':id' => $imageId]);
+    refresh_article_image_rendering($postId);
+
+    if ($localPath !== '') {
+        $references = bueno_database()->prepare(
+            'SELECT COUNT(*) FROM article_images
+             WHERE id != :id AND local_path = :path AND status = "downloaded"'
+        );
+        $references->execute([':id' => $imageId, ':path' => $localPath]);
+        $absolute = realpath(app_path($localPath));
+        $allowedRoot = realpath(app_post_image_path('sources'));
+        if ((int) $references->fetchColumn() === 0
+            && is_string($absolute)
+            && is_string($allowedRoot)
+            && str_starts_with($absolute, $allowedRoot . DIRECTORY_SEPARATOR)
+            && is_file($absolute)) {
+            unlink($absolute);
+        }
+    }
+
+    return $postId;
+}
+
+function fulfill_article_source_images(
+    int $postId,
+    ?callable $searcher = null,
+    ?callable $downloader = null
+): array {
+    $post = find_post($postId);
+    if ($post === null) {
+        throw new RuntimeException('Nie znaleziono posta do uzupełnienia obrazami.');
+    }
+    $searcher ??= static function (string $query): array {
+        $preferred = (string) app_config('source_image_provider');
+        $providers = array_values(array_unique([$preferred, 'wikimedia', 'openverse']));
+        $results = [];
+        $errors = [];
+        foreach ($providers as $provider) {
+            try {
+                array_push($results, ...search_source_images($query, $provider));
+            } catch (Throwable $exception) {
+                $errors[] = $provider . ': ' . $exception->getMessage();
+            }
+        }
+        if ($results === [] && $errors !== []) {
+            throw new RuntimeException(implode(' | ', $errors));
+        }
+
+        return $results;
+    };
+    $downloader ??= static fn (array $selected): array => download_source_image($selected);
+    $summary = [
+        'downloaded' => 0,
+        'manual_review' => 0,
+        'missing' => 0,
+        'skipped' => 0,
+        'errors' => [],
+    ];
+    $usedUrls = [];
+    foreach (list_article_images($postId) as $existing) {
+        if (in_array((string) $existing['status'], ['selected', 'downloaded', 'manual_review'], true)
+            && trim((string) $existing['source_file_url']) !== '') {
+            $usedUrls[(string) $existing['source_file_url']] = true;
+        }
+    }
+
+    foreach (list_article_images($postId) as $image) {
+        if ((string) $image['status'] === 'downloaded'
+            && trim((string) $image['local_path']) !== ''
+            && is_file(app_path((string) $image['local_path']))) {
+            $summary['skipped']++;
+            continue;
+        }
+        if (!in_array((string) $image['status'], ['planned', 'missing', 'manual_review'], true)) {
+            $summary['skipped']++;
+            continue;
+        }
+
+        $planned = [
+            'role' => (string) $image['role'],
+            'section_id' => (string) $image['section_id'],
+            'visual_intent' => (string) $image['visual_intent'],
+            'search_queries' => json_decode((string) $image['search_queries_json'], true) ?: [],
+            'expected_content' => trim((string) ($image['expected_content'] ?? ''))
+                ?: (string) $image['visual_intent'],
+            'source_page_url' => '',
+            'source_file_url' => '',
+            'local_path' => '',
+            'author' => '',
+            'license' => '',
+            'license_url' => '',
+            'attribution' => '',
+            'alt' => (string) $image['alt'],
+            'caption' => (string) $image['caption'],
+            'layout' => (string) $image['layout'],
+            'status' => 'planned',
+        ];
+        $manualCandidate = null;
+        $audit = [];
+        $completed = false;
+        foreach (article_image_semantic_queries($planned) as $attempt) {
+            $query = (string) $attempt['query'];
+            $relation = (string) $attempt['relation'];
+            try {
+                $results = $searcher($query);
+            } catch (Throwable $exception) {
+                $audit[] = ['query' => $query, 'level' => $relation, 'source' => '', 'result' => 'search_error', 'reason' => $exception->getMessage()];
+                $summary['errors'][] = $image['role'] . '/' . $image['section_id']
+                    . ': wyszukiwanie: ' . $exception->getMessage();
+                continue;
+            }
+            $ranked = [];
+            foreach (array_slice($results, 0, (int) app_config('source_image_candidate_budget_per_query')) as $result) {
+                if (!is_array($result)) continue;
+                $url = (string) ($result['source_file_url'] ?? '');
+                $provider = (string) ($result['provider'] ?? 'unknown');
+                if (isset($usedUrls[$url])) {
+                    $audit[] = ['query' => $query, 'level' => $relation, 'source' => $provider, 'result' => 'rejected', 'reason' => 'duplicate'];
+                    continue;
+                }
+                $score = article_image_candidate_score($result, $planned, $query, $relation);
+                if ($score === PHP_INT_MIN) {
+                    $reason = article_image_license_is_auto_safe((string) ($result['license'] ?? '')) ? 'role_or_quality' : 'unsafe_or_incomplete_license';
+                    $audit[] = ['query' => $query, 'level' => $relation, 'source' => $provider, 'result' => 'rejected', 'reason' => $reason];
+                    if ($reason === 'unsafe_or_incomplete_license' && $manualCandidate === null) {
+                        try { $manualCandidate = [select_source_image_from_results($planned, [$result], (string) ($result['provider_id'] ?? '')), $query, $relation]; } catch (Throwable) {}
+                    }
+                    continue;
+                }
+                $ranked[] = [$score, $result];
+            }
+            usort($ranked, static fn (array $a, array $b): int => $b[0] <=> $a[0]
+                ?: strcmp((string) ($a[1]['provider_id'] ?? ''), (string) ($b[1]['provider_id'] ?? '')));
+            foreach ($ranked as [$score, $result]) {
+                try {
+                    $selected = select_source_image_from_results(
+                        $planned,
+                        [$result],
+                        (string) ($result['provider_id'] ?? '')
+                    );
+                    $selected = article_image_honest_copy($selected, $relation, $result);
+                    $downloaded = $downloader($selected);
+                    $audit[] = ['query' => $query, 'level' => $relation, 'source' => (string) ($result['provider'] ?? ''), 'provider_id' => (string) ($result['provider_id'] ?? ''), 'result' => 'selected', 'score' => $score, 'relationship' => $relation];
+                    $downloaded['search_audit'] = $audit;
+                    persist_article_image($postId, $downloaded, $query);
+                    $usedUrls[(string) $downloaded['source_file_url']] = true;
+                    $summary['downloaded']++;
+                    $completed = true;
+                    break 2;
+                } catch (Throwable $exception) {
+                    $audit[] = ['query' => $query, 'level' => $relation, 'source' => (string) ($result['provider'] ?? ''), 'result' => 'rejected', 'reason' => $exception->getMessage()];
+                    $summary['errors'][] = $image['role'] . '/' . $image['section_id']
+                        . ': kandydat: ' . $exception->getMessage();
+                }
+            }
+        }
+        if ($completed) {
+            continue;
+        }
+        if (is_array($manualCandidate)) {
+            $manualCandidate[0]['relationship'] = (string) $manualCandidate[2];
+            $manualCandidate[0]['search_audit'] = $audit;
+            persist_article_image($postId, $manualCandidate[0], (string) $manualCandidate[1]);
+            $usedUrls[(string) $manualCandidate[0]['source_file_url']] = true;
+            $summary['manual_review']++;
+        } else {
+            $audit[] = ['query' => '', 'level' => 'exhausted', 'source' => '', 'result' => 'missing', 'reason' => 'all_levels_sources_retries_exhausted; topic_b_required'];
+            persist_article_image($postId, [...$planned, 'status' => 'missing', 'search_audit' => $audit]);
+            $summary['missing']++;
+        }
+    }
+
+    refresh_article_image_rendering($postId);
+
+    return $summary;
+}
+
 function validate_article_blocks(array $blocks): void
 {
     $allowed = ['heading', 'paragraph', 'list', 'quote', 'section', 'illustration', 'gallery'];
@@ -677,6 +1184,9 @@ function validate_article_blocks(array $blocks): void
             if (preg_match('/^[a-z0-9][a-z0-9-]{1,80}$/', (string) ($block['id'] ?? '')) !== 1) {
                 throw new InvalidArgumentException('Sekcja wymaga bezpiecznego identyfikatora.');
             }
+            if (!in_array((string) ($block['variant'] ?? 'default'), ARTICLE_BLOCK_SECTION_VARIANTS, true)) {
+                throw new InvalidArgumentException('Sekcja ma niedozwolony wariant wizualny.');
+            }
             validate_article_blocks((array) ($block['blocks'] ?? []));
         }
         if ($type === 'illustration' && (int) ($block['image_id'] ?? 0) <= 0) {
@@ -690,8 +1200,18 @@ function validate_article_blocks(array $blocks): void
 
 function render_article_image_record(array $image, bool $hero = false): string
 {
-    if (($image['status'] ?? '') !== 'downloaded') {
-        return '';
+    if (($image['status'] ?? '') !== 'downloaded' || !article_image_license_is_auto_safe((string) ($image['license'] ?? ''))) {
+        $section = htmlspecialchars((string) ($image['section_id'] ?? 'ilustracja'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $caption = htmlspecialchars((string) ($image['caption'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $status = (string) ($image['status'] ?? 'missing');
+        $message = $status === 'manual_review' || (($image['status'] ?? '') === 'downloaded')
+            ? 'Kandydat wymaga weryfikacji źródła lub licencji i nie jest dopuszczony do publikacji.'
+            : 'Brak zweryfikowanej grafiki — miejsce zachowano w kompozycji.';
+        return '<figure class="article-illustration article-illustration--placeholder" data-image-status="'
+            . htmlspecialchars($status, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '">'
+            . '<div class="article-image-placeholder" role="img" aria-label="Placeholder ilustracji: ' . $section . '">'
+            . '<strong>Ilustracja wymaga uwagi</strong><span>' . htmlspecialchars($message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</span></div>'
+            . ($caption !== '' ? '<figcaption>' . $caption . '</figcaption>' : '') . '</figure>';
     }
     $path = ltrim(str_replace('\\', '/', (string) ($image['local_path'] ?? '')), '/');
     if ($path === '' || !is_file(app_path($path))) {
@@ -707,11 +1227,17 @@ function render_article_image_record(array $image, bool $hero = false): string
     $license = htmlspecialchars((string) $image['license'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $licenseUrl = htmlspecialchars((string) $image['license_url'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $loading = $hero ? ' loading="eager" fetchpriority="high"' : ' loading="lazy"';
-    $html = '<figure class="article-illustration article-illustration--' . $layout . '">';
+    $responsive = article_image_responsive_attributes(
+        $path,
+        max(1, (int) ($image['width'] ?? 1)),
+        $layout
+    );
+    $html = '<figure class="article-illustration article-illustration--' . $layout
+        . ($hero ? ' article-illustration--hero' : '') . '">';
     $html .= '<img src="../' . htmlspecialchars($path, ENT_QUOTES, 'UTF-8') . '" alt="' . $alt
         . '" width="' . max(1, (int) ($image['width'] ?? 1))
         . '" height="' . max(1, (int) ($image['height'] ?? 1))
-        . '" decoding="async"' . $loading . '>';
+        . '" decoding="async"' . $responsive . $loading . '>';
     if ($caption !== '' || $attribution !== '') {
         $html .= '<figcaption>' . $caption;
         if ($attribution !== '') {
@@ -730,6 +1256,82 @@ function render_article_image_record(array $image, bool $hero = false): string
     }
 
     return $html . '</figure>';
+}
+
+function article_image_variant_path(string $path, int $width): string
+{
+    $extension = pathinfo($path, PATHINFO_EXTENSION);
+    $suffixLength = $extension === '' ? 0 : strlen($extension) + 1;
+    $stem = $suffixLength > 0 ? substr($path, 0, -$suffixLength) : $path;
+    return $stem . '-' . $width . '.webp';
+}
+
+function create_article_image_variants(string $absolutePath): void
+{
+    if (!is_file($absolutePath)) return;
+    $info = @getimagesize($absolutePath);
+    $sourceWidth = max(0, (int) ($info[0] ?? 0));
+    $sourceHeight = max(0, (int) ($info[1] ?? 0));
+    if ($sourceWidth === 0 || $sourceHeight === 0) return;
+    $canUseGd = function_exists('imagecreatefromstring') && function_exists('imagewebp');
+    $source = false;
+    if ($canUseGd) {
+        $bytes = @file_get_contents($absolutePath);
+        $source = is_string($bytes) ? @imagecreatefromstring($bytes) : false;
+        $canUseGd = $source !== false;
+    }
+    $python = trim((string) app_config('image_processor_python'));
+
+    foreach ([768, 1280] as $targetWidth) {
+        if ($sourceWidth <= $targetWidth) continue;
+        $targetPath = article_image_variant_path($absolutePath, $targetWidth);
+        if (is_file($targetPath)) continue;
+        if (!$canUseGd) {
+            if ($python === '' || !is_file($python)) continue;
+            $process = proc_open(
+                [$python, app_path('scripts/process-responsive-image.py'), $absolutePath, $targetPath, (string) $targetWidth, '82'],
+                [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+                $pipes,
+                app_project_root(),
+                null,
+                ['bypass_shell' => true]
+            );
+            if (!is_resource($process)) continue;
+            stream_get_contents($pipes[1]);
+            stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            proc_close($process);
+            continue;
+        }
+        $targetHeight = max(1, (int) round($sourceHeight * $targetWidth / $sourceWidth));
+        $target = imagescale($source, $targetWidth, $targetHeight, IMG_BICUBIC_FIXED);
+        if ($target === false) continue;
+        $temporary = $targetPath . '.tmp-' . bin2hex(random_bytes(4));
+        try {
+            if (@imagewebp($target, $temporary, 82)) @rename($temporary, $targetPath);
+        } finally {
+            imagedestroy($target);
+            if (is_file($temporary)) @unlink($temporary);
+        }
+    }
+    if ($source !== false) imagedestroy($source);
+}
+
+function article_image_responsive_attributes(string $relativePath, int $width, string $layout): string
+{
+    $candidates = [];
+    foreach ([768, 1280] as $candidateWidth) {
+        $candidatePath = article_image_variant_path($relativePath, $candidateWidth);
+        if ($candidateWidth < $width && is_file(app_path($candidatePath))) {
+            $candidates[] = '../' . htmlspecialchars($candidatePath, ENT_QUOTES, 'UTF-8') . ' ' . $candidateWidth . 'w';
+        }
+    }
+    $candidates[] = '../' . htmlspecialchars($relativePath, ENT_QUOTES, 'UTF-8') . ' ' . $width . 'w';
+    $sizes = in_array($layout, ['left', 'right'], true)
+        ? '(max-width: 980px) 100vw, 28rem'
+        : '(max-width: 980px) 100vw, 58rem';
+    return ' srcset="' . implode(', ', $candidates) . '" sizes="' . $sizes . '"';
 }
 
 function render_article_blocks(array $blocks, array $images): string
@@ -761,7 +1363,9 @@ function render_article_blocks(array $blocks, array $images): string
             }
             $html .= '</ul>';
         } elseif ($type === 'section') {
-            $html .= '<section id="' . $escape((string) $block['id']) . '">'
+            $variant = (string) ($block['variant'] ?? 'default');
+            $html .= '<section id="' . $escape((string) $block['id'])
+                . '" class="article-section article-section--' . $escape($variant) . '">'
                 . render_article_blocks((array) $block['blocks'], $images) . '</section>';
         } elseif ($type === 'illustration') {
             $html .= isset($byId[(int) $block['image_id']])

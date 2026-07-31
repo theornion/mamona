@@ -1,0 +1,8 @@
+body.admin-page-topics .topic-control-card{position:relative;padding:1rem 3.25rem 1rem 1rem!important;overflow:visible;contain:none}
+body.admin-page-topics .topic-bulk-toolbar{grid-template-columns:minmax(16rem,.8fr) minmax(30rem,1.5fr);gap:.55rem 1rem;margin:.5rem 0 1rem;padding:.8rem}
+body.admin-page-topics .topic-workflow-path{margin:.7rem 0}
+body.admin-page-topics .topic-card-actions{margin:.7rem 0 .25rem;padding-top:.65rem}
+body.admin-page-topics .topic-trash{position:absolute;right:.7rem;bottom:.7rem;width:2rem;height:2rem}
+body.admin-page-topics .topic-trash-form{justify-content:flex-end;margin-top:.6rem}
+body.admin-page-topics .topic-trash-bulk-check{margin-right:2.5rem}
+body.admin-page-topics .topic-trash-bulk-link{display:flex;justify-content:flex-end;gap:.7rem;margin:-.5rem 0 1rem}

@@ -62,6 +62,21 @@ function research_smoke_feed_item(array $source, string $title, string $url, str
     return ['post_id' => $postId, 'feed_item_id' => (int) $row['id'], 'topic_id' => (int) $row['topic_id']];
 }
 
+$singleSourceSchema = research_package_schema(['S1']);
+research_smoke_assert(
+    ($singleSourceSchema['properties']['shared_facts']['maxItems'] ?? null) === 0,
+    'Schemat jednego źródła pozwala modelowi tworzyć shared_facts.'
+);
+research_smoke_assert(
+    ($singleSourceSchema['properties']['contradictions']['maxItems'] ?? null) === 0,
+    'Schemat jednego źródła pozwala modelowi tworzyć contradictions.'
+);
+$multiSourceSchema = research_package_schema(['S1', 'S2']);
+research_smoke_assert(
+    ($multiSourceSchema['properties']['shared_facts']['items']['properties']['source_ids']['minItems'] ?? null) === 2,
+    'Schemat shared_facts nie wymaga dwóch źródeł.'
+);
+
 $database = bueno_database();
 $originalMode = generation_mode();
 $baselineFeedItems = (int) $database->query('SELECT COUNT(*) FROM discovered_feed_items')->fetchColumn();

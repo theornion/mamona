@@ -60,10 +60,15 @@ function pipeline_e2e_draft(string $sourceTitle, string $mode): array
 
     $draft = [
         'composition_mode' => $mode,
-        'title' => mb_substr($sourceTitle, 0, 100),
+        'title' => 'Eksperyment ujawnia znaczenie kontrolowanego wyniku',
+        'brief' => 'Pozornie prosty wynik prowadzi do szerszego pytania, które warto rozłożyć na dane, ograniczenia i praktyczne znaczenie.',
         'lead' => pipeline_e2e_section('Eksperyment opisany przez źródło pierwotne dał kontrolowany wynik.'),
         'why_important' => pipeline_e2e_section('Wynik pomaga wyjaśnić badany mechanizm.'),
-        'key_facts' => [pipeline_e2e_section('Źródło pierwotne opisuje metodę i wynik eksperymentu.')],
+        'key_facts' => [
+            pipeline_e2e_section('Źródło pierwotne opisuje metodę i wynik eksperymentu.'),
+            pipeline_e2e_section('Drugi fakt rozwija znaczenie kontrolowanego wyniku.'),
+            pipeline_e2e_section('Trzeci fakt porządkuje ograniczenia dostępnego materiału.'),
+        ],
         'comparison_context' => $empty,
         'unknowns' => [[
             'text' => 'Pełny zestaw danych nie jest jeszcze dostępny.',
@@ -84,6 +89,7 @@ function pipeline_e2e_draft(string $sourceTitle, string $mode): array
             'answer_and_punchline' => $empty,
         ],
     ];
+    $draft = [...$draft, ...build_article_title_strategy_fixture((string) $draft['title'])];
     $policy = article_draft_length_policy($mode);
     $index = 1;
     while (article_draft_main_content_length($draft) < $policy['minimum_characters']) {

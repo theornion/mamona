@@ -1,6 +1,25 @@
 (function () {
-    const bg = document.querySelector('#wrapper > .bg');
+    if (document.body.classList.contains('admin-page')) return;
+
+    const reducedEffects = !!(
+        window.MamonaPerformance
+        && window.MamonaPerformance.shouldReduceEffects()
+    );
+    const wrapper = document.querySelector('#wrapper');
+    let bg = wrapper ? wrapper.querySelector(':scope > .bg') : null;
     const main = document.querySelector('#main');
+    const backgroundAsset = window.matchMedia('(max-width: 980px)').matches
+        ? 'images/nasa-pillars-of-creation-mobile.webp?v=20260728-fit'
+        : 'images/nasa-pillars-of-creation.webp?v=20260728-fit';
+
+    // main.js normally creates this layer. Keep the public background working
+    // even when the legacy template initializer exits early.
+    if (!bg && wrapper) {
+        bg = document.createElement('div');
+        bg.className = 'bg fixed';
+        wrapper.prepend(bg);
+    }
+
     if (!bg) return;
 
     const intro = document.querySelector('#intro');
@@ -59,8 +78,8 @@
     const isIndexPage = !!intro && !!header && !menu && !usesStaticIntro;
 
     const speed = 0.10;
-    const bgWidth = 1680;
-    const bgHeight = 2307;
+    const bgWidth = 1920;
+    const bgHeight = 3326;
     const mobileReserve = 180;
     const sharedMobileMenuScreens = 10.5;
     const mobileMenuGuyAnchorX = 0.254;
@@ -90,6 +109,8 @@
     let backgroundLayoutKey = '';
     let mobileLayoutHeight = 0;
     let mobileLayoutWidth = 0;
+    let cachedHeaderDocumentTop = 0;
+    let cachedStaticHeaderScrollTop = 0;
 
     function markBackgroundReady() {
         if (!bg) return;
@@ -123,7 +144,7 @@
 
         const assetBase = document.body.dataset.assetBase ||
             (window.location.pathname.includes('/pages/') || window.location.pathname.includes('/php/') ? '../' : '');
-        image.src = assetBase + 'images/bg6.webp';
+        image.src = assetBase + backgroundAsset;
 
         if (image.complete) {
             backgroundLoaded = true;
@@ -174,9 +195,15 @@
     }
 
     function getHeaderDocumentTop() {
-        if (!header) return 0;
+        return cachedHeaderDocumentTop;
+    }
 
-        return header.getBoundingClientRect().top + window.scrollY;
+    function refreshLayoutMetrics() {
+        cachedHeaderDocumentTop = header
+            ? header.getBoundingClientRect().top + window.scrollY
+            : 0;
+        cachedStaticHeaderScrollTop = getStaticHeaderScrollTop();
+        backgroundLayoutKey = '';
     }
 
     function getEffectiveScrollY(scrollY) {
@@ -307,7 +334,7 @@
         // nim dostępne po przewinięciu w górę, ale nie może nakładać się na
         // małe logo headera w normalnej pozycji strony.
         if (usesStaticIntro && intro && header) {
-            const introHideThreshold = Math.max(0, getStaticHeaderScrollTop() - 8);
+            const introHideThreshold = Math.max(0, cachedStaticHeaderScrollTop - 8);
             const isAboveHeader = scrollY < introHideThreshold;
             document.body.classList.toggle('intro-above-header', isAboveHeader);
             intro.classList.toggle('hidden', !isAboveHeader);
@@ -331,21 +358,37 @@
     // jump both containers move together; updating the background after only
     // one of them has moved causes a visible one-frame flicker.
     let parallaxFrame = null;
+    let lastParallaxPaint = 0;
     function requestParallaxUpdate() {
+        if (document.hidden) return;
         if (parallaxFrame) return;
 
-        parallaxFrame = window.requestAnimationFrame(function () {
+        parallaxFrame = window.requestAnimationFrame(function (timestamp) {
             parallaxFrame = null;
+            if (timestamp - lastParallaxPaint < 30) return;
+            lastParallaxPaint = timestamp;
             updateParallax();
         });
     }
 
     markBackgroundReady();
+    refreshLayoutMetrics();
     updateParallax();
 
+    if (reducedEffects) {
+        bg.style.setProperty('--bg-parallax-y', '0px');
+        return;
+    }
+
     window.addEventListener('scroll', requestParallaxUpdate, { passive: true });
-    window.addEventListener('resize', requestParallaxUpdate);
+    window.addEventListener('resize', function () {
+        refreshLayoutMetrics();
+        requestParallaxUpdate();
+    }, { passive: true });
     window.addEventListener('load', requestParallaxUpdate);
+    document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) requestParallaxUpdate();
+    }, { passive: true });
 
     if (document.body.classList.contains('page-no-intro') && header) {
         window.addEventListener('load', function () {

@@ -10,7 +10,7 @@ try {
     $categorySlug = trim((string) ($_GET['category'] ?? ''));
     $category = $categorySlug !== '' ? find_post_category_by_slug($categorySlug) : null;
 
-    if ($categorySlug !== '' && $category === null) {
+    if ($categorySlug !== '' && !post_category_is_public($category)) {
         http_response_code(404);
         echo json_encode(['category' => null, 'posts' => []], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         exit;
@@ -32,7 +32,9 @@ try {
             'imageWidth' => max(1, (int) ($imageInfo[0] ?? 1280)),
             'imageHeight' => max(1, (int) ($imageInfo[1] ?? 720)),
             'url' => post_page_filename((string) $post['slug']),
-            'category' => $post['category_title'],
+            'category' => (int) ($post['category_is_editorial_only'] ?? 0) === 1
+                ? ''
+                : (string) $post['category_title'],
             'createdAt' => $post['created_at'],
         ];
     }, list_posts($category !== null ? (int) $category['id'] : null, true));
