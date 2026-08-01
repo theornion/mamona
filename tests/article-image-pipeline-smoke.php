@@ -42,7 +42,7 @@ image_pipeline_assert(article_image_license_is_auto_safe('CC0 1.0'), 'CC0 nie zo
 image_pipeline_assert(article_image_license_is_auto_safe('CC BY 4.0'), 'CC BY nie zostało zaakceptowane.');
 image_pipeline_assert(article_image_license_is_auto_safe('by-4.0'), 'Zapis licencji CC BY z Openverse nie został zaakceptowany.');
 image_pipeline_assert(article_image_license_is_auto_safe('Public Domain'), 'Public Domain nie zostało zaakceptowane.');
-image_pipeline_assert(!article_image_license_is_auto_safe('CC BY-SA 4.0'), 'CC BY-SA nie trafiło do przeglądu.');
+image_pipeline_assert(article_image_license_is_auto_safe('CC BY-SA 4.0'), 'CC BY-SA nie zostało zaakceptowane.');
 image_pipeline_assert(!article_image_license_is_auto_safe('royalty-free'), 'Royalty-free uznano za wystarczającą licencję.');
 image_pipeline_assert(!(bool) app_config('ai_image_generation_enabled'), 'Generator obrazów AI nie jest domyślnie wyłączony.');
 $renderedHero = render_article_image_record([

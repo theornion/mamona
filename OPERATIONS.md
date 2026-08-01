@@ -24,6 +24,21 @@ ukończonego w TASK-22. Specyfikacja funkcjonalna pozostaje w
 
 ## Worker pobierania RSS
 
+Po zmianie rejestru źródeł uruchom `php tests/official-feed-replacements-smoke.php --live`,
+a następnie `php php/fetch-feeds.php`. Pierwszy test sprawdza bezpieczny transport
+i parsowanie oficjalnego zamiennika NIBIB; drugi raportuje każde aktywne źródło.
+HTTP 403 jest trwałą odmową bez ponawiania i bez obchodzenia ochrony. Wyłączone
+JPL oraz NIH News Releases zachowują rekord i czytelną przyczynę w `last_error`.
+
+Audyt pełnych odpowiedzi bez zmiany zapisanych ETagów uruchamia
+`php scripts/audit-feed-redirects.php`. Raport zawiera każdy hop, status, URL,
+host, schemat, port, publiczną klasę rozwiązanych adresów IP, content type,
+liczbę bajtów i kod decyzji. HTTP 304 jest poprawnym `not_modified`, a błędy
+`redirect_blocked`, `redirect_loop` i `redirect_limit` są raportowane osobno.
+Każdy redirect jest ponownie sprawdzany i przypinany do zweryfikowanego IP;
+przekierowania do sieci lokalnych/prywatnych, downgrade HTTPS, userinfo oraz
+niestandardowe porty pozostają zablokowane.
+
 Przycisk w Studio zapisuje job w SQLite i na Windows uruchamia osobny proces PHP CLI.
 W XAMPP ustaw `CMS_PHP_CLI=C:\\xampp\\php\\php.exe`. Jako zabezpieczenie po
 restarcie Apache dodaj w Harmonogramie zadaĹ„ Windows wywoĹ‚anie co minutÄ™:
@@ -59,6 +74,66 @@ steruje odzyskaniem elementu po awarii, a `CMS_BATCH_RATE_LIMIT_BACKOFF_SECONDS`
 bazowym opóźnieniem po 429 lub timeout. Nagłówek `Retry-After` ma pierwszeństwo
 przed tym minimum. Odświeżenie panelu nie uruchamia ponownie Gemini.
 `GEMINI_API_MOCK=true` wraz z `CMS_SOURCE_IMAGE_MOCK=true` uruchamia pełny test bez sieci i kosztów.
+
+## Legalne źródła obrazów i manifest praw
+
+Każdy automatycznie wybrany asset musi mieć per-item manifest praw z adresem strony
+oryginału, bezpośrednim plikiem, twórcą, pełnym credit line, surowym oświadczeniem
+praw, migawką licencji i jej skrótem oraz flagami commercial/derivatives/attribution,
+third-party, osób i znaków. Brak lub sprzeczność któregokolwiek pola odrzuca wyłącznie
+kandydata; waterfall przechodzi do następnego źródła, a na końcu tworzy neutralny SVG.
+
+Automatyczny ranking to: dokładny asset naukowy/instytucjonalny, CC0/Public Domain,
+CC BY/BY-SA, Pexels, lokalna ilustracja. CC-NC, CC-ND, InC, NoC-NC, unknown,
+rights-reserved, third-party oraz wyjątki ESO są niedozwolone. Unsplash i Pixabay są
+providerami manual-only i worker ich nie wywołuje. Brak klucza Smithsonian, Europeana
+lub Pexels nie zatrzymuje batcha. Odpowiedzi wyszukiwarek są cache'owane domyślnie
+przez 24 godziny; diagnostyka pokazuje tylko tryb providera, nigdy wartość klucza.
+Opcjonalne `CMS_ESO_ASSET_CATALOG_URL`, `CMS_USGS_ASSET_CATALOG_URL` i
+`CMS_NCI_ASSET_CATALOG_URL` mogą wskazywać kontrolowany katalog JSON, ale każdy
+zwrócony rekord i tak przechodzi centralną walidację per-item; sam host katalogu
+nie stanowi dowodu licencji.
+
+Podstawy zasad zweryfikowano 2026-08-01: Smithsonian Open Access FAQ
+<https://www.si.edu/openaccess/faq>, Europeana rights statements
+<https://pro.europeana.eu/page/available-rights-statements>, ESO copyright
+<https://www.eso.org/public/copyright/>, NASA Images and Media
+<https://www.nasa.gov/nasa-brand-center/images-and-media/>, USGS copyrights
+<https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits>,
+NCI Visuals Online <https://visualsonline.cancer.gov/about.cfm>, Pexels API i licencja
+<https://www.pexels.com/api/documentation/> oraz <https://www.pexels.com/legal-pages/license/>,
+Unsplash API Guidelines <https://help.unsplash.com/en/articles/2511245-unsplash-api-guidelines>
+i Pixabay API <https://pixabay.com/api/docs/>.
+
+## Globalny limiter i budzet Gemini
+
+Produkcja korzysta z realnego Gemini; mock jest wylacznie izolacja testow. Wszystkie
+procesy wspoldziela w SQLite limiter `GEMINI_QUOTA_PROJECT` + model: domyslnie
+10 RPM, jedno wywolanie naraz, konfigurowalne TPM/RPD i osobny stan modeli z
+`GEMINI_MODEL_FALLBACKS`. Ledger zapisuje cel, stage, topic/batch/item, fingerprint,
+model, probe, status i tokeny, ale nie klucz ani pelny prompt.
+
+Happy path zuzywa 3 prawdziwe requesty: research, draft i QC. Budzet trudnego tematu
+wynosi 15 requestow wyslanych; cache hit i quota wait nie sa liczone. Request 15 jest
+zarezerwowany dla finalnego QC. Brak dalszego budzetu uruchamia lokalny source-bounded
+safe composer i prowadzi do prywatnego podgladu z notatkami, nigdy do publikacji.
+Testy CLI nie moga polaczyc sie z Gemini bez `CMS_ALLOW_LIVE_GEMINI_TEST=1`.
+
+### Pauza automatycznego dispatchera
+
+Trwala pauza w bazie zatrzymuje scheduler, reconcile i automatyczne retry, ale nie
+blokuje recznego `Wygeneruj calosc`:
+
+```powershell
+php scripts/automatic-dispatch-control.php status
+php scripts/automatic-dispatch-control.php pause
+php scripts/automatic-dispatch-control.php resume
+```
+
+`resume` jedynie zdejmuje blokade przyszlego dispatchu; nie kolejkuje automatycznie
+kart `paused_by_operator`. Ten sam przelacznik Pauza/Wznow jest dostepny w panelu
+tematow. `CMS_AUTOMATIC_DISPATCH_PAUSED=true` jest dodatkowa, wymuszajaca blokada
+srodowiskowa.
 
 ## 1. Wymagania
 
@@ -344,7 +419,40 @@ Klucz powinien należeć do osobnego projektu z minimalnymi uprawnieniami. Przed
 włączeniem produkcji sprawdź aktualny cennik i budżet dostawcy — nie wpisuj
 stałych cen do konfiguracji aplikacji.
 
-## 12. Checklista produkcyjna
+## 12. Automatyczny wybór tematów i pełny batch
+
+Bezpieczny podgląd nie zapisuje runu, rezerwacji ani batcha i nie wywołuje API:
+
+```text
+php php/full-auto-run.php --dry-run
+```
+
+Wynik JSON zawiera każdego kandydata oraz dokładny kod wyboru lub pominięcia.
+Rzeczywisty run wymaga `FULL_AUTO_ENABLED=true`, trybu generowania `api` oraz
+klucza dostawcy albo jawnego lokalnego mocka:
+
+```text
+php php/full-auto-run.php
+```
+
+Ten sam command działa w cron i Harmonogramie zadań Windows. Kod `0` oznacza
+sukces, `1` błąd co najmniej jednego tematu, `2` błędne argumenty, a `4`
+wyłączoną flagę. Jeden błąd nie zatrzymuje pozostałych tematów. Audyt jest
+zapisany w `full_auto_runs` i `full_auto_reservations`; zawiera kandydatów,
+powody, batch IDs i błędy, lecz nie sekrety.
+
+Selektor wymaga kwalifikacji scoringu, progu, świeżości, dozwolonej kategorii
+i ryzyka, minimalnej liczby niezależnych źródeł oraz opcjonalnie źródła
+pierwotnego. Pomija odrzucone/przetworzone/zdublowane tematy, aktywne batche i
+wcześniejsze rezerwacje. Limity runu i dnia są egzekwowane atomowo. Batch
+wykonuje research, szkic, QC i obrazy, może skończyć w `waiting_review`, ale
+nigdy nie publikuje.
+
+Awaryjne wyłączenie: ustaw `FULL_AUTO_ENABLED=false` i zatrzymaj wpis schedulera.
+Istniejące batche zachowują audyt i można je obsłużyć w panelu; wyłączenie nie
+usuwa danych ani nie uruchamia publikacji.
+
+## 13. Checklista produkcyjna
 
 - [ ] prawdziwy `CMS_PUBLIC_URL`;
 - [ ] dane wydawcy, kontakty, retencja i biogramy;

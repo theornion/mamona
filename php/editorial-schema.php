@@ -27,6 +27,21 @@ const TOPIC_TRASH_SNAPSHOTS_MIGRATION = '20260731_021_topic_trash_snapshots';
 const SOURCE_ENRICHMENT_MIGRATION = '20260731_022_source_enrichment';
 const ARTICLE_IMAGE_SEMANTIC_CASCADE_MIGRATION = '20260731_023_article_image_semantic_cascade';
 const FEED_RELIABILITY_MIGRATION = '20260731_024_feed_reliability';
+const QC_AUTO_REPAIR_MIGRATION = '20260801_025_qc_auto_repair_status';
+const INACCESSIBLE_OFFICIAL_FEEDS_MIGRATION = '20260801_027_inaccessible_official_feeds';
+const QC_AUTO_REPAIR_COUNTER_MIGRATION = '20260801_026_qc_auto_repair_counter';
+const FULL_AUTO_TERMINAL_MIGRATION = '20260801_028_full_auto_terminal';
+const AUTONOMOUS_GENERATE_ALL_MIGRATION = '20260801_029_autonomous_generate_all';
+const QUALITY_SALVAGE_ROUTER_MIGRATION = '20260801_030_quality_salvage_router';
+const IMAGE_RIGHTS_MANIFEST_MIGRATION = '20260801_033_image_rights_manifest';
+const IMAGE_PROVIDER_RATE_LIMIT_MIGRATION = '20260801_034_image_provider_rate_limit';
+const LEGACY_CHECKPOINT_RESUME_MIGRATION = '20260801_031_legacy_checkpoint_resume';
+const TEST_SOURCE_ARTIFACT_CLEANUP_MIGRATION = '20260801_035_test_source_artifact_cleanup';
+const LEAKED_BATCH_FIXTURE_CLEANUP_MIGRATION = '20260801_036_leaked_batch_fixture_cleanup';
+const GEMINI_GLOBAL_QUOTA_MIGRATION = '20260801_037_gemini_global_quota';
+const IMAGE_INTEGRITY_MIGRATION = '20260801_038_image_integrity';
+const GEMINI_LEDGER_EXTENSION_MIGRATION = '20260801_039_gemini_ledger_extension';
+const AUTOMATIC_DISPATCH_PAUSE_MIGRATION = '20260801_040_automatic_dispatch_pause';
 
 function database_table_columns(PDO $database, string $table): array
 {
@@ -933,6 +948,40 @@ function run_schema_migrations(PDO $database): void
     );
     apply_schema_migration(
         $database,
+        IMAGE_RIGHTS_MANIFEST_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing($database, 'article_images', 'rights_manifest_json', 'TEXT NOT NULL DEFAULT "{}"');
+            $database->exec(
+                'CREATE TABLE IF NOT EXISTS image_provider_cache (
+                    provider TEXT NOT NULL,
+                    query_hash TEXT NOT NULL,
+                    response_json TEXT NOT NULL DEFAULT "{}",
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(provider, query_hash)
+                );
+                CREATE INDEX IF NOT EXISTS image_provider_cache_expiry_idx
+                    ON image_provider_cache(expires_at);'
+            );
+        }
+    );
+    apply_schema_migration(
+        $database,
+        IMAGE_PROVIDER_RATE_LIMIT_MIGRATION,
+        static function (PDO $database): void {
+            $database->exec(
+                'CREATE TABLE IF NOT EXISTS image_provider_rate_windows (
+                    provider TEXT NOT NULL,
+                    window_started_at TEXT NOT NULL,
+                    request_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(provider, window_started_at)
+                );'
+            );
+        }
+    );
+    apply_schema_migration(
+        $database,
         CONTENT_STUDIO_MIGRATION,
         static function (PDO $database): void {
             $database->exec(
@@ -996,6 +1045,48 @@ function run_schema_migrations(PDO $database): void
             $database->exec("UPDATE technical_sources SET feed_url='https://science.nasa.gov/feed/?science_org=19791%2C22453', last_error='' WHERE name='NASA Earth Observatory'");
             $database->exec("UPDATE technical_sources SET health_status='unavailable', last_error='Oficjalny endpoint zwraca HTTP 403 dla automatycznego klienta; zabezpieczenia nie są obchodzone', muted_until=datetime('now', '+30 minutes') WHERE name='NASA Jet Propulsion Laboratory'");
             $database->exec("UPDATE technical_sources SET health_status='healthy', last_error='' WHERE name IN ('NIEHS News','NIH News Releases','NSF News','Quanta Magazine')");
+        }
+    );
+    apply_schema_migration(
+        $database,
+        INACCESSIBLE_OFFICIAL_FEEDS_MIGRATION,
+        static function (PDO $database): void {
+            $deactivate = $database->prepare(
+                'UPDATE technical_sources
+                 SET is_active = 0, health_status = "unavailable", muted_until = NULL,
+                     last_error = :reason, updated_at = CURRENT_TIMESTAMP
+                 WHERE name = :name OR feed_url = :feed_url'
+            );
+            $deactivate->execute([
+                ':name' => 'NASA Jet Propulsion Laboratory',
+                ':feed_url' => 'https://www.jpl.nasa.gov/feeds/news/',
+                ':reason' => 'Wyłączone: oficjalny endpoint stale odmawia bezpiecznemu klientowi RSS (HTTP 403). Treści JPL są pokrywane przez aktywne kanały NASA Science i NASA Technology; ochrona nie jest obchodzona.',
+            ]);
+            $deactivate->execute([
+                ':name' => 'NIH News Releases',
+                ':feed_url' => 'https://www.nih.gov/news-releases/feed.xml',
+                ':reason' => 'Wyłączone: oficjalny endpoint stale odmawia bezpiecznemu klientowi RSS (HTTP 403). Profil biomedyczny pozostaje pokryty przez oficjalne kanały NIEHS i NIBIB; ochrona nie jest obchodzona.',
+            ]);
+
+            $database->exec(
+                'INSERT INTO technical_sources (
+                    name, website_url, feed_url, source_type, topic_category,
+                    language, credibility_level, is_primary, is_active, profile_key,
+                    health_status, last_error
+                 ) VALUES (
+                    "NIBIB News", "https://www.nibib.nih.gov/news-events/newsroom",
+                    "https://www.nibib.nih.gov/rss", "rss", "human-technology",
+                    "en", 5, 1, 1, "popular_science", "healthy", ""
+                 )
+                 ON CONFLICT(name) DO UPDATE SET
+                    website_url = excluded.website_url, feed_url = excluded.feed_url,
+                    source_type = excluded.source_type, topic_category = excluded.topic_category,
+                    language = excluded.language, credibility_level = excluded.credibility_level,
+                    is_primary = excluded.is_primary, is_active = excluded.is_active,
+                    profile_key = excluded.profile_key, health_status = excluded.health_status,
+                    muted_until = NULL, last_error = excluded.last_error,
+                    updated_at = CURRENT_TIMESTAMP'
+            );
         }
     );
     apply_schema_migration(
@@ -1175,6 +1266,311 @@ function run_schema_migrations(PDO $database): void
         static function (PDO $database): void {
             database_add_column_if_missing($database, 'editorial_topics', 'pre_trash_post_status', 'TEXT');
             database_add_column_if_missing($database, 'editorial_topics', 'pre_trash_score', 'INTEGER');
+        }
+    );
+    apply_schema_migration(
+        $database,
+        QC_AUTO_REPAIR_MIGRATION,
+        static function (PDO $database): void {
+            $database->exec(
+                'DROP INDEX IF EXISTS generation_batch_one_active_topic_idx;
+                 CREATE UNIQUE INDEX generation_batch_one_active_topic_idx
+                    ON generation_batch_items(topic_id)
+                    WHERE status IN ("queued", "research", "draft", "auto_repair", "quality_check", "images", "rate_limited");'
+            );
+        }
+    );
+    apply_schema_migration(
+        $database,
+        QC_AUTO_REPAIR_COUNTER_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing($database, 'generation_batch_items', 'auto_repair_count', 'INTEGER NOT NULL DEFAULT 0');
+        }
+    );
+    apply_schema_migration(
+        $database,
+        FULL_AUTO_TERMINAL_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing($database, 'editorial_topics', 'automation_status', 'TEXT NOT NULL DEFAULT ""');
+            database_add_column_if_missing($database, 'editorial_topics', 'automation_reason', 'TEXT NOT NULL DEFAULT ""');
+            database_add_column_if_missing($database, 'editorial_topics', 'automation_updated_at', 'TEXT');
+        }
+    );
+    apply_schema_migration(
+        $database,
+        AUTONOMOUS_GENERATE_ALL_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing($database, 'generation_batches', 'execution_mode', 'TEXT NOT NULL DEFAULT "api"');
+            database_add_column_if_missing($database, 'article_draft_versions', 'repair_strategy', 'TEXT NOT NULL DEFAULT ""');
+            $database->exec(
+                'UPDATE generation_batch_items
+                 SET status="auto_repair", stage="quality_check", outcome="safe_composer_queued", progress_percent=84,
+                     wait_reason="Wznawiam przez bezpieczny kompozytor.", completed_at=NULL,
+                     available_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+                 WHERE status="waiting_review" AND id IN (
+                    SELECT items.id FROM generation_batch_items items
+                    INNER JOIN generation_batches batches ON batches.id=items.batch_id
+                    WHERE batches.action="generate_all" AND batches.execution_mode="api"
+                      AND (
+                        SELECT COUNT(DISTINCT audit.id) FROM generation_batch_audit audit
+                        WHERE audit.item_id=items.id AND audit.action="auto_repair_draft_validated"
+                      ) >= 2
+                 );
+                 UPDATE editorial_topics
+                 SET automatic_eligible=1, automation_status="auto_repair",
+                     automation_reason="Wznawianie przez bezpieczny kompozytor po wyczerpaniu korekt modelowych.",
+                     automation_updated_at=CURRENT_TIMESTAMP
+                 WHERE id IN (
+                    SELECT topic_id FROM generation_batch_items
+                    WHERE status="auto_repair" AND outcome="safe_composer_queued"
+                 );'
+            );
+            $audit = $database->prepare(
+                'INSERT INTO generation_batch_audit (batch_id,item_id,action,actor,details_json)
+                 SELECT items.batch_id,items.id,"autonomous_item_reconciled","migration",:details
+                 FROM generation_batch_items items
+                 WHERE items.status="auto_repair" AND items.outcome="safe_composer_queued"
+                   AND NOT EXISTS (
+                    SELECT 1 FROM generation_batch_audit existing
+                    WHERE existing.item_id=items.id AND existing.action="autonomous_item_reconciled"
+                   )'
+            );
+            $audit->execute([':details' => json_encode([
+                'decision' => 'safe_composer_queued', 'reason' => 'two_completed_repairs',
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)]);
+        }
+    );
+    apply_schema_migration(
+        $database,
+        QUALITY_SALVAGE_ROUTER_MIGRATION,
+        static function (PDO $database): void {
+            $database->exec(
+                'CREATE TABLE IF NOT EXISTS generation_repair_reports (
+                    item_id INTEGER PRIMARY KEY,
+                    report_json TEXT NOT NULL DEFAULT "[]",
+                    unresolved_json TEXT NOT NULL DEFAULT "[]",
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (item_id) REFERENCES generation_batch_items(id) ON DELETE CASCADE
+                 );
+                 CREATE INDEX IF NOT EXISTS generation_repair_reports_updated_idx
+                    ON generation_repair_reports(updated_at DESC);
+                 DROP INDEX IF EXISTS generation_batch_one_active_topic_idx;
+                 CREATE UNIQUE INDEX generation_batch_one_active_topic_idx
+                    ON generation_batch_items(topic_id)
+                    WHERE status IN ("queued","research","draft","auto_repair","quality_check","images","rate_limited","auto_retry_scheduled");
+                 UPDATE generation_batch_items
+                 SET status="auto_repair",stage="quality_check",outcome="safe_composer_queued",progress_percent=84,
+                     wait_reason="Wznawiam przez bezpieczny kompozytor.",completed_at=NULL,available_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+                 WHERE status IN ("waiting_review","auto_rejected")
+                   AND outcome IN ("auto_repair_limit","auto_repair_limit_reconciled")
+                   AND id IN (SELECT items.id FROM generation_batch_items items
+                     INNER JOIN generation_batches batches ON batches.id=items.batch_id
+                     WHERE batches.action="generate_all" AND batches.execution_mode="api"
+                       AND NOT EXISTS (SELECT 1 FROM generation_batch_items active_item
+                         WHERE active_item.topic_id=items.topic_id AND active_item.id<>items.id
+                           AND active_item.status IN ("queued","research","draft","auto_repair","quality_check","images","rate_limited","auto_retry_scheduled")));
+                 UPDATE editorial_topics SET automatic_eligible=1,automation_status="auto_repair",
+                    automation_reason="Wznowienie przez router naprawczy.",automation_updated_at=CURRENT_TIMESTAMP
+                 WHERE id IN (SELECT topic_id FROM generation_batch_items WHERE status="auto_repair" AND outcome="safe_composer_queued");'
+            );
+        }
+    );
+    apply_schema_migration(
+        $database,
+        LEGACY_CHECKPOINT_RESUME_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing($database, 'generation_batch_items', 'migrated_from_item_id', 'INTEGER');
+            database_add_column_if_missing($database, 'generation_batch_items', 'chosen_checkpoint', 'TEXT NOT NULL DEFAULT ""');
+            $database->exec('CREATE UNIQUE INDEX IF NOT EXISTS generation_batch_migrated_item_idx
+                ON generation_batch_items(migrated_from_item_id) WHERE migrated_from_item_id IS NOT NULL;');
+        }
+    );
+    apply_schema_migration(
+        $database,
+        TEST_SOURCE_ARTIFACT_CLEANUP_MIGRATION,
+        static function (PDO $database): void {
+            $database->exec(
+                'CREATE TABLE IF NOT EXISTS test_artifact_cleanup_audit (
+                    migration_key TEXT PRIMARY KEY,
+                    removed_count INTEGER NOT NULL,
+                    marker TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                 )'
+            );
+            $predicate = 'name GLOB "Batch smoke [0-9]*"
+                AND name NOT GLOB "Batch smoke *[^0-9]"
+                AND website_url = "https://example.com/" || substr(name, 13)
+                AND feed_url = "https://example.com/" || substr(name, 13) || ".xml"
+                AND NOT EXISTS (SELECT 1 FROM discovered_feed_items WHERE technical_source_id = technical_sources.id)';
+            $count = (int) $database->query('SELECT COUNT(*) FROM technical_sources WHERE ' . $predicate)->fetchColumn();
+            $database->exec('DELETE FROM technical_sources WHERE ' . $predicate);
+            $audit = $database->prepare(
+                'INSERT OR REPLACE INTO test_artifact_cleanup_audit (migration_key, removed_count, marker)
+                 VALUES (:migration, :count, :marker)'
+            );
+            $audit->execute([
+                ':migration' => TEST_SOURCE_ARTIFACT_CLEANUP_MIGRATION,
+                ':count' => $count,
+                ':marker' => 'exact Batch smoke <digits> + matching example.com fixture URLs + no discovered items',
+            ]);
+        }
+    );
+    apply_schema_migration(
+        $database,
+        LEAKED_BATCH_FIXTURE_CLEANUP_MIGRATION,
+        static function (PDO $database): void {
+            $database->exec('CREATE TEMP TABLE leaked_batch_fixture_sources (id INTEGER PRIMARY KEY)');
+            $database->exec(
+                'INSERT INTO leaked_batch_fixture_sources (id)
+                 SELECT sources.id FROM technical_sources sources
+                 WHERE sources.name GLOB "Batch smoke [0-9]*"
+                   AND sources.name NOT GLOB "Batch smoke *[^0-9]"
+                   AND sources.website_url = "https://example.com/" || substr(sources.name, 13)
+                   AND sources.feed_url = "https://example.com/" || substr(sources.name, 13) || ".xml"
+                   AND NOT EXISTS (
+                       SELECT 1 FROM discovered_feed_items items
+                       INNER JOIN posts ON posts.id=items.post_id
+                       WHERE items.technical_source_id=sources.id
+                         AND (items.source_name<>"Batch smoke"
+                           OR items.source_url NOT LIKE sources.website_url || "/article-%"
+                           OR posts.editorial_origin<>"automatic" OR posts.is_published<>0)
+                   )'
+            );
+            $removed = (int) $database->query('SELECT COUNT(*) FROM leaked_batch_fixture_sources')->fetchColumn();
+            $database->exec(
+                'DELETE FROM posts WHERE id IN (
+                    SELECT post_id FROM discovered_feed_items
+                    WHERE technical_source_id IN (SELECT id FROM leaked_batch_fixture_sources)
+                 );
+                 DELETE FROM technical_sources WHERE id IN (SELECT id FROM leaked_batch_fixture_sources);'
+            );
+            $audit = $database->prepare(
+                'INSERT OR REPLACE INTO test_artifact_cleanup_audit (migration_key, removed_count, marker)
+                 VALUES (:migration, :count, :marker)'
+            );
+            $audit->execute([
+                ':migration' => LEAKED_BATCH_FIXTURE_CLEANUP_MIGRATION,
+                ':count' => $removed,
+                ':marker' => 'numeric Batch smoke source + exact example.com fixture URLs + automatic unpublished fixture items only',
+            ]);
+            $database->exec('DROP TABLE leaked_batch_fixture_sources');
+        }
+    );
+    apply_schema_migration(
+        $database,
+        GEMINI_GLOBAL_QUOTA_MIGRATION,
+        static function (PDO $database): void {
+            foreach ([
+                'model_used' => 'TEXT NOT NULL DEFAULT ""',
+                'call_reason' => 'TEXT NOT NULL DEFAULT ""',
+                'call_fingerprint' => 'TEXT NOT NULL DEFAULT ""',
+                'live_request_count' => 'INTEGER NOT NULL DEFAULT 0',
+                'next_retry_at' => 'TEXT',
+                'quota_dimension' => 'TEXT NOT NULL DEFAULT ""',
+            ] as $column => $definition) {
+                database_add_column_if_missing($database, 'generation_operations', $column, $definition);
+            }
+            foreach ([
+                'next_retry_at' => 'TEXT',
+                'quota_dimension' => 'TEXT NOT NULL DEFAULT ""',
+                'quota_model' => 'TEXT NOT NULL DEFAULT ""',
+            ] as $column => $definition) {
+                database_add_column_if_missing($database, 'generation_batch_items', $column, $definition);
+            }
+            $database->exec(
+                'CREATE TABLE IF NOT EXISTS gemini_quota_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_key TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    operation_id INTEGER,
+                    topic_id INTEGER,
+                    batch_id INTEGER,
+                    item_id INTEGER,
+                    stage TEXT NOT NULL DEFAULT "",
+                    attempt INTEGER NOT NULL DEFAULT 1,
+                    call_reason TEXT NOT NULL DEFAULT "",
+                    fingerprint TEXT NOT NULL,
+                    estimated_tokens INTEGER NOT NULL DEFAULT 0,
+                    actual_tokens INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT "reserved",
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS gemini_quota_events_window_idx
+                    ON gemini_quota_events(project_key, model, created_at);
+                CREATE TABLE IF NOT EXISTS gemini_quota_state (
+                    project_key TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    quota_dimension TEXT NOT NULL DEFAULT "",
+                    next_retry_at TEXT,
+                    last_http_status INTEGER NOT NULL DEFAULT 0,
+                    details_json TEXT NOT NULL DEFAULT "{}",
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(project_key, model)
+                );
+                CREATE TABLE IF NOT EXISTS gemini_model_leases (
+                    project_key TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    lease_token TEXT NOT NULL,
+                    operation_id INTEGER,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(project_key, model)
+                );
+                CREATE TABLE IF NOT EXISTS gemini_call_cache (
+                    project_key TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    output_json TEXT NOT NULL,
+                    provider_response_id TEXT NOT NULL DEFAULT "",
+                    usage_json TEXT NOT NULL DEFAULT "{}",
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(project_key, model, fingerprint)
+                );
+                CREATE TABLE IF NOT EXISTS generation_worker_guard (
+                    guard_key INTEGER PRIMARY KEY CHECK(guard_key=1),
+                    lease_token TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );'
+            );
+        }
+    );
+    apply_schema_migration(
+        $database,
+        IMAGE_INTEGRITY_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing($database, 'article_images', 'has_transparency', 'INTEGER NOT NULL DEFAULT 0');
+            database_add_column_if_missing($database, 'article_images', 'watermark_status', 'TEXT NOT NULL DEFAULT ""');
+        }
+    );
+    apply_schema_migration(
+        $database,
+        GEMINI_LEDGER_EXTENSION_MIGRATION,
+        static function (PDO $database): void {
+            foreach ([
+                'topic_id' => 'INTEGER', 'batch_id' => 'INTEGER', 'item_id' => 'INTEGER',
+                'stage' => 'TEXT NOT NULL DEFAULT ""', 'attempt' => 'INTEGER NOT NULL DEFAULT 1',
+            ] as $column => $definition) {
+                database_add_column_if_missing($database, 'gemini_quota_events', $column, $definition);
+            }
+            $database->exec('CREATE TABLE IF NOT EXISTS generation_worker_guard (
+                guard_key INTEGER PRIMARY KEY CHECK(guard_key=1), lease_token TEXT NOT NULL,
+                expires_at TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );');
+        }
+    );
+    apply_schema_migration(
+        $database,
+        AUTOMATIC_DISPATCH_PAUSE_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing($database, 'generation_settings', 'automatic_dispatch_paused', 'INTEGER NOT NULL DEFAULT 0');
+            database_add_column_if_missing($database, 'generation_settings', 'automatic_dispatch_paused_at', 'TEXT');
+            database_add_column_if_missing($database, 'generation_batches', 'dispatch_mode', 'TEXT NOT NULL DEFAULT "automatic"');
+            database_add_column_if_missing($database, 'generation_batch_items', 'paused_from_status', 'TEXT NOT NULL DEFAULT ""');
+            database_add_column_if_missing($database, 'generation_batch_items', 'paused_at', 'TEXT');
+            $database->exec('CREATE INDEX IF NOT EXISTS generation_batches_dispatch_mode_idx ON generation_batches(dispatch_mode, status);');
         }
     );
 }

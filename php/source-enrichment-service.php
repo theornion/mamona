@@ -185,7 +185,7 @@ function official_registry_lookup(string $kind, string $identifier): ?array
 function enrich_topic_sources(int $topicId, ?callable $pageFetcher = null, ?callable $registry = null): array
 {
     $pageFetcher ??= static fn(string $url): array => fetch_source_page($url);
-    $result = ['verified' => 0, 'failed' => 0, 'errors' => []];
+    $result = ['verified' => 0, 'failed' => 0, 'retryable_failed' => 0, 'permanent_failed' => 0, 'errors' => []];
     foreach (topic_feed_items($topicId) as $item) {
         try {
             $page = $pageFetcher((string) $item['source_url']);
@@ -202,11 +202,37 @@ function enrich_topic_sources(int $topicId, ?callable $pageFetcher = null, ?call
                 $result['verified']++;
             }
         } catch (Throwable $exception) {
+            $failure = source_enrichment_failure_details($exception);
             $result['failed']++;
-            $result['errors'][] = ['feed_item_id' => (int) $item['id'], 'error' => mb_substr($exception->getMessage(), 0, 500)];
+            $result[$failure['retryable'] ? 'retryable_failed' : 'permanent_failed']++;
+            $result['errors'][] = ['feed_item_id' => (int) $item['id'], ...$failure];
         }
     }
     return $result;
+}
+
+function source_enrichment_failure_details(Throwable $exception): array
+{
+    $message = mb_substr($exception->getMessage(), 0, 500);
+    preg_match('/HTTP\s+(\d{3})/i', $message, $match);
+    $status = (int) ($match[1] ?? 0);
+    $lower = mb_strtolower($message);
+    $retryable = $status === 429 || $status >= 500
+        || str_contains($lower, 'timeout') || str_contains($lower, 'timed out')
+        || str_contains($lower, 'couldn\'t connect') || str_contains($lower, 'temporary');
+    $code = match (true) {
+        $status === 403 => 'http_forbidden',
+        $status === 404 => 'http_not_found',
+        $status === 429 => 'http_rate_limited',
+        $status >= 500 => 'http_server_error',
+        str_contains($lower, 'robots.txt') => 'robots_disallowed',
+        str_contains($lower, 'nie jest dokumentem html') => 'unsupported_content_type',
+        str_contains($lower, 'przekracza limit rozmiaru') => 'content_too_large',
+        $retryable => 'transport_retryable',
+        default => 'source_unavailable',
+    };
+    return ['error' => $message, 'code' => $code, 'http_status' => $status,
+        'content_type' => '', 'downloaded_bytes' => 0, 'retryable' => $retryable];
 }
 
 function persist_verified_research_source(int $topicId, ?int $feedItemId, array $source): int
@@ -220,6 +246,53 @@ function persist_verified_research_source(int $topicId, ?int $feedItemId, array 
 function list_verified_research_sources(int $topicId): array
 {
     $s=bueno_database()->prepare('SELECT * FROM verified_research_sources WHERE topic_id=:id AND verification_status="verified" ORDER BY is_primary DESC,id'); $s->execute([':id'=>$topicId]); return $s->fetchAll();
+}
+
+/** Legal feed metadata retained even when fetching the linked full page is unavailable. */
+function list_safe_feed_research_sources(int $topicId): array
+{
+    $sources = [];
+    foreach (topic_feed_items($topicId) as $item) {
+        $configured = find_technical_source((int) ($item['technical_source_id'] ?? 0));
+        $url = trim((string) ($item['source_url'] ?? ''));
+        $title = trim((string) ($item['title'] ?? ''));
+        $summary = trim((string) ($item['summary'] ?? ''));
+        if (!is_array($configured) || (int) ($configured['is_active'] ?? 0) !== 1
+            || !str_starts_with($url, 'https://') || mb_strlen($title) < 20 || mb_strlen($summary) < 40) continue;
+        $lastStatus = (int) ($configured['last_http_status'] ?? 0);
+        if ($lastStatus !== 0 && ($lastStatus < 200 || $lastStatus >= 400)) continue;
+        $sources[] = ['verification_status' => 'feed_verified', 'completeness' => 'excerpt_only',
+            'source_kind' => 'rss_discovery', 'is_primary' => 0, 'publisher' => (string) ($item['source_name'] ?? $configured['name']),
+            'canonical_url' => $url, 'title' => $title, 'content_excerpt' => $summary,
+            'published_at' => $item['published_at'] ?? null, 'feed_item_id' => (int) $item['id'],
+            'technical_source_id' => (int) $configured['id'], 'feed_http_status' => $lastStatus,
+            'scope' => 'title_summary_date_link_only'];
+    }
+    return $sources;
+}
+
+function research_policy_for_topic(int $topicId, string $riskLevel = 'low', bool $controversial = false, bool $contradictory = false): array
+{
+    $verified = list_verified_research_sources($topicId);
+    $policy = research_policy_decision($verified, $riskLevel, $controversial, $contradictory);
+    if (($policy['decision'] ?? '') === 'continue' || $contradictory) return $policy + ['material_scope' => 'verified_full'];
+    $feed = list_safe_feed_research_sources($topicId);
+    if ($feed !== [] && !$controversial && !in_array($riskLevel, ['high', 'health'], true)) {
+        return ['decision' => 'continue', 'code' => 'safe_feed_excerpt',
+            'reason' => 'Pełna strona nie jest wymagana: niski poziom ryzyka pozwala kontynuować wyłącznie na tytule i opisie z legalnie pobranego feedu.',
+            'manual_single_source_allowed' => true, 'material_scope' => 'feed_excerpt_only',
+            'confidence_cap' => 'medium', 'requires_conservative_research' => true,
+            'enrichment_gap' => count($feed) < 2 ? 'second_independent_source_optional' : ''];
+    }
+    if ($feed !== []) {
+        return ['decision' => 'blocked', 'code' => 'second_independent_source_required',
+            'reason' => 'Materiał feedowy zachowano, ale poziom ryzyka wymaga niezależnego potwierdzenia.',
+            'manual_single_source_allowed' => false, 'material_scope' => 'feed_excerpt_only',
+            'enrichment_gap' => 'second_independent_source_required'];
+    }
+    return ['decision' => 'blocked', 'code' => 'no_source_material',
+        'reason' => 'Temat nie ma zweryfikowanego źródła ani kompletnego tytułu i opisu z aktywnego feedu.',
+        'manual_single_source_allowed' => false, 'material_scope' => 'none', 'enrichment_gap' => 'any_legal_material'];
 }
 
 function research_policy_decision(array $sources, string $riskLevel='low', bool $controversial=false, bool $contradictory=false): array

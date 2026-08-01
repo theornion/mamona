@@ -618,6 +618,10 @@ function review_quality_risk(int $checkId, string $decision, string $reason): vo
     if (!is_array($check) || $check['status'] !== 'completed') {
         throw new RuntimeException('Nie znaleziono ukończonej kontroli jakości.');
     }
+    if (!in_array(trim((string) ($check['human_review_status'] ?? '')), ['', 'pending'], true)) {
+        if ((string) $check['human_review_status'] === $decision) return;
+        throw new RuntimeException('Decyzja QC została już zapisana. Odśwież stronę przed kolejną zmianą.');
+    }
     $reviewable = false;
     foreach (json_decode((string) $check['hard_blocks_json'], true) ?: [] as $block) {
         if (($block['code'] ?? '') === 'high_risk_without_human_approval') {
@@ -646,6 +650,89 @@ function review_quality_risk(int $checkId, string $decision, string $reason): vo
         ':passed' => $passed ? 1 : 0,
         ':id' => $checkId,
     ]);
+}
+
+/** Routes QC failures to a bounded automatic repair stage without weakening any hard block. */
+function quality_check_auto_repair_decision(array $check): array
+{
+    $model = json_decode((string) ($check['model_result_json'] ?? '{}'), true) ?: [];
+    $deterministic = json_decode((string) ($check['deterministic_json'] ?? '{}'), true) ?: [];
+    $blocks = quality_active_hard_blocks($check);
+    $blockCodes = array_values(array_filter(array_map(
+        static fn (array $block): string => (string) ($block['code'] ?? ''),
+        $blocks
+    )));
+    $context = find_quality_draft_context((int) ($check['draft_version_id'] ?? 0));
+    $research = is_array($context) ? (json_decode((string) ($context['research_json'] ?? '{}'), true) ?: []) : [];
+
+    $humanReasons = [];
+    if ((array) ($model['risk_flags'] ?? []) !== [] || in_array('high_risk_without_human_approval', $blockCodes, true)) {
+        $humanReasons[] = 'Treść ma ryzyko prawne, medyczne, finansowe lub bezpieczeństwa.';
+    }
+    if ($humanReasons !== []) {
+        return ['repairable' => false, 'human_required' => true, 'target_stage' => null, 'categories' => [], 'feedback' => [], 'reasons' => array_values(array_unique($humanReasons))];
+    }
+
+    $researchReasons = [];
+    if ((array) ($research['contradictions'] ?? []) !== []) $researchReasons[] = 'Research zawiera nierozstrzygnięte sprzeczności źródeł.';
+    if (($research['recommendation']['source_coverage'] ?? '') !== 'sufficient'
+        || ($model['has_primary_source'] ?? true) === false
+        || in_array('missing_sources', $blockCodes, true)) {
+        $researchReasons[] = 'Źródła są niewystarczające albo brak wymaganego źródła pierwotnego.';
+    }
+    if ($researchReasons !== []) {
+        return [
+            'repairable' => true, 'human_required' => false, 'target_stage' => 'research',
+            'categories' => ['sources'],
+            'feedback' => array_map(static fn (string $reason): string => 'Ponów enrichment/research: ' . $reason, array_values(array_unique($researchReasons))),
+            'reasons' => [],
+        ];
+    }
+
+    $categories = [];
+    $feedback = [];
+    $append = static function (string $category, string $message) use (&$categories, &$feedback): void {
+        $categories[$category] = true;
+        if ($message !== '') $feedback[] = mb_substr($message, 0, 700);
+    };
+    foreach ((array) ($model['language_issues'] ?? []) as $issue) $append('language', 'Popraw język i czytelność: ' . trim((string) $issue));
+    foreach ((array) ($model['missing_elements'] ?? []) as $issue) $append('completeness', 'Uzupełnij element wyłącznie na podstawie researchu: ' . trim((string) $issue));
+    foreach ((array) ($model['clickbait_phrases'] ?? []) as $issue) $append('clickbait', 'Usuń clickbait bez osłabiania faktów: ' . trim((string) $issue));
+    foreach ((array) ($model['unsupported_claims'] ?? []) as $issue) $append('fact_grounding', 'Usuń albo doprecyzuj przez wspierane claim_ids/source_ids: ' . trim((string) $issue));
+    foreach ((array) ($model['unsupported_tests'] ?? []) as $issue) $append('fact_grounding', 'Usuń deklarację testu bez dowodu: ' . trim((string) $issue));
+    foreach ((array) ($model['false_quotes'] ?? []) as $quote) {
+        $append('false_quote', 'Napraw podejrzany cytat: ' . trim((string) $quote)
+            . '. Użyj wyłącznie zweryfikowanego dosłownego fragmentu numbered_sources albo usuń cudzysłów i bezpiecznie sparafrazuj wsparty fakt z zachowaniem claim_ids/source_ids.');
+    }
+    foreach ((array) ($deterministic['warnings'] ?? []) as $warning) {
+        $text = (string) $warning;
+        $category = str_contains(mb_strtolower($text), 'seo') ? 'seo'
+            : (str_contains(mb_strtolower($text), 'clickbait') ? 'clickbait' : 'structure');
+        $append($category, $text);
+    }
+    foreach ($blocks as $block) {
+        $code = (string) ($block['code'] ?? '');
+        if (in_array($code, ['invalid_content_length', 'repeated_content'], true)) $append('structure', (string) ($block['message'] ?? $code));
+        if ($code === 'unsupported_title_fact') $append('fact_grounding', (string) ($block['message'] ?? $code));
+        if ($code === 'unsupported_test_claim') $append('fact_grounding', (string) ($block['message'] ?? $code));
+        if ($code === 'high_similarity') $append('originality', (string) ($block['message'] ?? $code));
+        if ($code === 'false_quote' && (array) ($model['false_quotes'] ?? []) === []) {
+            $append('false_quote', (string) ($block['message'] ?? $code)
+                . ' Użyj zweryfikowanego dosłownego fragmentu źródła albo usuń cudzysłów i parafrazuj wyłącznie wsparty fakt.');
+        }
+    }
+    if (($model['recommendation'] ?? '') !== 'pass' || (int) ($check['final_score'] ?? 0) < QUALITY_PASS_SCORE) {
+        $append('completeness', 'Zastosuj uzasadnienie QC i popraw ocenione elementy bez dodawania nowych faktów: ' . trim((string) ($model['justification'] ?? 'wynik poniżej progu')));
+    }
+
+    return [
+        'repairable' => true,
+        'human_required' => false,
+        'target_stage' => 'draft',
+        'categories' => array_keys($categories),
+        'feedback' => array_values(array_unique(array_filter($feedback))),
+        'reasons' => [],
+    ];
 }
 
 function assert_post_quality_allows_publication(int $postId): void

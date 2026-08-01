@@ -154,6 +154,11 @@ admin_page_open('Generowanie manualne i API', 'generation');
             <button type="submit">Zapisz tryb</button>
         </form>
         <p><strong>Aktualnie: <?php echo escape_html($mode); ?></strong></p>
+        <?php if (app_config('generation_provider') === 'gemini'): ?>
+            <p><strong>Model aktywny:</strong> <code><?php echo escape_html((string) app_config('gemini_model')); ?></code>
+                · fallback: <code><?php echo escape_html(implode(', ', (array) app_config('gemini_model_fallbacks')) ?: 'brak'); ?></code>
+                · limiter: <?php echo (int) app_config('gemini_rpm_target'); ?> RPM, concurrency 1.</p>
+        <?php endif; ?>
         <p>W trybie manual prompt i odpowiedź JSON trzeba przenieść ręcznie. Brak klucza API nie blokuje tego trybu.</p>
         <?php $apiKeyName = app_config('generation_provider') === 'gemini' ? 'GEMINI_API_KEY' : 'OPENAI_API_KEY'; ?>
         <?php $apiMock = (bool) app_config(app_config('generation_provider') === 'gemini' ? 'gemini_mock' : 'openai_mock'); ?>

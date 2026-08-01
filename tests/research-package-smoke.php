@@ -129,6 +129,7 @@ try {
     research_smoke_assert($manualPackage !== null && $manualPackage['status'] === 'prepared', 'Nie zapisano osobnej paczki.');
     research_smoke_assert(str_contains($manualOperation['prompt_text'], '"source_id":"S1"'), 'Prompt nie numeruje źródeł.');
     research_smoke_assert(str_contains($manualOperation['prompt_text'], '"source_id":"S2"'), 'Prompt nie zawiera drugiego źródła.');
+    research_smoke_assert(str_contains($manualOperation['prompt_text'], 'znak w znak') && str_contains($manualOperation['prompt_text'], 'Nie parafrazuj cytatu'), 'Prompt nie wymusza dosłownego evidence ze wskazanego źródła.');
 
     $numberedSources = research_numbered_sources($topicId);
     $firstSource = $numberedSources[0];
@@ -191,6 +192,16 @@ try {
         && find_research_package_by_operation($invalidId)['status'] === 'prepared',
         'Niepoprawna paczka manualna zmieniła stan operacji.'
     );
+
+    $nonLiteralId = prepare_research_package_operation($topicId);
+    $operationIds[] = $nonLiteralId;
+    $nonLiteralOutput = $validOutput;
+    $nonLiteralOutput['claims'][0]['evidence'][0]['excerpt'] = 'Parafraza, której nie ma dosłownie w materiale źródłowym.';
+    research_smoke_expect_exception(
+        static fn () => import_manual_generation_response($nonLiteralId, generation_json($nonLiteralOutput)),
+        'dosłownym fragmentem'
+    );
+    research_smoke_assert(find_research_package_by_operation($nonLiteralId)['status'] === 'prepared', 'Niedosłowne evidence utworzyło paczkę researchową.');
 
     update_generation_mode('api');
     $apiId = prepare_research_package_operation($topicId);

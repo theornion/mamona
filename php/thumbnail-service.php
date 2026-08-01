@@ -194,6 +194,10 @@ function thumbnail_process_with_gd(string $sourcePath, string $targetPath): arra
         $sourceY = (int) floor(($height - $cropHeight) / 2);
     }
     $target = imagecreatetruecolor(THUMBNAIL_PUBLIC_WIDTH, THUMBNAIL_PUBLIC_HEIGHT);
+    imagealphablending($target, false);
+    imagesavealpha($target, true);
+    $transparent = imagecolorallocatealpha($target, 255, 255, 255, 127);
+    imagefill($target, 0, 0, $transparent);
     imagecopyresampled(
         $target,
         $source,

@@ -35,6 +35,13 @@ absolutnych URL-i. Panel administratora pokazuje wtedy ostrzeżenie.
 Sekretów, w tym `OPENAI_API_KEY`, danych pocztowych i poświadczeń
 administratora, nie należy zapisywać w repozytorium.
 
+Automatyczny pipeline obrazów nie ufa samej domenie. Każdy wybrany plik ma
+zwalidowany manifest praw konkretnego assetu i widoczny credit; wynik niepewny jest
+pomijany bez zatrzymania batcha. Obsługiwane full-auto są Wikimedia/Openverse,
+Smithsonian CC0, dozwolone rekordy Europeana, własne media NASA, zweryfikowane
+asset-level ESO/USGS/NCI oraz Pexels po ustawieniu klucza. Unsplash i Pixabay
+pozostają manual-only. Szczegóły i źródła polityk są w `OPERATIONS.md`.
+
 ## Migracje bazy
 
 Starsze, proste aktualizacje schematu nadal korzystają z funkcji `ensure_*`.
@@ -161,8 +168,9 @@ ustawiać jej w produkcji.
   klienta OpenAI API. Klucz jest czytany wyłącznie ze środowiska, a lokalna
   atrapa umożliwia test bez kosztów.
 - **TASK-15A — profil popularnonaukowy:** wykonany. Pięć źródeł
-  deweloperskich pozostaje w rejestrze jako wyłączone, a 11 aktywnych kanałów
-  NASA, JPL, ESA, USGS, CERN, MIT, Caltech, Quanta i Science News zasila osiem
+  deweloperskich pozostaje w rejestrze jako wyłączone, a aktywne kanały
+  NASA, ESA, USGS, CERN, MIT, Caltech, Quanta, Science News, NSF, NIEHS, NIBIB
+  i ESO zasilają osiem
   kategorii nowego profilu. Scoring premiuje mechanizm, odkrycie, znaczenie,
   narrację `problem_discovery_return` i potencjał grafiki, a obniża changelogi,
   marketing, komunikaty instytucjonalne i sensacyjne twierdzenia. Domyślny
@@ -427,6 +435,12 @@ Przed usunięciem zapisano odzyskiwalny eksport:
 Klient RSS korzysta z natywnego magazynu zaufanych certyfikatów Windows,
 jeżeli obsługuje go cURL. Na innym serwerze można wskazać aktualny pakiet CA
 przez `CMS_FEED_CA_BUNDLE`.
+
+Oficjalne kanały JPL `https://www.jpl.nasa.gov/feeds/news/` i NIH News
+Releases `https://www.nih.gov/news-releases/feed.xml` pozostają w rejestrze
+jako wyłączone z diagnostyką HTTP 403. Nie obchodzimy ich ochrony. JPL jest
+pokrywane przez NASA Science i NASA Technology, a profil biomedyczny przez
+NIEHS oraz oficjalny kanał NIBIB News.
 
 ### Rewizja jakości po TASK-07
 

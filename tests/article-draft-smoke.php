@@ -69,7 +69,7 @@ function draft_smoke_output(string $mode, string $claimId, string $sourceId, str
             'research_unknown_indexes' => [0],
         ]],
         'practical_takeaway' => $section('Czytelnik powinien poczekać na pełne dane.'),
-        'seo_description' => 'Opis SEO kontrolowanego szkicu o udokumentowanym wydarzeniu. ' . $suffix,
+        'seo_description' => 'Opis SEO kontrolowanego szkicu o udokumentowanym wydarzeniu i jego znaczeniu. ' . $suffix,
         'category' => 'how-it-works',
         'image_alt' => 'Schemat kontrolowanego pomiaru w laboratorium ' . $suffix,
         'used_source_ids' => [$sourceId],
@@ -184,17 +184,29 @@ try {
         && str_contains((string) $manualOperation['prompt_text'], 'title_variants')
         && str_contains((string) $manualOperation['prompt_text'], 'Nie uwierzysz')
         && str_contains((string) $manualOperation['prompt_text'], 'total_score')
+        && str_contains((string) $manualOperation['prompt_text'], 'allowed_research_unknowns')
+        && str_contains((string) $manualOperation['prompt_text'], 'research_unknown_indexes')
         && str_contains((string) $manualOperation['prompt_text'], 'lania wody'),
         'Prompt prostego szkicu nie zawiera języka oraz kompletnej polityki długości i jakości.'
     );
     $manualSchema = json_decode((string) $manualOperation['output_schema_json'], true, 128, JSON_THROW_ON_ERROR);
     $titleVariantsSchema = (array) (($manualSchema['properties'] ?? [])['title_variants'] ?? []);
+    $unknownIdSchema = (array) ($manualSchema['properties']['unknowns']['items']['properties']['research_unknown_indexes']['items'] ?? []);
     draft_smoke_assert(
         ($titleVariantsSchema['minItems'] ?? null) === 5
         && ($titleVariantsSchema['maxItems'] ?? null) === 8
         && in_array('title_selection_reason', (array) ($manualSchema['required'] ?? []), true),
         'Formalny schemat JSON nie wymusza kompletnej strategii wyboru tytułu.'
     );
+    draft_smoke_assert(($unknownIdSchema['enum'] ?? null) === [0], 'Schemat nie ogranicza unknown_id do identyfikatorów przekazanych przez research.');
+    $invalidUnknownSchemaValue = draft_smoke_output('informational', 'C1', 'S1', 'invalid-unknown');
+    $invalidUnknownSchemaValue['unknowns'][0]['research_unknown_indexes'] = [99];
+    try {
+        validate_generation_value($invalidUnknownSchemaValue, $manualSchema);
+        throw new RuntimeException('Nieznany unknown_id przeszedł walidację schematu.');
+    } catch (InvalidArgumentException $exception) {
+        draft_smoke_assert(str_contains($exception->getMessage(), '$.unknowns[0].research_unknown_indexes[0]'), 'Błąd unknown_id nie wskazuje JSONPath.');
+    }
     $manualOutput = draft_smoke_output('informational', 'C1', 'S1', 'manual-v1');
     $titleValidation = validate_article_title_strategy($manualOutput, [
         'C1' => ['claim' => 'Laboratorium opisało kontrolowany pomiar.'],

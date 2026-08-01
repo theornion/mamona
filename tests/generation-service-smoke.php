@@ -200,8 +200,82 @@ try {
     );
     generation_assert(
         (int) find_generation_operation($invalidApiId)['attempt_count'] === 1,
-        'Deterministyczny błąd kontraktu został automatycznie ponowiony.'
+        'Ogólny deterministyczny błąd kontraktu został automatycznie ponowiony.'
     );
+    $generationServiceSource = (string) file_get_contents(dirname(__DIR__) . '/php/generation-service.php');
+    generation_assert(
+        str_contains($generationServiceSource, "['research_package', 'article_draft']")
+        && str_contains($generationServiceSource, 'allowed_research_unknowns')
+        && str_contains($generationServiceSource, 'Evidence musi być dosłownym fragmentem'),
+        'Brak kontrolowanej, ograniczonej naprawy kontraktu research/szkic.'
+    );
+    $structuredRepair = generation_validation_repair_message([
+        'operation_type' => 'article_draft',
+        'output_schema_json' => generation_json([
+            'type' => 'object', 'properties' => ['unknowns' => ['type' => 'array', 'items' => [
+                'type' => 'object', 'properties' => ['research_unknown_indexes' => ['type' => 'array', 'items' => ['type' => 'integer', 'enum' => [0, 1]]]],
+            ]]],
+        ]),
+        'input_json' => generation_json(['allowed_research_unknowns' => [['id' => 0, 'text' => 'Pierwsza niewiadoma'], ['id' => 1, 'text' => 'Druga niewiadoma']]]),
+    ], new InvalidArgumentException('Pole $.unknowns[0].research_unknown_indexes[0] ma wartość spoza dozwolonej listy.'), []);
+    generation_assert(
+        $structuredRepair['json_path'] === '$.unknowns[0].research_unknown_indexes[0]'
+        && $structuredRepair['allowed_values'] === [0, 1]
+        && count($structuredRepair['safe_context']) === 2,
+        'Wiadomość naprawcza nie zawiera JSONPath, reguły, dozwolonych unknown_id i bezpiecznego kontekstu.'
+    );
+
+    $lengthSchema = [
+        'type' => 'object',
+        'properties' => [
+            'brief' => ['type' => 'string', 'minLength' => 80, 'maxLength' => 220],
+            'unchanged' => ['type' => 'object', 'properties' => ['marker' => ['type' => 'string']], 'required' => ['marker'], 'additionalProperties' => false],
+        ],
+        'required' => ['brief', 'unchanged'], 'additionalProperties' => false,
+    ];
+    foreach ([0 => false, 79 => false, 80 => true, 220 => true, 221 => false] as $length => $valid) {
+        $value = str_repeat('ą', $length);
+        try {
+            validate_generation_value(['brief' => $value, 'unchanged' => ['marker' => 'stałe']], $lengthSchema);
+            generation_assert($valid, "Długość {$length} powinna zostać odrzucona.");
+        } catch (GenerationFieldConstraintException $error) {
+            generation_assert(!$valid && $error->actualLength === $length, "Błędna walidacja granicy {$length} lub znaków Unicode.");
+        }
+    }
+    $fieldRepairId = prepare_generation_operation('contract_test', [
+        'event_summary' => 'Zweryfikowane dane opisują kontrolowany wynik bez dodatkowych wniosków.',
+    ], $lengthSchema);
+    $operationIds[] = $fieldRepairId;
+    $originalFieldObject = ['brief' => str_repeat('ą', 79), 'unchanged' => ['marker' => 'nie zmieniaj']];
+    $fieldCalls = 0;
+    $fieldResult = execute_generation_operation($fieldRepairId, static function (array $payload) use (&$fieldCalls, $originalFieldObject): array {
+        $fieldCalls++;
+        $response = $fieldCalls === 1 ? $originalFieldObject : ['value' => str_repeat('ż', 80)];
+        return ['status' => 200, 'body' => generation_json(['responseId' => 'field-' . $fieldCalls, 'candidates' => [[
+            'content' => ['parts' => [['text' => generation_json($response)]]], 'finishReason' => 'STOP',
+        ]]]), 'headers' => [], 'network_error' => ''];
+    }, 'smoke-secret-key');
+    generation_assert($fieldCalls === 2 && mb_strlen($fieldResult['brief']) === 80, 'Targeted field repair nie wykonał jednej natychmiastowej korekty.');
+    generation_assert($fieldResult['unchanged'] === $originalFieldObject['unchanged'], 'Naprawa pola zmieniła pozostałą część JSON.');
+    $repairRows = $database->query('SELECT id FROM generation_operations WHERE operation_type="field_text_repair" ORDER BY id DESC LIMIT 1')->fetchAll(PDO::FETCH_COLUMN);
+    foreach ($repairRows as $repairId) $operationIds[] = (int) $repairId;
+
+    $fallbackId = prepare_generation_operation('contract_test', ['event_summary' => 'Potwierdzony opis badanego zdarzenia.'], $lengthSchema);
+    $operationIds[] = $fallbackId;
+    $fallbackCalls = 0;
+    $fallbackOriginal = ['brief' => '', 'unchanged' => ['marker' => 'zachowaj']];
+    $fallbackResult = execute_generation_operation($fallbackId, static function () use (&$fallbackCalls, $fallbackOriginal): array {
+        $fallbackCalls++;
+        $response = $fallbackCalls === 1 ? $fallbackOriginal : ['value' => str_repeat('x', 79)];
+        return ['status' => 200, 'body' => generation_json(['responseId' => 'fallback-' . $fallbackCalls, 'candidates' => [[
+            'content' => ['parts' => [['text' => generation_json($response)]]], 'finishReason' => 'STOP',
+        ]]]), 'headers' => [], 'network_error' => ''];
+    }, 'smoke-secret-key');
+    generation_assert($fallbackCalls === 2 && mb_strlen($fallbackResult['brief']) >= 80 && mb_strlen($fallbackResult['brief']) <= 220, 'Drugi wadliwy wynik nie uruchomił gwarantowanego fallbacku.');
+    generation_assert($fallbackResult['unchanged'] === $fallbackOriginal['unchanged'], 'Fallback zmienił pola poza naprawianym JSONPath.');
+    validate_generation_value($fallbackResult, $lengthSchema);
+    $repairRows = $database->query('SELECT id FROM generation_operations WHERE operation_type="field_text_repair" ORDER BY id DESC LIMIT 1')->fetchAll(PDO::FETCH_COLUMN);
+    foreach ($repairRows as $repairId) $operationIds[] = (int) $repairId;
 
     $quotaId = prepare_generation_operation('contract_test', $input, $schema);
     $operationIds[] = $quotaId;
@@ -227,10 +301,10 @@ try {
                 'smoke-secret-key'
             );
         },
-        'Quota exhausted'
+        'Oczekiwanie na limit zapytań modelu'
     );
     generation_assert(
-        $quotaAttempts === (int) app_config('gemini_max_attempts'),
+        $quotaAttempts === 1,
         'Limit Free Tier nie użył kontrolowanej liczby prób: ' . $quotaAttempts . '.'
     );
     $manualFallback = import_manual_generation_response($quotaId, generation_json($validOutput));

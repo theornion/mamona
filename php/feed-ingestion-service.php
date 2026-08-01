@@ -13,7 +13,8 @@ final class FeedTransportException extends RuntimeException
         public readonly bool $transient = false,
         public readonly int $httpStatus = 0,
         public readonly int $bytesReceived = 0,
-        public readonly ?int $retryAfterSeconds = null
+        public readonly ?int $retryAfterSeconds = null,
+        public readonly array $diagnostics = []
     ) {
         parent::__construct($message);
     }
@@ -56,46 +57,134 @@ function feed_source_transport_options(array $source): array
     return $options;
 }
 
-function assert_public_feed_url(string $url): array
+function feed_ip_class(string $address): string
 {
-    $url = normalize_technical_source_url($url, 'URL kanału');
-    $host = strtolower((string) parse_url($url, PHP_URL_HOST));
+    return filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)
+        ? 'public'
+        : 'blocked_non_public';
+}
+
+function feed_resolve_host(string $host): array
+{
+    if (filter_var($host, FILTER_VALIDATE_IP)) return [$host];
+    $addresses = [];
+    foreach (dns_get_record($host, DNS_A | DNS_AAAA) ?: [] as $record) {
+        $address = (string) ($record['ip'] ?? $record['ipv6'] ?? '');
+        if ($address !== '') $addresses[] = $address;
+    }
+    return array_values(array_unique($addresses));
+}
+
+function assert_public_feed_url(string $url, ?callable $resolver = null): array
+{
+    if (preg_match('/[\x00-\x20\x7f]/', $url)) throw new InvalidArgumentException('URL kanału zawiera niedozwolone znaki.');
+    $parts = parse_url($url);
+    if (!is_array($parts)) throw new InvalidArgumentException('URL kanału jest nieprawidłowy.');
+    $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+    if (!in_array($scheme, ['http', 'https'], true)) throw new InvalidArgumentException('Dozwolone są wyłącznie kanały HTTP/HTTPS.');
+    if (isset($parts['user']) || isset($parts['pass'])) throw new InvalidArgumentException('URL kanału nie może zawierać danych logowania.');
+    $host = strtolower((string) ($parts['host'] ?? ''));
     if ($host === '' || $host === 'localhost' || str_ends_with($host, '.localhost') || str_ends_with($host, '.local')) {
         throw new InvalidArgumentException('Adres kanału nie może wskazywać lokalnego hosta.');
     }
-
-    $addresses = [];
-    if (filter_var($host, FILTER_VALIDATE_IP)) {
-        $addresses[] = $host;
-    } else {
-        foreach (dns_get_record($host, DNS_A | DNS_AAAA) ?: [] as $record) {
-            $address = (string) ($record['ip'] ?? $record['ipv6'] ?? '');
-            if ($address !== '') {
-                $addresses[] = $address;
-            }
-        }
+    $port = (int) ($parts['port'] ?? ($scheme === 'https' ? 443 : 80));
+    if (($scheme === 'https' && $port !== 443) || ($scheme === 'http' && $port !== 80)) {
+        throw new InvalidArgumentException('URL kanału używa niedozwolonego portu.');
     }
+
+    $addresses = ($resolver ?? 'feed_resolve_host')($host);
     $addresses = array_values(array_unique($addresses));
     if ($addresses === []) {
         throw new RuntimeException('Nie można rozwiązać publicznego adresu kanału.');
     }
     foreach ($addresses as $address) {
-        if (!filter_var(
-            $address,
-            FILTER_VALIDATE_IP,
-            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
-        )) {
+        if (feed_ip_class($address) !== 'public') {
             throw new InvalidArgumentException('Adres kanału wskazuje prywatny lub zastrzeżony zasób sieciowy.');
         }
     }
 
-    return [$url, $host, $addresses[0]];
+    return [$url, $host, $addresses[0], $addresses, $scheme, $port];
 }
 
-function feed_http_once(string $url, array $options, array $validators = [], int $redirectsRemaining = 3): array
+function feed_normalized_url(string $url): string
 {
-    [$url, $host, $address] = assert_public_feed_url($url);
-    $port = (int) (parse_url($url, PHP_URL_PORT) ?: 443);
+    $parts = parse_url($url);
+    if (!is_array($parts)) return $url;
+    $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+    $host = strtolower((string) ($parts['host'] ?? ''));
+    $port = isset($parts['port']) && !in_array([$scheme, (int) $parts['port']], [['https', 443], ['http', 80]], true) ? ':' . (int) $parts['port'] : '';
+    $path = (string) ($parts['path'] ?? '/');
+    $segments = [];
+    foreach (explode('/', $path) as $segment) {
+        if ($segment === '' || $segment === '.') continue;
+        if ($segment === '..') array_pop($segments); else $segments[] = $segment;
+    }
+    $normalizedPath = '/' . implode('/', $segments);
+    if ($path !== '/' && str_ends_with($path, '/')) $normalizedPath .= '/';
+    return $scheme . '://' . $host . $port . $normalizedPath . (isset($parts['query']) ? '?' . $parts['query'] : '');
+}
+
+function feed_redirect_url(string $baseUrl, string $location): string
+{
+    $location = trim($location);
+    if ($location === '' || preg_match('/[\x00-\x20\x7f]/', $location)) return '';
+    if (parse_url($location, PHP_URL_SCHEME) !== null) return $location;
+    $base = parse_url($baseUrl);
+    if (!is_array($base)) return '';
+    $origin = strtolower((string) $base['scheme']) . '://' . strtolower((string) $base['host']);
+    if (isset($base['port'])) $origin .= ':' . (int) $base['port'];
+    if (str_starts_with($location, '//')) return strtolower((string) $base['scheme']) . ':' . $location;
+    if (str_starts_with($location, '/')) return $origin . $location;
+    $path = (string) ($base['path'] ?? '/');
+    return $origin . substr($path, 0, (int) strrpos($path, '/') + 1) . $location;
+}
+
+function feed_validate_redirect_target(string $currentUrl, string $nextUrl, array $visited = [], ?callable $resolver = null): array
+{
+    $currentScheme = strtolower((string) parse_url($currentUrl, PHP_URL_SCHEME));
+    $nextScheme = strtolower((string) parse_url($nextUrl, PHP_URL_SCHEME));
+    if ($currentScheme === 'https' && $nextScheme !== 'https') {
+        throw new FeedTransportException('Zablokowano przekierowanie HTTPS→HTTP.', 'redirect_blocked', false, 0, 0, null, ['decision_code'=>'https_downgrade']);
+    }
+    try {
+        $validated = assert_public_feed_url($nextUrl, $resolver);
+    } catch (Throwable $exception) {
+        throw new FeedTransportException('Przekierowanie zablokowane: ' . $exception->getMessage(), 'redirect_blocked', false, 0, 0, null, ['decision_code'=>'target_not_public']);
+    }
+    if (isset($visited[feed_normalized_url($nextUrl)])) {
+        throw new FeedTransportException('Wykryto rzeczywistą pętlę przekierowań.', 'redirect_loop', false, 0, 0, null, ['decision_code'=>'normalized_url_seen']);
+    }
+    return $validated;
+}
+
+function feed_http_status_kind(int $status): string
+{
+    if ($status === 304) return 'not_modified';
+    if ($status >= 300 && $status < 400) return 'redirect';
+    return 'response';
+}
+
+function feed_assert_redirect_budget(int $redirectsRemaining): void
+{
+    if ($redirectsRemaining <= 0) {
+        throw new FeedTransportException('Przekroczono limit przekierowań.', 'redirect_limit', false, 0, 0, null, ['decision_code'=>'hop_limit']);
+    }
+}
+
+function feed_http_once(string $url, array $options, array $validators = [], int $redirectsRemaining = 3, array $visited = [], array $chain = [], ?callable $resolver = null): array
+{
+    try {
+        [$url, $host, $address, $addresses, $scheme, $port] = assert_public_feed_url($url, $resolver);
+    } catch (Throwable $exception) {
+        $chain[] = ['url'=>$url, 'decision'=>'redirect_blocked', 'reason'=>$exception->getMessage()];
+        throw new FeedTransportException('Przekierowanie zablokowane: ' . $exception->getMessage(), 'redirect_blocked', false, 0, 0, null, ['redirect_chain'=>$chain]);
+    }
+    $normalized = feed_normalized_url($url);
+    if (isset($visited[$normalized])) {
+        $chain[] = ['url'=>$url, 'host'=>$host, 'scheme'=>$scheme, 'port'=>$port, 'resolved_ips'=>array_map(static fn(string $ip): array => ['address'=>$ip, 'class'=>feed_ip_class($ip)], $addresses), 'decision'=>'redirect_loop'];
+        throw new FeedTransportException('Wykryto rzeczywistą pętlę przekierowań.', 'redirect_loop', false, 0, 0, null, ['redirect_chain'=>$chain]);
+    }
+    $visited[$normalized] = true;
     $temporary = tmpfile();
     if ($temporary === false) throw new RuntimeException('Nie można utworzyć bufora kanału.');
     $bytes = 0;
@@ -160,10 +249,17 @@ function feed_http_once(string $url, array $options, array $validators = [], int
     $certificateInfo = curl_getinfo($curl, CURLINFO_CERTINFO);
     $error = curl_error($curl);
     curl_close($curl);
+    $hop = [
+        'url'=>$url, 'status'=>$status, 'host'=>$host, 'scheme'=>$scheme, 'port'=>$port,
+        'resolved_ips'=>array_map(static fn(string $ip): array => ['address'=>$ip, 'class'=>feed_ip_class($ip)], $addresses),
+        'content_type'=>(string)($responseHeaders['content-type'] ?? ''), 'bytes'=>$bytes,
+        'decision'=>'response',
+    ];
+    $chain[] = $hop;
 
     if ($tooLarge) {
         fclose($temporary);
-        throw new FeedTransportException('Kanał przekracza limit rozmiaru.', 'size_limit', false, $status, $bytes);
+        throw new FeedTransportException('Kanał przekracza limit rozmiaru.', 'size_limit', false, $status, $bytes, null, ['redirect_chain'=>$chain]);
     }
     if ($success === false) {
         fclose($temporary);
@@ -172,34 +268,44 @@ function feed_http_once(string $url, array $options, array $validators = [], int
         $timeout = $curlCode === CURLE_OPERATION_TIMEDOUT;
         $tls = in_array($curlCode, $tlsCodes, true);
         $category = $partial ? 'partial_transfer' : ($tls ? 'tls' : ($timeout ? ($bytes > 0 ? 'slow_transfer' : 'timeout') : 'transport'));
-        throw new FeedTransportException('Nie udało się pobrać pełnego kanału: ' . ($error ?: 'błąd transportu'), $category, $partial || $timeout || $tls || $curlCode === CURLE_COULDNT_CONNECT, $status, $bytes);
+        throw new FeedTransportException('Nie udało się pobrać pełnego kanału: ' . ($error ?: 'błąd transportu'), $category, $partial || $timeout || $tls || $curlCode === CURLE_COULDNT_CONNECT, $status, $bytes, null, ['redirect_chain'=>$chain, 'curl_code'=>$curlCode]);
     }
-    if ($status >= 300 && $status < 400) {
+    if (feed_http_status_kind($status) === 'not_modified') {
+        fclose($temporary);
+        $chain[count($chain) - 1]['decision'] = 'not_modified';
+        return ['status'=>304, 'body'=>'', 'bytes'=>$bytes, 'duration_ms'=>(int)((microtime(true)-$started)*1000), 'url'=>$effectiveUrl ?: $url, 'headers'=>$responseHeaders, 'certificate_chain'=>feed_certificate_summary($certificateInfo), 'redirect_chain'=>$chain];
+    }
+    if (feed_http_status_kind($status) === 'redirect') {
+        fclose($temporary);
         $location = (string) ($responseHeaders['location'] ?? '');
-        if ($redirectsRemaining <= 0 || $location === '' || !str_starts_with($location, 'https://')) {
-            fclose($temporary);
-            throw new FeedTransportException('Kanał zwrócił niedozwolone lub zbyt liczne przekierowanie.', 'redirect', false, $status, $bytes);
+        if ($location === '') throw new FeedTransportException('Przekierowanie nie zawiera nagłówka Location.', 'redirect_blocked', false, $status, $bytes, null, ['redirect_chain'=>$chain]);
+        try {
+            feed_assert_redirect_budget($redirectsRemaining);
+        } catch (FeedTransportException $exception) {
+            $chain[] = ['url'=>$url, 'decision'=>'redirect_limit', 'reason'=>'hop_limit'];
+            throw new FeedTransportException($exception->getMessage(), 'redirect_limit', false, $status, $bytes, null, ['redirect_chain'=>$chain, 'decision_code'=>'hop_limit']);
         }
-        fclose($temporary);
-        if ($redirectsRemaining <= 0 || $location === '') throw new FeedTransportException('Pętla lub brak adresu przekierowania.', 'redirect', false, $status, $bytes);
-        $next = str_starts_with($location, '/') ? 'https://' . $host . $location : $location;
-        return feed_http_once($next, $options, $validators, $redirectsRemaining - 1);
-    }
-    if ($status === 304) {
-        fclose($temporary);
-        return ['status'=>304, 'body'=>'', 'bytes'=>$bytes, 'duration_ms'=>(int)((microtime(true)-$started)*1000), 'url'=>$effectiveUrl ?: $url, 'headers'=>$responseHeaders, 'certificate_chain'=>feed_certificate_summary($certificateInfo)];
+        $next = feed_redirect_url($url, $location);
+        if ($next === '') throw new FeedTransportException('Nieprawidłowy adres przekierowania.', 'redirect_blocked', false, $status, $bytes, null, ['redirect_chain'=>$chain]);
+        try {
+            feed_validate_redirect_target($url, $next, $visited, $resolver);
+        } catch (FeedTransportException $exception) {
+            $chain[] = ['url'=>$next, 'decision'=>$exception->category, 'reason'=>$exception->diagnostics['decision_code'] ?? 'redirect_validation'];
+            throw new FeedTransportException($exception->getMessage(), $exception->category, false, $status, $bytes, null, ['redirect_chain'=>$chain, 'decision_code'=>$exception->diagnostics['decision_code'] ?? 'redirect_validation']);
+        }
+        return feed_http_once($next, $options, $validators, $redirectsRemaining - 1, $visited, $chain, $resolver);
     }
     if ($status < 200 || $status >= 300) {
         fclose($temporary);
         $retryable = in_array($status, [408, 425, 429], true) || $status >= 500;
         $retryAfter = isset($responseHeaders['retry-after']) && ctype_digit($responseHeaders['retry-after']) ? (int) $responseHeaders['retry-after'] : null;
-        throw new FeedTransportException('Kanał zwrócił HTTP ' . $status . '.', $retryable ? 'http_temporary' : 'http_permanent', $retryable, $status, $bytes, $retryAfter);
+        throw new FeedTransportException('Kanał zwrócił HTTP ' . $status . '.', $retryable ? 'http_temporary' : 'http_permanent', $retryable, $status, $bytes, $retryAfter, ['redirect_chain'=>$chain]);
     }
     rewind($temporary);
     $body = stream_get_contents($temporary);
     fclose($temporary);
     if (!is_string($body) || trim($body) === '') throw new FeedTransportException('Kanał zwrócił pustą odpowiedź.', 'empty', false, $status, $bytes);
-    return ['status'=>$status, 'body'=>$body, 'bytes'=>$bytes, 'duration_ms'=>(int)((microtime(true)-$started)*1000), 'url'=>$effectiveUrl ?: $url, 'headers'=>$responseHeaders, 'certificate_chain'=>feed_certificate_summary($certificateInfo)];
+    return ['status'=>$status, 'body'=>$body, 'bytes'=>$bytes, 'duration_ms'=>(int)((microtime(true)-$started)*1000), 'url'=>$effectiveUrl ?: $url, 'headers'=>$responseHeaders, 'certificate_chain'=>feed_certificate_summary($certificateInfo), 'redirect_chain'=>$chain];
 }
 
 function fetch_remote_feed(string $url, array $source = [], ?callable $transport = null, ?callable $onRetry = null): array
@@ -473,6 +579,22 @@ function persist_discovered_feed_item(array $source, array $item): ?int
     }
 }
 
+function persist_discovered_feed_item_with_retry(array $source, array $item, ?callable $persister = null): ?int
+{
+    $persister ??= 'persist_discovered_feed_item';
+    for ($attempt = 1; $attempt <= 3; $attempt++) {
+        try {
+            return $persister($source, $item);
+        } catch (PDOException $exception) {
+            $message = strtolower($exception->getMessage());
+            $locked = str_contains($message, 'database is locked') || str_contains($message, 'database is busy');
+            if (!$locked || $attempt >= 3) throw $exception;
+            usleep($attempt * 100000);
+        }
+    }
+    throw new RuntimeException('Nie udało się zapisać wpisu RSS.');
+}
+
 function run_feed_ingestion(?callable $fetcher = null, ?callable $progress = null): array
 {
     $fetcher ??= static fn (string $url, array $source, ?callable $retry = null): array => fetch_remote_feed($url, $source, null, $retry);
@@ -505,11 +627,11 @@ function run_feed_ingestion(?callable $fetcher = null, ?callable $progress = nul
             if ((int) ($response['status'] ?? 200) === 304) {
                 $sourceResult['status'] = 'not_modified';
                 $result['not_modified']++;
-                record_technical_source_check((int)$source['id'], true, '', ['http_status'=>304, 'diagnostics'=>feed_runtime_diagnostics()]);
+                record_technical_source_check((int)$source['id'], true, '', ['http_status'=>304, 'diagnostics'=>feed_runtime_diagnostics() + ['redirect_chain'=>$response['redirect_chain'] ?? []]]);
             } else {
                 $items = parse_feed_document((string) ($response['body'] ?? ''), $source);
                 foreach ($items as $item) {
-                    if (persist_discovered_feed_item($source, $item) === null) {
+                    if (persist_discovered_feed_item_with_retry($source, $item) === null) {
                         $sourceResult['duplicates']++; $result['duplicates']++;
                     } else {
                         $sourceResult['created']++; $result['created']++;
@@ -518,7 +640,7 @@ function run_feed_ingestion(?callable $fetcher = null, ?callable $progress = nul
                 $sourceResult['status'] = 'succeeded';
                 $result['succeeded']++;
                 $headers = (array) ($response['headers'] ?? []);
-                record_technical_source_check((int)$source['id'], true, '', ['etag'=>$headers['etag'] ?? '', 'last_modified'=>$headers['last-modified'] ?? '', 'http_status'=>(int)($response['status'] ?? 200), 'diagnostics'=>feed_runtime_diagnostics() + ['certificate_chain'=>$response['certificate_chain'] ?? []]]);
+                record_technical_source_check((int)$source['id'], true, '', ['etag'=>$headers['etag'] ?? '', 'last_modified'=>$headers['last-modified'] ?? '', 'http_status'=>(int)($response['status'] ?? 200), 'diagnostics'=>feed_runtime_diagnostics() + ['certificate_chain'=>$response['certificate_chain'] ?? [], 'redirect_chain'=>$response['redirect_chain'] ?? [], 'content_type'=>$headers['content-type'] ?? '', 'bytes'=>$response['bytes'] ?? 0]]);
             }
         } catch (Throwable $exception) {
             $sourceResult['status'] = 'failed';
@@ -530,7 +652,9 @@ function run_feed_ingestion(?callable $fetcher = null, ?callable $progress = nul
             } else $sourceResult['category'] = str_contains($exception->getMessage(), 'XML') ? 'invalid_xml' : 'processing';
             $sourceResult['advice'] = feed_error_advice($sourceResult['category'], $exception instanceof FeedTransportException ? $exception->httpStatus : 0);
             $result['failed']++;
-            record_technical_source_check((int)$source['id'], false, $exception->getMessage(), ['http_status'=>$exception instanceof FeedTransportException ? $exception->httpStatus : 0, 'diagnostics'=>feed_runtime_diagnostics()]);
+            $failureDiagnostics = feed_runtime_diagnostics();
+            if ($exception instanceof FeedTransportException) $failureDiagnostics += $exception->diagnostics;
+            record_technical_source_check((int)$source['id'], false, $exception->getMessage(), ['http_status'=>$exception instanceof FeedTransportException ? $exception->httpStatus : 0, 'diagnostics'=>$failureDiagnostics]);
         }
         $result['processed']++;
         $result['sources'][] = $sourceResult;
@@ -551,7 +675,10 @@ function feed_error_advice(string $category, int $status = 0): string
         'http_temporary' => 'Źródło jest chwilowo niedostępne — ponowimy z bezpiecznym opóźnieniem.',
         'invalid_xml' => 'Odpowiedź nie jest prawidłowym RSS/Atom; nie zapisano częściowych danych.',
         'size_limit' => 'Kanał przekroczył skonfigurowany limit rozmiaru.',
-        'redirect' => 'Wykryto niedozwolone przekierowanie lub pętlę.',
+        'redirect_blocked' => 'Przekierowanie zablokowane przez kontrolę SSRF; szczegóły i decyzja są w diagnostyce.',
+        'redirect_loop' => 'Wykryto rzeczywistą pętlę przekierowań po normalizacji URL.',
+        'redirect_limit' => 'Kanał przekroczył dozwolony limit przekierowań.',
+        'processing' => 'Kanał pobrano, ale przetwarzanie nie powiodło się: sprawdź dokładny błąd źródła.',
         default => 'Sprawdź konfigurację źródła i szczegóły diagnostyczne.',
     };
 }

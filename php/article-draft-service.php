@@ -500,9 +500,12 @@ function article_title_variant_schema(): array
     ];
 }
 
-function article_draft_schema(array $sourceIds, array $claimIds, string $compositionMode): array
+function article_draft_schema(array $sourceIds, array $claimIds, string $compositionMode, array $unknownIds = []): array
 {
     $section = article_draft_reference_schema($sourceIds, $claimIds);
+    $requiredSection = $section;
+    $requiredSection['properties']['text']['minLength'] = 1;
+    $requiredSection['properties']['text']['maxLength'] = 10000;
     $requiredInlineIllustrations = $compositionMode === 'problem_discovery_return' ? 4 : 3;
     $narrativeProperties = [];
     foreach ([
@@ -529,12 +532,12 @@ function article_draft_schema(array $sourceIds, array $claimIds, string $composi
                 'maxItems' => 8,
             ],
             'title_selection_reason' => ['type' => 'string'],
-            'brief' => ['type' => 'string'],
-            'lead' => $section,
-            'why_important' => $section,
+            'brief' => ['type' => 'string', 'minLength' => 80, 'maxLength' => 220],
+            'lead' => $requiredSection,
+            'why_important' => $requiredSection,
             'key_facts' => [
                 'type' => 'array',
-                'items' => $section,
+                'items' => $requiredSection,
                 'minItems' => 3,
                 'maxItems' => 3,
             ],
@@ -545,16 +548,23 @@ function article_draft_schema(array $sourceIds, array $claimIds, string $composi
                     'type' => 'object',
                     'properties' => [
                         'text' => ['type' => 'string'],
-                        'research_unknown_indexes' => ['type' => 'array', 'items' => ['type' => 'integer']],
+                        'research_unknown_indexes' => [
+                            'type' => 'array',
+                            'minItems' => 1,
+                            'items' => [
+                                'type' => 'integer',
+                                ...($unknownIds === [] ? [] : ['enum' => array_values($unknownIds)]),
+                            ],
+                        ],
                     ],
                     'required' => ['text', 'research_unknown_indexes'],
                     'additionalProperties' => false,
                 ],
             ],
-            'practical_takeaway' => $section,
-            'seo_description' => ['type' => 'string'],
-            'category' => ['type' => 'string'],
-            'image_alt' => ['type' => 'string'],
+            'practical_takeaway' => $requiredSection,
+            'seo_description' => ['type' => 'string', 'minLength' => 70, 'maxLength' => 160],
+            'category' => ['type' => 'string', 'minLength' => 2, 'maxLength' => 80],
+            'image_alt' => ['type' => 'string', 'minLength' => 10, 'maxLength' => 250],
             'illustration_plan' => article_illustration_plan_schema(
                 $requiredInlineIllustrations,
                 array_slice(
@@ -707,6 +717,11 @@ function prepare_article_draft_operation(int $researchPackageId, string $composi
         ],
         'research_package' => $research,
         'numbered_sources' => $researchInput['numbered_sources'] ?? [],
+        'allowed_research_unknowns' => array_map(
+            static fn (mixed $text, int $index): array => ['id' => $index, 'text' => (string) $text],
+            array_values((array) ($research['unknowns'] ?? [])),
+            array_keys(array_values((array) ($research['unknowns'] ?? [])))
+        ),
         'length_requirements' => [
             ...$lengthPolicy,
             'target_characters' => $lengthPolicy['complex'] ? '4200–4400' : '3400–3500',
@@ -755,6 +770,7 @@ function prepare_article_draft_operation(int $researchPackageId, string $composi
             'Nie używaj sensacyjnych obietnic nieobecnych w paczce.',
             'Każda sekcja faktograficzna wskazuje claim_ids i source_ids z paczki.',
             'used_source_ids zawiera dokładnie wszystkie źródła wykorzystane w szkicu.',
+            'Każdy element unknowns musi mieć niepustą tablicę research_unknown_indexes. Używaj wyłącznie liczbowych id z allowed_research_unknowns; nie numeruj niewiadomych samodzielnie.',
         ],
         'illustration_requirements' => [
             "Zaplanuj osobną grafikę hero dla całego tematu oraz dokładnie {$requiredInlineIllustrations} ilustracje inline.",
@@ -793,7 +809,12 @@ function prepare_article_draft_operation(int $researchPackageId, string $composi
         $operationId = prepare_generation_operation(
             'article_draft',
             $input,
-            article_draft_schema($sourceIds, $claimIds, $compositionMode),
+            article_draft_schema(
+                $sourceIds,
+                $claimIds,
+                $compositionMode,
+                array_keys(array_values((array) ($research['unknowns'] ?? [])))
+            ),
             (int) $package['post_id'],
             (int) $package['topic_id']
         );
@@ -823,6 +844,176 @@ function prepare_article_draft_operation(int $researchPackageId, string $composi
     }
 
     return $operationId;
+}
+
+/** Creates one idempotent, inactive draft version for a concrete QC repair cycle. */
+function prepare_article_qc_repair_operation(int $sourceDraftId, array $qualityCheck, array $repairDecision, int $attempt): int
+{
+    if ($attempt < 1 || $attempt > 2) throw new InvalidArgumentException('Automatyczna korekta QC ma limit dwóch prób.');
+    $source = find_article_draft_by_id($sourceDraftId);
+    if (!is_array($source) || (string) $source['status'] !== 'completed') {
+        throw new RuntimeException('Korekta QC wymaga kompletnej wersji źródłowej.');
+    }
+    $sourceJson = json_decode((string) $source['draft_json'], true) ?: [];
+    if ($sourceJson === [] || article_draft_main_content_length($sourceJson) <= 0) {
+        throw new RuntimeException('Korekta QC nie może bazować na pustej wersji.');
+    }
+    $package = find_research_package((int) $source['research_package_id']);
+    if (!is_array($package) || (string) $package['status'] !== 'approved') {
+        throw new RuntimeException('Korekta QC wymaga nadal zatwierdzonego researchu.');
+    }
+    $research = json_decode((string) $package['package_json'], true) ?: [];
+    $researchInput = json_decode((string) $package['research_input_json'], true) ?: [];
+    $strategy = $attempt === 1 ? 'targeted_repair' : 'fresh_conservative_rewrite';
+    $compositionMode = $attempt === 1 ? (string) $source['composition_mode'] : 'informational';
+    if ($strategy === 'fresh_conservative_rewrite') {
+        $research['claims'] = array_values(array_filter(
+            (array) ($research['claims'] ?? []),
+            static fn (array $claim): bool => (string) ($claim['confidence'] ?? '') === 'high'
+        ));
+        $research['unknowns'] = [];
+        $research['comparisons'] = [];
+        if ($research['claims'] === []) {
+            throw new RuntimeException('Konserwatywny rewrite wymaga co najmniej jednego twierdzenia o wysokiej pewności.');
+        }
+    }
+    $checkId = (int) ($qualityCheck['id'] ?? 0);
+    $existing = bueno_database()->prepare(
+        'SELECT drafts.generation_operation_id, operations.input_json
+         FROM article_draft_versions drafts
+         INNER JOIN generation_operations operations ON operations.id = drafts.generation_operation_id
+         WHERE drafts.parent_version_id = :parent AND drafts.change_source = "auto_qc_repair"
+         ORDER BY drafts.id DESC'
+    );
+    $existing->execute([':parent' => $sourceDraftId]);
+    foreach ($existing->fetchAll() as $candidate) {
+        $candidateInput = json_decode((string) $candidate['input_json'], true) ?: [];
+        if ((int) ($candidateInput['qc_auto_repair']['quality_check_id'] ?? 0) === $checkId
+            && (int) ($candidateInput['qc_auto_repair']['attempt'] ?? 0) === $attempt
+            && (string) ($candidateInput['qc_auto_repair']['strategy'] ?? 'targeted_repair') === $strategy) {
+            return (int) $candidate['generation_operation_id'];
+        }
+    }
+
+    $sourceIds = array_values(array_filter(array_map(
+        static fn (array $item): string => (string) ($item['source_id'] ?? ''),
+        (array) ($researchInput['numbered_sources'] ?? [])
+    )));
+    $claimIds = array_values(array_filter(array_map(
+        static fn (array $item): string => (string) ($item['claim_id'] ?? ''),
+        (array) ($research['claims'] ?? [])
+    )));
+    $allowedUnknowns = array_map(
+        static fn (mixed $text, int $id): array => ['id' => $id, 'text' => (string) $text],
+        array_values((array) ($research['unknowns'] ?? [])),
+        array_keys(array_values((array) ($research['unknowns'] ?? [])))
+    );
+    $input = [
+        'revision_of_draft_version_id' => $sourceDraftId,
+        'composition_mode' => $compositionMode,
+        'output_language' => [
+            'code' => 'pl-PL',
+            'rule' => 'Cała treść czytelnicza, tytuły, SEO, alt i podpisy muszą być napisane naturalnym językiem polskim.',
+        ],
+        'research_package' => $research,
+        'numbered_sources' => $researchInput['numbered_sources'] ?? [],
+        'allowed_research_unknowns' => $allowedUnknowns,
+        'qc_auto_repair' => [
+            'quality_check_id' => $checkId,
+            'attempt' => $attempt,
+            'strategy' => $strategy,
+            'categories' => array_values((array) ($repairDecision['categories'] ?? [])),
+            'instructions' => array_values((array) ($repairDecision['feedback'] ?? [])),
+        ],
+        'immutable_requirements' => [
+            'Używaj wyłącznie zatwierdzonego researchu, source_ids i claim_ids z wejścia.',
+            'Nie wymyślaj cytatów, testów ani faktów. Usuń twierdzenie, jeśli nie można go podeprzeć.',
+            'Nie osłabiaj blokad deterministycznych ani oznaczeń ryzyka.',
+            'Zwróć kompletny szkic; nie pozostawiaj pustych pól wymaganych przez schemat.',
+        ],
+        'revision_instruction' => $strategy === 'targeted_repair'
+            ? 'Precyzyjnie popraw istniejącą wersję według pełnej listy uwag QC, zachowaj poprawne części i zwróć cały szkic do ponownej pełnej walidacji.'
+            : 'Napisz od zera nowy, prostszy i konserwatywny szkic informational. Nie kopiuj struktury ani sformułowań poprzedniej wersji. Używaj wyłącznie twierdzeń confidence=high. Nie używaj cytatów dosłownych ani cudzysłowów; bezpiecznie parafrazuj fakty. Pomiń opcjonalne, słabo wsparte twierdzenia, porównania i niewiadome. Utrzymaj tekst możliwie blisko twardego minimum długości, ale spełnij pełny schemat i walidację.',
+    ];
+    if ($strategy === 'targeted_repair') {
+        $input['current_version'] = $sourceJson;
+        $categories = array_values((array) ($repairDecision['categories'] ?? []));
+        if (array_intersect($categories, ['completeness', 'structure', 'seo']) !== []) {
+            $hasTopicB = (array) ($research['comparisons'] ?? []) !== [] || count((array) ($research['claims'] ?? [])) > 1;
+            $hasTopicC = count((array) ($research['claims'] ?? [])) > 2;
+            $input['repair_router_contract'] = repair_router_expansion_plan($hasTopicB, $hasTopicC);
+            $input['repair_router_contract']['rule'] = 'Każde B/C musi wynikać z zatwierdzonych claim_ids i source_ids; brak materiału oznacza powrót do researchu, nigdy filler.';
+        }
+    } else {
+        $input['fresh_rewrite_contract'] = [
+            'from_approved_research_only' => true,
+            'discard_previous_draft_text' => true,
+            'composition_mode' => 'informational',
+            'allowed_confidence' => ['high'],
+            'direct_quotes_allowed' => false,
+            'optional_weak_claims_allowed' => false,
+            'target_main_content_characters' => '3000-3300',
+        ];
+    }
+    $database = bueno_database();
+    $database->beginTransaction();
+    try {
+        $number = $database->prepare('SELECT COALESCE(MAX(version_number), 0) + 1 FROM article_draft_versions WHERE research_package_id = :package');
+        $number->execute([':package' => (int) $source['research_package_id']]);
+        $operationId = prepare_generation_operation(
+            'article_draft',
+            $input,
+            article_draft_schema($sourceIds, $claimIds, $compositionMode, array_column($allowedUnknowns, 'id')),
+            (int) $source['post_id'],
+            (int) $source['topic_id']
+        );
+        $database->prepare(
+            'INSERT INTO article_draft_versions (
+                research_package_id, topic_id, post_id, generation_operation_id, version_number,
+                composition_mode, execution_mode, parent_version_id, change_source, repair_strategy, is_active
+             ) VALUES (:package, :topic, :post, :operation, :version, :mode, :execution, :parent, "auto_qc_repair", :strategy, 0)'
+        )->execute([
+            ':package' => (int) $source['research_package_id'], ':topic' => (int) $source['topic_id'],
+            ':post' => (int) $source['post_id'], ':operation' => $operationId, ':version' => (int) $number->fetchColumn(),
+            ':mode' => $compositionMode, ':execution' => generation_mode(), ':parent' => $sourceDraftId,
+            ':strategy' => $strategy,
+        ]);
+        $database->commit();
+        return $operationId;
+    } catch (Throwable $exception) {
+        if ($database->inTransaction()) $database->rollBack();
+        throw $exception;
+    }
+}
+
+function find_article_draft_by_id(int $draftId): ?array
+{
+    $statement = bueno_database()->prepare('SELECT * FROM article_draft_versions WHERE id = :id');
+    $statement->execute([':id' => $draftId]);
+    $draft = $statement->fetch();
+    return is_array($draft) ? $draft : null;
+}
+
+/** Activates only a fully validated, non-empty auto-repair; the prior version remains active on every failure. */
+function activate_completed_article_qc_repair(int $draftVersionId): void
+{
+    $draft = find_article_draft_by_id($draftVersionId);
+    $json = is_array($draft) ? (json_decode((string) $draft['draft_json'], true) ?: []) : [];
+    $validation = is_array($draft) ? (json_decode((string) $draft['validation_json'], true) ?: []) : [];
+    if (!is_array($draft) || (string) $draft['status'] !== 'completed' || ($validation['valid'] ?? false) !== true
+        || $json === [] || article_draft_main_content_length($json) <= 0) {
+        throw new RuntimeException('Nie można aktywować pustej lub niezwalidowanej korekty QC.');
+    }
+    $database = bueno_database();
+    $database->beginTransaction();
+    try {
+        $database->prepare('UPDATE article_draft_versions SET is_active = 0 WHERE post_id = :post')->execute([':post' => (int) $draft['post_id']]);
+        $database->prepare('UPDATE article_draft_versions SET is_active = 1 WHERE id = :id')->execute([':id' => $draftVersionId]);
+        $database->commit();
+    } catch (Throwable $exception) {
+        if ($database->inTransaction()) $database->rollBack();
+        throw $exception;
+    }
 }
 
 function article_draft_assert_references(
@@ -1354,7 +1545,9 @@ function article_draft_mock_generation_value(array $operation): array
             : $section('Kontrolowana część narracji ' . $key . ' oparta na twierdzeniu ' . $claimId . '.');
     }
 
-    $mockTitle = trim((string) $claim['claim']);
+    $mockTitle = ($input['qc_auto_repair']['strategy'] ?? '') === 'fresh_conservative_rewrite'
+        ? 'Kontrolowany wynik badania: ' . trim((string) $claim['claim'])
+        : trim((string) $claim['claim']);
     if (mb_strlen($mockTitle) < 35) {
         $mockTitle .= ': znaczenie i ograniczenia opisanego wyniku';
     }
@@ -1385,6 +1578,9 @@ function article_draft_mock_generation_value(array $operation): array
         'narrative' => $narrative,
     ];
     $draft = [...$draft, ...build_article_title_strategy_fixture((string) $draft['title'])];
+    if (($input['qc_auto_repair']['strategy'] ?? '') === 'fresh_conservative_rewrite') {
+        $draft['practical_takeaway']['text'] .= ' Jest to ostrożny opis dla czytelnika, który nie wykracza poza najlepiej potwierdzone dane oraz zachowuje ich ograniczenia.';
+    }
     $policy = article_draft_length_policy($mode);
     $index = 1;
     while (article_draft_main_content_length($draft) < $policy['minimum_characters']) {

@@ -1,0 +1,13 @@
+'use strict';
+const filter = require('../assets/js/topic-filter-state.js');
+const cards = ['work', 'ready', 'action'];
+const visible = (ready, action) => cards.filter((state) => filter.matches(state, ready, action));
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+assert(JSON.stringify(visible(false, false)) === JSON.stringify(['work']), 'Both unchecked must show only work.');
+assert(JSON.stringify(visible(true, false)) === JSON.stringify(['work', 'ready']), 'Ready checkbox must add only ready.');
+assert(JSON.stringify(visible(false, true)) === JSON.stringify(['work', 'action']), 'Action checkbox must add only action.');
+assert(JSON.stringify(visible(true, true)) === JSON.stringify(['work', 'ready', 'action']), 'Both checked must show all queues.');
+assert(JSON.stringify(filter.counts(cards)) === JSON.stringify({ work: 1, action: 1, ready: 1 }), 'Three queue counters must share classification.');
+const transitioned = ['work', 'ready', 'action'];
+assert(JSON.stringify(transitioned.filter((state) => filter.matches(state, false, false))) === JSON.stringify(['work']), 'A polling transition to ready must disappear from the default view.');
+console.log('TOPIC_FILTER_STATE_SMOKE_OK');

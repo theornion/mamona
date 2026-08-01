@@ -2,10 +2,12 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/image-rights-service.php';
+
 const ARTICLE_IMAGE_ROLES = ['hero', 'inline'];
 const ARTICLE_IMAGE_LAYOUTS = ['full', 'left', 'right', 'breakout'];
 const ARTICLE_IMAGE_STATUSES = ['planned', 'selected', 'downloaded', 'manual_review', 'missing'];
-const ARTICLE_IMAGE_SAFE_LICENSES = ['cc0', 'public-domain', 'cc-by'];
+const ARTICLE_IMAGE_SAFE_LICENSES = ['cc0', 'public-domain', 'cc-by', 'cc-by-sa', 'pexels-license', 'local-editorial'];
 const ARTICLE_IMAGE_RELATIONS = ['exact_subject', 'mechanism', 'apparatus', 'analogy_scale', 'related_context'];
 const ARTICLE_BLOCK_SECTION_VARIANTS = [
     'default', 'lead', 'importance', 'facts', 'fact', 'context',
@@ -159,6 +161,14 @@ function article_image_candidate_score(array $candidate, array $plannedImage, st
     $score = $relationScore === false ? 0 : (500 - ($relationScore * 70));
     $score += min(160, (int) floor(min((int) ($candidate['width'] ?? 0), 3200) / 20));
     $score += source_image_candidate_matches_query($candidate, $query, 1) ? 250 : 0;
+    $providerWeight = [
+        'smithsonian' => 320, 'europeana' => 300, 'eso' => 300, 'nasa' => 290,
+        'usgs' => 290, 'nci' => 290, 'wikimedia' => 190, 'openverse' => 170,
+        'pexels' => 80,
+    ];
+    $licenseWeight = ['cc0' => 170, 'public-domain' => 160, 'cc-by' => 90, 'cc-by-sa' => 80, 'pexels-license' => 20];
+    $score += $providerWeight[strtolower((string) ($candidate['provider'] ?? ''))] ?? 0;
+    $score += $licenseWeight[normalize_reuse_license((string) ($candidate['license'] ?? ''))] ?? 0;
     $text = mb_strtolower((string) ($candidate['title'] ?? '') . ' ' . (string) ($candidate['source_page_url'] ?? ''));
     if (preg_match('/watermark|stock photo|shutterstock|alamy/', $text)) $score -= 1000;
     if ((string) ($plannedImage['role'] ?? '') === 'inline' && preg_match('/diagram|schematic|micrograph|spectrum|plot|chart/', $text)) $score += 80;
@@ -179,8 +189,23 @@ function article_image_honest_copy(array $plannedImage, string $relation, array 
         ...$plannedImage,
         'relationship' => $relation,
         'alt' => $prefix !== '' ? $prefix . ' ' . $title : (string) $plannedImage['alt'],
-        'caption' => $prefix !== '' ? $prefix . ' ' . $title : (string) $plannedImage['caption'],
+        'caption' => trim((string) $plannedImage['caption']) ?: $title,
     ];
+}
+
+function article_image_context_note(array $image): string
+{
+    $manifest = image_rights_manifest_from_record($image);
+    if (($manifest['provider'] ?? '') === 'local-editorial') {
+        return 'Ilustracja redakcyjna — nie jest zdjęciem opisywanego wydarzenia.';
+    }
+    return match ((string) ($image['relationship'] ?? 'exact_subject')) {
+        'apparatus' => 'Ilustracja aparatury typowej — nie przedstawia urządzenia z opisywanego badania.',
+        'related_context' => 'Ilustracja kontekstowa — nie przedstawia bezpośrednio opisywanego wydarzenia.',
+        'analogy_scale' => 'Ilustracja objaśnia skalę lub analogię, a nie samo opisywane wydarzenie.',
+        'mechanism' => 'Ilustracja objaśniająca mechanizm — nie jest zdjęciem opisywanego wydarzenia.',
+        default => '',
+    };
 }
 
 function article_section_blocks(array $draft): array
@@ -352,25 +377,7 @@ function validate_article_illustration_plan(array $plan, array $sections, int $c
 
 function normalize_reuse_license(string $license): string
 {
-    $license = strtolower(trim($license));
-    $license = str_replace(['_', ' '], '-', $license);
-    if (str_contains($license, 'public-domain') || in_array($license, ['pd', 'pdm'], true)) {
-        return 'public-domain';
-    }
-    if (preg_match('/\bcc0(?:-1\.0)?\b/', $license) === 1) {
-        return 'cc0';
-    }
-    if (preg_match('/^by(?:-[0-9.]+)?$/', $license) === 1) {
-        return 'cc-by';
-    }
-    if (preg_match('/\bcc-by(?:-[0-9.]+)?\b/', $license) === 1
-        && !str_contains($license, '-sa')
-        && !str_contains($license, '-nc')
-        && !str_contains($license, '-nd')) {
-        return 'cc-by';
-    }
-
-    return $license;
+    return image_rights_normalize_license($license);
 }
 
 function article_image_license_is_auto_safe(string $license): bool
@@ -378,8 +385,55 @@ function article_image_license_is_auto_safe(string $license): bool
     return in_array(normalize_reuse_license($license), ARTICLE_IMAGE_SAFE_LICENSES, true);
 }
 
+function source_image_watermark_preflight(array $candidate): ?string
+{
+    $provider = mb_strtolower((string) ($candidate['provider'] ?? 'unknown'));
+    $url = mb_strtolower((string) ($candidate['source_file_url'] ?? ''));
+    $metadata = mb_strtolower(implode(' ', array_map('strval', array_filter([
+        $candidate['title'] ?? '', $candidate['attribution'] ?? '', $candidate['rights_statement_raw'] ?? '',
+        $candidate['asset_type'] ?? '', $candidate['download_type'] ?? '',
+    ], 'is_scalar'))));
+    if (preg_match('~rawpixel|shutterstock|alamy|istock|istockphoto|gettyimages~', $provider . ' ' . $url . ' ' . $metadata)) {
+        return 'provider_or_asset_is_stock_preview';
+    }
+    if (preg_match('~(?:^|[/_.-])(watermark(?:ed)?|preview|sample|comp)(?:[/_.?-]|$)~', $url)
+        || preg_match('/watermark(?:ed)?|stock comp|preview image|sample image/', $metadata)) {
+        return 'url_or_metadata_indicates_watermarked_preview';
+    }
+    if (($candidate['is_original_download'] ?? true) !== true) return 'asset_is_not_original_download_endpoint';
+    return null;
+}
+
+function source_image_has_actual_transparency(string $bytes, string $mime): bool
+{
+    if (!in_array($mime, ['image/png','image/webp'], true) || !function_exists('imagecreatefromstring')) return false;
+    $image = @imagecreatefromstring($bytes);
+    if ($image === false) return false;
+    try {
+        $width = imagesx($image); $height = imagesy($image);
+        for ($y = 0; $y < $height; $y++) for ($x = 0; $x < $width; $x++) {
+            if (((imagecolorat($image, $x, $y) >> 24) & 0x7F) > 0) return true;
+        }
+        return false;
+    } finally { imagedestroy($image); }
+}
+
+/** Conservative raster signal only; metadata/endpoint checks remain authoritative. */
+function source_image_raster_watermark_reason(string $bytes, string $mime): ?string
+{
+    if (!in_array($mime, ['image/png','image/webp'], true) || !function_exists('imagecreatefromstring')) return null;
+    $image = @imagecreatefromstring($bytes); if ($image === false) return null;
+    try {
+        $width=imagesx($image);$height=imagesy($image);$tiles=[];$step=max(4,(int)floor(min($width,$height)/120));
+        for($y=0;$y<$height;$y+=$step)for($x=0;$x<$width;$x+=$step){$color=imagecolorat($image,$x,$y);$alpha=($color>>24)&0x7F;if($alpha>=18&&$alpha<=108){$key=(($color>>20)&0xF).(($color>>12)&0xF).(($color>>4)&0xF);$tiles[$key]=($tiles[$key]??0)+1;}}
+        return $tiles !== [] && max($tiles) >= 80 ? 'repeated_semitransparent_raster_mark' : null;
+    } finally { imagedestroy($image); }
+}
+
 function validate_source_image_candidate(array $candidate): array
 {
+    $watermarkReason = source_image_watermark_preflight($candidate);
+    if ($watermarkReason !== null) throw new InvalidArgumentException('watermark_rejected: ' . $watermarkReason);
     $required = [
         'source_page_url', 'source_file_url', 'author', 'license', 'license_url',
         'attribution', 'width', 'height', 'provider', 'provider_id',
@@ -395,13 +449,16 @@ function validate_source_image_candidate(array $candidate): array
             throw new InvalidArgumentException("Pole {$field} musi być rzeczywistym adresem HTTPS.");
         }
     }
-    if ((int) $candidate['width'] <= 0 || (int) $candidate['height'] <= 0) {
+    if ((int) $candidate['width'] < 0 || (int) $candidate['height'] < 0) {
         throw new InvalidArgumentException('Wynik źródła ma nieprawidłowe wymiary.');
     }
     $candidate['license_normalized'] = normalize_reuse_license((string) $candidate['license']);
-    $candidate['status'] = article_image_license_is_auto_safe((string) $candidate['license'])
-        ? 'selected'
-        : 'manual_review';
+    $candidate['rights_manifest'] = image_rights_manifest(
+        $candidate,
+        (string) ($candidate['chosen_query'] ?? 'provider_search'),
+        (string) ($candidate['topic_role'] ?? 'unassigned')
+    );
+    $candidate['status'] = 'selected';
 
     return $candidate;
 }
@@ -449,11 +506,12 @@ function search_wikimedia_commons_images(string $query, ?callable $transport = n
         $info = (array) ($page['imageinfo'][0] ?? []);
         $meta = (array) ($info['extmetadata'] ?? []);
         $value = static fn (string $key): string => trim(strip_tags((string) ($meta[$key]['value'] ?? '')));
-        $fileUrl = (string) ($info['thumburl'] ?? $info['url'] ?? '');
+        $fileUrl = (string) ($info['url'] ?? '');
         $pageUrl = (string) ($info['descriptionurl'] ?? '');
         $licenseUrl = $value('LicenseUrl');
         $author = $value('Artist') ?: $value('Credit');
         $license = $value('LicenseShortName') ?: $value('UsageTerms');
+        $riskFlags = image_rights_risk_flags((string) ($page['title'] ?? ''), $value('ImageDescription'), $value('Categories'), $value('Credit'));
         $normalizedLicense = normalize_reuse_license($license);
         if ($licenseUrl === '' && $normalizedLicense === 'public-domain') {
             $licenseUrl = 'https://creativecommons.org/publicdomain/mark/1.0/';
@@ -476,6 +534,9 @@ function search_wikimedia_commons_images(string $query, ?callable $transport = n
                 'height' => (int) ($info['thumbheight'] ?? $info['height'] ?? 0),
                 'provider' => 'wikimedia',
                 'provider_id' => (string) ($page['pageid'] ?? sha1($pageUrl)),
+                'chosen_query' => $query,
+                'topic_role' => 'candidate',
+                ...$riskFlags,
             ]);
         } catch (InvalidArgumentException) {
             continue;
@@ -511,6 +572,9 @@ function search_openverse_images(string $query, ?callable $transport = null): ar
             'height' => (int) ($item['height'] ?? 0),
             'provider' => 'openverse',
             'provider_id' => (string) ($item['id'] ?? ''),
+            'chosen_query' => $query,
+            'topic_role' => 'candidate',
+            ...image_rights_risk_flags(trim((string) ($item['title'] ?? '')), generation_json((array) ($item['tags'] ?? []))),
         ];
         try {
             $results[] = validate_source_image_candidate($candidate);
@@ -522,6 +586,170 @@ function search_openverse_images(string $query, ?callable $transport = null): ar
     return $results;
 }
 
+function source_image_first_text(mixed $value): string
+{
+    if (is_array($value)) $value = reset($value);
+    return is_scalar($value) ? trim(strip_tags((string) $value)) : '';
+}
+
+function source_image_candidate(array $values, string $query): ?array
+{
+    $flags = image_rights_risk_flags((string) ($values['title'] ?? ''), (string) ($values['rights_statement_raw'] ?? ''), (string) ($values['description'] ?? ''));
+    foreach ($flags as $key => $value) $values[$key] = (bool) ($values[$key] ?? $value);
+    $values['chosen_query'] = $query;
+    $values['topic_role'] = (string) ($values['topic_role'] ?? 'candidate');
+    try { return validate_source_image_candidate($values); } catch (InvalidArgumentException) { return null; }
+}
+
+function search_smithsonian_images(string $query, ?callable $transport = null): array
+{
+    if ((string) app_config('smithsonian_api_key') === '' && $transport === null) return [];
+    $transport ??= 'source_image_json_transport';
+    $response = $transport('https://api.si.edu/openaccess/api/v1.0/search?q=' . rawurlencode($query) . '&rows=20&api_key=' . rawurlencode((string) app_config('smithsonian_api_key')));
+    $results = [];
+    foreach ((array) ($response['response']['rows'] ?? []) as $row) {
+        foreach ((array) ($row['content']['descriptiveNonRepeating']['online_media']['media'] ?? []) as $asset) {
+            $asset = (array) $asset; $rights = trim((string) ($asset['usage']['access'] ?? $asset['usage']['text'] ?? ''));
+            if (image_rights_normalize_license($rights) !== 'cc0') continue;
+            $resources = (array) ($asset['resources'] ?? []); $resource = (array) (end($resources) ?: []);
+            $author = source_image_first_text($row['content']['freetext']['name'][0]['content'] ?? 'Smithsonian Institution') ?: 'Smithsonian Institution';
+            $candidate = source_image_candidate(['title' => source_image_first_text($row['title'] ?? ''),
+                'source_page_url' => (string) ($row['url'] ?? $asset['content'] ?? ''), 'source_file_url' => (string) ($resource['url'] ?? $asset['content'] ?? ''),
+                'author' => $author, 'license' => 'CC0 1.0', 'license_url' => 'https://creativecommons.org/publicdomain/zero/1.0/',
+                'attribution' => $author . ' — Smithsonian Open Access, CC0', 'rights_statement_raw' => $rights,
+                'width' => (int) ($resource['width'] ?? 0), 'height' => (int) ($resource['height'] ?? 0),
+                'provider' => 'smithsonian', 'provider_id' => (string) ($asset['ids']['id'] ?? $row['id'] ?? '')], $query);
+            if ($candidate !== null) $results[] = $candidate;
+        }
+    }
+    return $results;
+}
+
+function europeana_allowed_rights(string $rights): ?array
+{
+    $key = rtrim(trim($rights), '/');
+    $map = [
+        'http://creativecommons.org/publicdomain/zero/1.0' => ['CC0 1.0', 'https://creativecommons.org/publicdomain/zero/1.0/'],
+        'https://creativecommons.org/publicdomain/zero/1.0' => ['CC0 1.0', 'https://creativecommons.org/publicdomain/zero/1.0/'],
+        'http://creativecommons.org/publicdomain/mark/1.0' => ['Public Domain', 'https://creativecommons.org/publicdomain/mark/1.0/'],
+        'https://creativecommons.org/publicdomain/mark/1.0' => ['Public Domain', 'https://creativecommons.org/publicdomain/mark/1.0/'],
+        'http://creativecommons.org/licenses/by/4.0' => ['CC BY 4.0', 'https://creativecommons.org/licenses/by/4.0/'],
+        'https://creativecommons.org/licenses/by/4.0' => ['CC BY 4.0', 'https://creativecommons.org/licenses/by/4.0/'],
+        'http://creativecommons.org/licenses/by-sa/4.0' => ['CC BY-SA 4.0', 'https://creativecommons.org/licenses/by-sa/4.0/'],
+        'https://creativecommons.org/licenses/by-sa/4.0' => ['CC BY-SA 4.0', 'https://creativecommons.org/licenses/by-sa/4.0/'],
+    ];
+    return $map[$key] ?? null;
+}
+
+function search_europeana_images(string $query, ?callable $transport = null): array
+{
+    if ((string) app_config('europeana_api_key') === '' && $transport === null) return [];
+    $transport ??= 'source_image_json_transport';
+    $response = $transport('https://api.europeana.eu/record/v2/search.json?media=true&reusability=open&rows=20&query=' . rawurlencode($query) . '&wskey=' . rawurlencode((string) app_config('europeana_api_key')));
+    $results = [];
+    foreach ((array) ($response['items'] ?? []) as $item) {
+        $rightsRaw = source_image_first_text($item['rights'] ?? $item['edmRights'] ?? ''); $license = europeana_allowed_rights($rightsRaw);
+        if ($license === null) continue;
+        $author = source_image_first_text($item['dcCreator'] ?? $item['dataProvider'] ?? '');
+        $candidate = source_image_candidate(['title' => source_image_first_text($item['title'] ?? ''),
+            'source_page_url' => source_image_first_text($item['edmIsShownAt'] ?? $item['guid'] ?? ''),
+            'source_file_url' => source_image_first_text($item['edmIsShownBy'] ?? ''),
+            'author' => $author, 'license' => $license[0], 'license_url' => $license[1],
+            'attribution' => trim($author . ', ' . $license[0] . ' — Europeana'), 'rights_statement_raw' => $rightsRaw,
+            'width' => (int) ($item['webResourceWidth'] ?? 0), 'height' => (int) ($item['webResourceHeight'] ?? 0),
+            'provider' => 'europeana', 'provider_id' => (string) ($item['id'] ?? '')], $query);
+        if ($candidate !== null) $results[] = $candidate;
+    }
+    return $results;
+}
+
+function source_image_pexels_transport(string $url): array
+{
+    $key = (string) app_config('pexels_api_key'); if ($key === '') return [];
+    image_provider_rate_limit_acquire('pexels', (int) app_config('pexels_api_hourly_limit'));
+    $curl = curl_init($url); if ($curl === false) throw new RuntimeException('Nie można uruchomić klienta Pexels.');
+    curl_setopt_array($curl, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => (int) app_config('source_image_timeout_seconds'), CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_PROTOCOLS => CURLPROTO_HTTPS, CURLOPT_HTTPHEADER => ['Accept: application/json', 'Authorization: ' . $key], CURLOPT_USERAGENT => 'MamonaSourceImageSearch/1.0']);
+    $body = curl_exec($curl); $status = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE); $error = curl_error($curl); curl_close($curl);
+    if (!is_string($body) || $status < 200 || $status >= 300) throw new RuntimeException($error !== '' ? $error : 'Pexels zwrócił HTTP ' . $status . '.');
+    $decoded = json_decode($body, true, 128, JSON_THROW_ON_ERROR); return is_array($decoded) ? $decoded : [];
+}
+
+function search_pexels_images(string $query, ?callable $transport = null): array
+{
+    if ((string) app_config('pexels_api_key') === '' && $transport === null) return [];
+    $transport ??= 'source_image_pexels_transport'; $response = $transport('https://api.pexels.com/v1/search?per_page=20&orientation=landscape&query=' . rawurlencode($query));
+    $results = [];
+    foreach ((array) ($response['photos'] ?? []) as $item) {
+        $author = trim((string) ($item['photographer'] ?? ''));
+        $candidate = source_image_candidate(['title' => trim((string) ($item['alt'] ?? '')), 'description' => trim((string) ($item['alt'] ?? '')),
+            'source_page_url' => (string) ($item['url'] ?? ''), 'source_file_url' => (string) ($item['src']['large2x'] ?? $item['src']['large'] ?? ''),
+            'author' => $author, 'license' => 'Pexels License', 'license_url' => 'https://www.pexels.com/license/',
+            'attribution' => 'Photo by ' . $author . ' on Pexels', 'rights_statement_raw' => 'Pexels License: commercial use and modifications allowed',
+            'width' => (int) ($item['width'] ?? 0), 'height' => (int) ($item['height'] ?? 0), 'provider' => 'pexels', 'provider_id' => (string) ($item['id'] ?? '')], $query);
+        if ($candidate !== null) $results[] = $candidate;
+    }
+    return $results;
+}
+
+function validate_institutional_image_candidate(array $candidate, string $provider, string $query = 'institutional_asset'): array
+{
+    $provider = strtolower($provider); $rights = mb_strtolower((string) ($candidate['rights_statement_raw'] ?? $candidate['license'] ?? ''));
+    if ($provider === 'smithsonian' && image_rights_normalize_license($rights) !== 'cc0') throw new InvalidArgumentException('Smithsonian full-auto wymaga CC0 per asset.');
+    if ($provider === 'eso' && (!str_contains($rights, 'cc by 4.0') || preg_match('/exception|excluded|not covered/u', $rights))) throw new InvalidArgumentException('Asset ESO ma wyjątek lub brak domyślnej CC BY 4.0.');
+    if (in_array($provider, ['nasa', 'usgs'], true) && preg_match('/third[- ]party|copyright|courtesy|rights reserved|©/u', $rights)) throw new InvalidArgumentException('Asset instytucjonalny ma oznaczenie podmiotu trzeciego.');
+    if ($provider === 'nci' && !preg_match('/\bpublic domain\b/u', $rights)) throw new InvalidArgumentException('NCI full-auto wymaga oznaczenia Public Domain per asset.');
+    $candidate['provider'] = $provider; $candidate['chosen_query'] = $query; return validate_source_image_candidate($candidate);
+}
+
+function search_institutional_catalog_images(string $provider, string $query, ?callable $transport = null): array
+{
+    if (!in_array($provider, ['eso', 'usgs', 'nci'], true)) throw new InvalidArgumentException('Nieznany katalog instytucjonalny.');
+    $url = trim((string) app_config($provider . '_asset_catalog_url'));
+    if ($transport === null && $url === '') return [];
+    if ($url === '') $url = 'https://example.invalid/' . $provider . '/asset-catalog';
+    if (!filter_var($url, FILTER_VALIDATE_URL) || strtolower((string) parse_url($url, PHP_URL_SCHEME)) !== 'https') {
+        throw new InvalidArgumentException('Katalog assetów instytucjonalnych musi używać HTTPS.');
+    }
+    $transport ??= 'source_image_json_transport';
+    $response = $transport($url . (str_contains($url, '?') ? '&' : '?') . 'q=' . rawurlencode($query));
+    $results = [];
+    foreach ((array) ($response['results'] ?? []) as $candidate) {
+        if (!is_array($candidate)) continue;
+        try { $results[] = validate_institutional_image_candidate($candidate, $provider, $query); } catch (InvalidArgumentException) {}
+    }
+    return $results;
+}
+
+function search_nasa_images(string $query, ?callable $transport = null): array
+{
+    $transport ??= 'source_image_json_transport';
+    $response = $transport('https://images-api.nasa.gov/search?media_type=image&page_size=20&q=' . rawurlencode($query));
+    $results = [];
+    foreach ((array) ($response['collection']['items'] ?? []) as $item) {
+        $data = (array) ($item['data'][0] ?? []); $link = (array) ($item['links'][0] ?? []);
+        $author = trim((string) ($data['photographer'] ?? $data['secondary_creator'] ?? 'NASA')) ?: 'NASA';
+        $candidate = source_image_candidate(['title' => (string) ($data['title'] ?? ''), 'description' => (string) ($data['description'] ?? ''),
+            'source_page_url' => (string) ($item['href'] ?? ''), 'source_file_url' => (string) ($link['href'] ?? ''),
+            'author' => $author, 'license' => 'Public Domain', 'license_url' => 'https://www.nasa.gov/nasa-brand-center/images-and-media/',
+            'attribution' => trim('NASA/' . $author, '/'), 'rights_statement_raw' => 'NASA-produced media; no third-party credit marker',
+            'width' => 0, 'height' => 0, 'provider' => 'nasa', 'provider_id' => (string) ($data['nasa_id'] ?? ''),
+            'third_party_warning' => false], $query);
+        if ($candidate !== null) $results[] = $candidate;
+    }
+    return $results;
+}
+
+function source_image_search_cached(string $provider, string $query, ?callable $transport, callable $loader): array
+{
+    if ($transport !== null) return $loader();
+    $cached = image_provider_cache_get($provider, $query);
+    if ($cached !== null) return $cached;
+    $results = $loader();
+    if ($results !== []) image_provider_cache_put($provider, $query, $results);
+    return $results;
+}
+
 function search_source_images(string $query, ?string $provider = null, ?callable $transport = null): array
 {
     $query = trim($query);
@@ -529,12 +757,24 @@ function search_source_images(string $query, ?string $provider = null, ?callable
         throw new InvalidArgumentException('Zapytanie obrazu musi mieć od 1 do 200 znaków.');
     }
     $provider = strtolower($provider ?? (string) app_config('source_image_provider'));
+    if (in_array($provider, ['unsplash', 'pixabay'], true)) {
+        throw new InvalidArgumentException(ucfirst($provider) . ' jest wyłącznie źródłem ręcznym i nie działa w full-auto.');
+    }
+    if (!in_array($provider, ['wikimedia', 'openverse', 'smithsonian', 'europeana', 'pexels', 'nasa', 'eso', 'usgs', 'nci'], true)) {
+        throw new InvalidArgumentException('Nieznany provider obrazów.');
+    }
 
-    return match ($provider) {
+    return source_image_search_cached($provider, $query, $transport, static fn (): array => match ($provider) {
         'wikimedia' => search_wikimedia_commons_images($query, $transport),
         'openverse' => search_openverse_images($query, $transport),
+        'smithsonian' => search_smithsonian_images($query, $transport),
+        'europeana' => search_europeana_images($query, $transport),
+        'pexels' => search_pexels_images($query, $transport),
+        'nasa' => search_nasa_images($query, $transport),
+        'eso', 'usgs', 'nci' => search_institutional_catalog_images($provider, $query, $transport),
+        'unsplash', 'pixabay' => throw new InvalidArgumentException(ucfirst($provider) . ' jest wyłącznie źródłem ręcznym i nie działa w full-auto.'),
         default => throw new InvalidArgumentException('Dozwolone źródła obrazów to Wikimedia Commons i Openverse.'),
-    };
+    });
 }
 
 function select_source_image_from_results(array $plannedImage, array $results, string $providerId): array
@@ -557,6 +797,9 @@ function select_source_image_from_results(array $plannedImage, array $results, s
             );
         }
 
+        $manifest = $candidate['rights_manifest'];
+        $manifest['topic_role'] = (string) $plannedImage['role'];
+        $manifest = validate_image_rights_manifest($manifest);
         return array_merge($plannedImage, [
             'source_page_url' => $candidate['source_page_url'],
             'source_file_url' => $candidate['source_file_url'],
@@ -569,6 +812,7 @@ function select_source_image_from_results(array $plannedImage, array $results, s
             'provider_id' => $candidate['provider_id'],
             'width' => (int) $candidate['width'],
             'height' => (int) $candidate['height'],
+            'rights_manifest' => $manifest,
         ]);
     }
     throw new InvalidArgumentException('Wybrany obraz nie występuje w rzeczywistych wynikach źródła.');
@@ -761,6 +1005,8 @@ function download_source_image(
     if (($selectedImage['status'] ?? '') !== 'selected') {
         throw new InvalidArgumentException('Automatycznie można pobrać wyłącznie obraz z zaakceptowaną licencją.');
     }
+    $manifest = image_rights_manifest_from_record($selectedImage);
+    if ($manifest === null) throw new InvalidArgumentException('Obraz nie ma kompletnego, jednoznacznego manifestu praw.');
     $transport ??= 'source_image_curl_once';
     $url = (string) ($selectedImage['source_file_url'] ?? '');
     $redirects = 0;
@@ -811,6 +1057,9 @@ function download_source_image(
         || (int) $info[1] < (int) app_config('source_image_min_height')) {
         throw new InvalidArgumentException('Obraz ma zbyt małą rozdzielczość.');
     }
+    $watermarkReason = source_image_raster_watermark_reason($bytes, $detectedMime);
+    if ($watermarkReason !== null) throw new InvalidArgumentException('watermark_rejected: ' . $watermarkReason);
+    $hasTransparency = source_image_has_actual_transparency($bytes, $detectedMime);
     $hash = hash('sha256', $bytes);
     $directory ??= app_post_image_path('sources');
     if (!is_dir($directory) && !mkdir($directory, 0775, true) && !is_dir($directory)) {
@@ -844,6 +1093,8 @@ function download_source_image(
         'mime' => $detectedMime,
         'width' => (int) $info[0],
         'height' => (int) $info[1],
+        'has_transparency' => $hasTransparency ? 1 : 0,
+        'watermark_status' => 'clear',
     ]);
 }
 
@@ -854,12 +1105,14 @@ function persist_article_image(int $postId, array $image, string $query = ''): i
             post_id, role, section_id, visual_intent, expected_content, search_queries_json,
             source_page_url, source_file_url, local_path, author, license,
             license_url, attribution, alt, caption, layout, status,
-            width, height, downloaded_at, relationship, search_audit_json
+            width, height, downloaded_at, relationship, search_audit_json, rights_manifest_json,
+            has_transparency, watermark_status
          ) VALUES (
             :post_id, :role, :section_id, :visual_intent, :expected_content, :search_queries_json,
             :source_page_url, :source_file_url, :local_path, :author, :license,
             :license_url, :attribution, :alt, :caption, :layout, :status,
-            :width, :height, :downloaded_at, :relationship, :search_audit_json
+            :width, :height, :downloaded_at, :relationship, :search_audit_json, :rights_manifest_json,
+            :has_transparency, :watermark_status
          )
          ON CONFLICT(post_id, role, section_id) DO UPDATE SET
             visual_intent = excluded.visual_intent,
@@ -881,6 +1134,9 @@ function persist_article_image(int $postId, array $image, string $query = ''): i
             downloaded_at = excluded.downloaded_at,
             relationship = excluded.relationship,
             search_audit_json = excluded.search_audit_json,
+            rights_manifest_json = excluded.rights_manifest_json,
+            has_transparency = excluded.has_transparency,
+            watermark_status = excluded.watermark_status,
             updated_at = CURRENT_TIMESTAMP'
     );
     $queries = (array) ($image['search_queries'] ?? []);
@@ -911,6 +1167,9 @@ function persist_article_image(int $postId, array $image, string $query = ''): i
         ':relationship' => in_array((string) ($image['relationship'] ?? ''), ARTICLE_IMAGE_RELATIONS, true)
             ? (string) $image['relationship'] : 'exact_subject',
         ':search_audit_json' => generation_json((array) ($image['search_audit'] ?? [])),
+        ':rights_manifest_json' => generation_json((array) ($image['rights_manifest'] ?? [])),
+        ':has_transparency' => !empty($image['has_transparency']) ? 1 : 0,
+        ':watermark_status' => (string) ($image['watermark_status'] ?? ''),
     ]);
 
     $idStatement = bueno_database()->prepare(
@@ -981,7 +1240,7 @@ function reject_article_source_image(int $imageId): int
     bueno_database()->prepare(
         'UPDATE article_images
          SET source_page_url = "", source_file_url = "", local_path = "",
-             author = "", license = "", license_url = "", attribution = "",
+             author = "", license = "", license_url = "", attribution = "", rights_manifest_json = "{}",
              status = "missing", width = NULL, height = NULL, downloaded_at = NULL,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = :id'
@@ -1019,7 +1278,9 @@ function fulfill_article_source_images(
     }
     $searcher ??= static function (string $query): array {
         $preferred = (string) app_config('source_image_provider');
-        $providers = array_values(array_unique([$preferred, 'wikimedia', 'openverse']));
+        $providers = array_values(array_unique([
+            $preferred, 'smithsonian', 'europeana', 'eso', 'nasa', 'usgs', 'nci', 'wikimedia', 'openverse', 'pexels',
+        ]));
         $results = [];
         $errors = [];
         foreach ($providers as $provider) {
@@ -1082,7 +1343,6 @@ function fulfill_article_source_images(
             'layout' => (string) $image['layout'],
             'status' => 'planned',
         ];
-        $manualCandidate = null;
         $audit = [];
         $completed = false;
         foreach (article_image_semantic_queries($planned) as $attempt) {
@@ -1109,9 +1369,6 @@ function fulfill_article_source_images(
                 if ($score === PHP_INT_MIN) {
                     $reason = article_image_license_is_auto_safe((string) ($result['license'] ?? '')) ? 'role_or_quality' : 'unsafe_or_incomplete_license';
                     $audit[] = ['query' => $query, 'level' => $relation, 'source' => $provider, 'result' => 'rejected', 'reason' => $reason];
-                    if ($reason === 'unsafe_or_incomplete_license' && $manualCandidate === null) {
-                        try { $manualCandidate = [select_source_image_from_results($planned, [$result], (string) ($result['provider_id'] ?? '')), $query, $relation]; } catch (Throwable) {}
-                    }
                     continue;
                 }
                 $ranked[] = [$score, $result];
@@ -1135,7 +1392,10 @@ function fulfill_article_source_images(
                     $completed = true;
                     break 2;
                 } catch (Throwable $exception) {
-                    $audit[] = ['query' => $query, 'level' => $relation, 'source' => (string) ($result['provider'] ?? ''), 'result' => 'rejected', 'reason' => $exception->getMessage()];
+                    $watermarkRejected = str_starts_with($exception->getMessage(), 'watermark_rejected:');
+                    $audit[] = ['query' => $query, 'level' => $relation, 'source' => (string) ($result['provider'] ?? ''),
+                        'url' => (string) ($result['source_file_url'] ?? ''),
+                        'result' => $watermarkRejected ? 'watermark_rejected' : 'rejected', 'reason' => $exception->getMessage()];
                     $summary['errors'][] = $image['role'] . '/' . $image['section_id']
                         . ': kandydat: ' . $exception->getMessage();
                 }
@@ -1144,17 +1404,9 @@ function fulfill_article_source_images(
         if ($completed) {
             continue;
         }
-        if (is_array($manualCandidate)) {
-            $manualCandidate[0]['relationship'] = (string) $manualCandidate[2];
-            $manualCandidate[0]['search_audit'] = $audit;
-            persist_article_image($postId, $manualCandidate[0], (string) $manualCandidate[1]);
-            $usedUrls[(string) $manualCandidate[0]['source_file_url']] = true;
-            $summary['manual_review']++;
-        } else {
-            $audit[] = ['query' => '', 'level' => 'exhausted', 'source' => '', 'result' => 'missing', 'reason' => 'all_levels_sources_retries_exhausted; topic_b_required'];
-            persist_article_image($postId, [...$planned, 'status' => 'missing', 'search_audit' => $audit]);
-            $summary['missing']++;
-        }
+        $audit[] = ['query' => '', 'level' => 'exhausted', 'source' => '', 'result' => 'missing', 'reason' => 'all_legal_candidates_exhausted; local_fallback_required'];
+        persist_article_image($postId, [...$planned, 'status' => 'missing', 'search_audit' => $audit]);
+        $summary['missing']++;
     }
 
     refresh_article_image_rendering($postId);
@@ -1226,6 +1478,7 @@ function render_article_image_record(array $image, bool $hero = false): string
     $source = htmlspecialchars((string) $image['source_page_url'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $license = htmlspecialchars((string) $image['license'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $licenseUrl = htmlspecialchars((string) $image['license_url'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $contextNote = htmlspecialchars(article_image_context_note($image), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $loading = $hero ? ' loading="eager" fetchpriority="high"' : ' loading="lazy"';
     $responsive = article_image_responsive_attributes(
         $path,
@@ -1233,15 +1486,19 @@ function render_article_image_record(array $image, bool $hero = false): string
         $layout
     );
     $html = '<figure class="article-illustration article-illustration--' . $layout
-        . ($hero ? ' article-illustration--hero' : '') . '">';
+        . ($hero ? ' article-illustration--hero' : '')
+        . (!empty($image['has_transparency']) ? ' article-illustration--transparent' : '') . '">';
     $html .= '<img src="../' . htmlspecialchars($path, ENT_QUOTES, 'UTF-8') . '" alt="' . $alt
         . '" width="' . max(1, (int) ($image['width'] ?? 1))
         . '" height="' . max(1, (int) ($image['height'] ?? 1))
         . '" decoding="async"' . $responsive . $loading . '>';
-    if ($caption !== '' || $attribution !== '') {
-        $html .= '<figcaption>' . $caption;
+    if ($caption !== '' || $contextNote !== '' || $attribution !== '') {
+        $html .= '<figcaption>' . ($caption !== '' ? '<span class="article-image-caption">' . $caption . '</span>' : '');
+        if ($contextNote !== '') {
+            $html .= '<small class="article-image-context-note">' . $contextNote . '</small>';
+        }
         if ($attribution !== '') {
-            $html .= '<small> ' . $attribution;
+            $html .= '<small class="article-image-credit">' . $attribution;
             if ($source !== '') {
                 $html .= ' · <a href="' . $source . '" rel="noopener noreferrer">źródło</a>';
             }
@@ -1307,6 +1564,8 @@ function create_article_image_variants(string $absolutePath): void
         $targetHeight = max(1, (int) round($sourceHeight * $targetWidth / $sourceWidth));
         $target = imagescale($source, $targetWidth, $targetHeight, IMG_BICUBIC_FIXED);
         if ($target === false) continue;
+        imagealphablending($target, false);
+        imagesavealpha($target, true);
         $temporary = $targetPath . '.tmp-' . bin2hex(random_bytes(4));
         try {
             if (@imagewebp($target, $temporary, 82)) @rename($temporary, $targetPath);

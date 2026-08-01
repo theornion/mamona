@@ -48,7 +48,8 @@
             note.className = 'admin-notice ' + (result.status === 'failed' ? 'is-error' : 'is-success');
             const attempt = 'próba ' + (result.attempts || 1);
             const timing = Math.round((result.duration_ms || 0) / 100) / 10 + ' s, ' + (result.bytes || 0) + ' B';
-            const outcome = result.status === 'not_modified' ? 'bez nowych danych' : (result.status === 'succeeded' ? 'sukces' : ((result.advice || result.error || 'błąd')));
+            const failure = [result.advice, result.error].filter(Boolean).filter(function (value, index, values) { return values.indexOf(value) === index; }).join(' Szczegóły: ');
+            const outcome = result.status === 'not_modified' ? 'bez nowych danych' : (result.status === 'succeeded' ? 'sukces' : (failure || 'błąd'));
             const retry = result.retry_in_ms ? ' · ponowienie za ' + Math.ceil(result.retry_in_ms / 1000) + ' s' : '';
             note.textContent = result.name + ': ' + outcome + ' · ' + attempt + ' · ' + timing + retry;
             errors.appendChild(note);

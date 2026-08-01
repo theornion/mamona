@@ -25,10 +25,15 @@ require_once __DIR__ . '/article-draft-service.php';
 require_once __DIR__ . '/quality-check-service.php';
 require_once __DIR__ . '/proposal-review-service.php';
 require_once __DIR__ . '/thumbnail-service.php';
+require_once __DIR__ . '/repair-router-service.php';
+require_once __DIR__ . '/salvage-service.php';
 require_once __DIR__ . '/generation-batch-service.php';
 require_once __DIR__ . '/trust-pages-service.php';
 
-define('CMS_DATABASE_FILE', dirname(__DIR__) . '/data/cms.sqlite');
+if (!defined('CMS_DATABASE_FILE')) {
+    $testDatabase = PHP_SAPI === 'cli' ? trim((string) getenv('CMS_TEST_DATABASE_FILE')) : '';
+    define('CMS_DATABASE_FILE', $testDatabase !== '' ? $testDatabase : dirname(__DIR__) . '/data/cms.sqlite');
+}
 
 function bueno_database(): PDO
 {
@@ -1771,8 +1776,8 @@ function render_post_page_html(array $post, bool $preview = false): string
 							<div class="post-page-body">{$content}</div>
 							{$galleryLink}
 							{$sourcesHtml}
-							{$aiHtml}
 							{$relatedHtml}
+							{$aiHtml}
 							<ul class="actions special"><li><a class="button" href="{$categoryUrl}">Wróć do aktualności</a></li></ul>
 						</article>
 HTML;

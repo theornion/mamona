@@ -754,7 +754,7 @@ body:not(.admin-page) .article-illustration--breakout {
     margin-inline: clamp(-4rem, -5vw, -1.5rem);
 }
 
-body:not(.admin-page) :where(.post-sources, .post-related, .post-ai-disclosure) {
+body:not(.admin-page) :where(.post-sources, .post-related) {
     max-width: var(--mamona-reading);
     margin: 1.25rem auto 0;
     padding: 1.35rem 1.5rem;
@@ -767,7 +767,19 @@ body:not(.admin-page) :where(.post-sources, .post-related, .post-ai-disclosure) 
 
 body:not(.admin-page) .post-sources { border-left: 3px solid var(--mamona-cyan); }
 body:not(.admin-page) .post-related { border-left: 3px solid var(--mamona-violet); }
-body:not(.admin-page) .post-ai-disclosure { color: #c5d7e1; font-size: 0.9rem; }
+body:not(.admin-page) .post-ai-disclosure {
+    max-width: var(--mamona-reading);
+    margin: 1.5rem auto 0.65rem;
+    padding: 0 1rem;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    color: #c5d7e1;
+    font-size: 0.82rem;
+    line-height: 1.6;
+    text-align: center;
+}
 
 body:not(.admin-page) :where(.post-sources, .post-related) h2 {
     margin-bottom: 0.75rem;
@@ -1030,7 +1042,8 @@ body:not(.admin-page) :where(.cat-slide, .burger-slide) {
     body:not(.admin-page) #footer > section:first-child { padding-inline: 1rem; }
 
     body:not(.admin-page) .news-feed-heading h1 { font-size: clamp(2.35rem, 13vw, 3.6rem); }
-    body:not(.admin-page) :where(.post-sources, .post-related, .post-ai-disclosure) { padding: 1.1rem; }
+    body:not(.admin-page) :where(.post-sources, .post-related) { padding: 1.1rem; }
+    body:not(.admin-page) .post-ai-disclosure { padding-inline: 0.5rem; }
 }
 
 @media screen and (max-width: 360px) {

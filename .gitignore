@@ -11,4 +11,5 @@ php/contact-secrets.php
 /data/backups/
 /data/thumbnails/
 /images/posts/thumbnails/
+/images/posts/editorial-fallback/
 /logs/

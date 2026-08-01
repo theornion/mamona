@@ -1252,3 +1252,23 @@ Te elementy należy rozpocząć dopiero po publikacji pierwszych 25–40 wartoś
 - Został sprawdzony widok mobilny.
 - Nieopublikowane materiały nie trafiają do indeksu, RSS ani sitemapy.
 - Każdy opublikowany artykuł ma autora, datę, obraz, źródła, canonical i dane strukturalne.
+
+---
+
+# Etap F — Full Auto (po odbiorze bazowego sprintu)
+
+## TASK-23: Test harness i plan pomiarów Full Auto
+
+Deterministyczny, bezsieciowy E2E obejmuje ingestion/temat, scoring, research, draft, QC i obrazy oraz sprawdza wersje, idempotencję, restart, fault injection i bezwzględny brak publikacji. Obowiązkowa macierz regresji akcji „Wygeneruj całość” / `generate_all` dowodzi wykonawczo wyboru pierwszego nieukończonego etapu, zachowania ID ukończonych wyników, braku ponownych wywołań Gemini, odporności na pusty nieaktywny placeholder i idempotencji podwójnego kliknięcia. Ostateczny kontrakt wymaga drabiny salvage kończącej każdą porażkę jakości kompletnym niepublicznym preview package `ready_with_notes`; tylko awaria infrastruktury może pozostać jako `auto_retry_scheduled`. `waiting_review` ani `auto_rejected` nie są wynikiem jakości dla API + `generate_all`. Opcjonalny Gemini canary jest uruchamiany wyłącznie jawną flagą, ma limit prób i czasu, używa lokalnych legalnych fragmentów, redaguje raport oraz klasyfikuje błędy. Szczegóły: `qa/full-auto/TEST-PLAN.md`.
+
+## TASK-24: Autonomiczna korekta QC
+
+Po TASK-23 dodać drabinę salvage: pięć kandydatów tytułu, enrichment zweryfikowanego materiału B i C, kompozycję A-B-A-B-A, wyszukiwanie legalnych obrazów, neutralny lokalny fallback oraz deterministic safe composer po dwóch nieudanych korektach modelowych. Wynikiem ma być factual pass i kompletne niepubliczne preview `ready_with_notes`, nigdy automatyczne odrzucenie z powodu jakości. Awaria 429/timeout przechodzi do `auto_retry_scheduled`, a reconcile wznawia stare `generate_all` pozostawione jako `waiting_review`. Raport preview zapisuje decyzje, źródła B/C, usunięte claims i pochodzenie obrazów. Automatyczne poprawki nie mogą obchodzić hard-blocków ani przepuszczać niewspartych faktów.
+
+## TASK-25: Automatyczny selektor i orchestrator
+
+Po TASK-23 dodać idempotentny wybór zakwalifikowanych tematów i sterowanie etapami z blokadą duplikatów, deadline’em, budżetem prób, restartowalnym stanem i czytelną diagnostyką. TASK-24 i TASK-25 mogą być realizowane równolegle.
+
+## TASK-26: Kontrolowana automatyczna publikacja
+
+Dopiero po stabilnym okresie obserwacji canary, spełnieniu kryteriów pomiarowych i jawnej ręcznej decyzji właściciela można zaprojektować ograniczoną automatyczną publikację z kill switchem, limitami i audytem. TASK-26 zależy od TASK-23, TASK-24 i TASK-25. Żadna automatyczna korekta ani decyzja orchestratora nie może obchodzić hard-blocków.

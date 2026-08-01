@@ -2,6 +2,15 @@
 
 declare(strict_types=1);
 
+$studioDatabaseDirectory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'mamona-studio-smoke-' . bin2hex(random_bytes(6));
+if (!mkdir($studioDatabaseDirectory, 0700, true) && !is_dir($studioDatabaseDirectory)) throw new RuntimeException('Nie można utworzyć izolowanej bazy Studio.');
+$studioDatabaseFile = $studioDatabaseDirectory . DIRECTORY_SEPARATOR . 'cms.sqlite';
+putenv('CMS_TEST_DATABASE_FILE=' . $studioDatabaseFile);
+register_shutdown_function(static function () use ($studioDatabaseFile, $studioDatabaseDirectory): void {
+    foreach ([$studioDatabaseFile, $studioDatabaseFile . '-wal', $studioDatabaseFile . '-shm'] as $file) if (is_file($file)) @unlink($file);
+    if (is_dir($studioDatabaseDirectory)) @rmdir($studioDatabaseDirectory);
+});
+
 if (getenv('CMS_ALLOW_CONTENT_STUDIO_SMOKE') !== '1') {
     fwrite(STDERR, "Ustaw CMS_ALLOW_CONTENT_STUDIO_SMOKE=1, aby uruchomić test na lokalnej bazie.\n");
     exit(2);
@@ -140,6 +149,14 @@ try {
     );
     $liveJavascript = (string) file_get_contents(dirname(__DIR__) . '/assets/js/admin-content-studio.js');
     studio_assert(str_contains($liveJavascript, 'schedulePoll()') && str_contains($liveJavascript, 'retry_in_ms'), 'Live status nie obsługuje odświeżania/retry bez reloadu.');
+    studio_assert(str_contains($liveJavascript, '[result.advice, result.error]') && str_contains($liveJavascript, "join(' Szczegóły: ')"), 'Studio ukrywa dokładny błąd źródła za ogólną poradą.');
+    $lockedAttempts = 0;
+    $retriedWrite = persist_discovered_feed_item_with_retry([], [], static function () use (&$lockedAttempts): int {
+        $lockedAttempts++;
+        if ($lockedAttempts < 3) throw new PDOException('SQLSTATE[HY000]: General error: 5 database is locked');
+        return 42;
+    });
+    studio_assert($retriedWrite === 42 && $lockedAttempts === 3, 'Chwilowa blokada SQLite nie jest ponawiana w ograniczony sposób.');
 
     echo "CONTENT_STUDIO_SMOKE_OK\n";
 } finally {

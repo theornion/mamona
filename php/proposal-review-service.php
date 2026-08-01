@@ -37,14 +37,17 @@ function record_proposal_audit(int $postId, ?int $draftId, string $action, array
     return (int) bueno_database()->lastInsertId();
 }
 
-function list_ready_article_proposals(?int $postId = null, int $limit = 100): array
+/** Completed drafts with a completed, current QC are reviewable regardless of its result or images. */
+function list_article_proposals_for_review(?int $postId = null, int $limit = 100): array
 {
     $where = $postId === null ? '' : ' AND drafts.post_id = :post_id';
     $statement = bueno_database()->prepare(
         'SELECT drafts.*, posts.title AS post_title, posts.status AS post_status,
                 categories.title AS category_title, topics.title AS topic_title,
                 checks.final_score, checks.passed AS quality_passed,
-                checks.hard_blocks_json, checks.status AS quality_status,
+                checks.id AS quality_check_id, checks.hard_blocks_json, checks.status AS quality_status,
+                checks.model_result_json, checks.deterministic_json,
+                checks.human_review_status, checks.human_review_reason, checks.human_reviewed_at,
                 (SELECT COUNT(*) FROM article_images images WHERE images.post_id = drafts.post_id) AS image_count,
                 (SELECT COUNT(*) FROM article_images images WHERE images.post_id = drafts.post_id AND images.status = "downloaded") AS ready_image_count,
                 (SELECT COUNT(*) FROM article_images images WHERE images.post_id = drafts.post_id AND images.status IN ("missing", "manual_review", "planned")) AS warning_image_count
@@ -56,8 +59,7 @@ function list_ready_article_proposals(?int $postId = null, int $limit = 100): ar
             SELECT id FROM quality_check_runs q WHERE q.draft_version_id = drafts.id ORDER BY q.id DESC LIMIT 1
          )
          WHERE drafts.status = "completed"
-           AND checks.status = "completed" AND checks.passed = 1
-           AND EXISTS (SELECT 1 FROM article_images proposal_images WHERE proposal_images.post_id = drafts.post_id)
+           AND checks.status = "completed"
            AND drafts.id = COALESCE(
                 (SELECT active.id FROM article_draft_versions active
                  WHERE active.post_id = drafts.post_id AND active.is_active = 1 ORDER BY active.id DESC LIMIT 1),
@@ -70,6 +72,51 @@ function list_ready_article_proposals(?int $postId = null, int $limit = 100): ar
     $statement->bindValue(':limit', max(1, min(500, $limit)), PDO::PARAM_INT);
     $statement->execute();
     return $statement->fetchAll();
+}
+
+/** Backwards-compatible name; publication readiness is evaluated separately. */
+function list_ready_article_proposals(?int $postId = null, int $limit = 100): array
+{
+    return array_values(array_filter(
+        list_article_proposals_for_review($postId, $limit),
+        static fn (array $proposal): bool => proposal_queue_state($proposal) === 'ready'
+    ));
+}
+
+function proposal_queue_state(array $proposal): string
+{
+    $topicId = (int) ($proposal['topic_id'] ?? 0);
+    if ($topicId <= 0) return 'action';
+    $status = generation_workflow_statuses([$topicId])[0] ?? [];
+    $state = generation_workflow_queue_state($status);
+    return $state === 'ready' ? 'ready' : 'action';
+}
+
+function list_action_required_proposals(?int $postId = null, int $limit = 100): array
+{
+    return array_values(array_filter(
+        list_article_proposals_for_review($postId, $limit),
+        static fn (array $proposal): bool => proposal_queue_state($proposal) === 'action'
+    ));
+}
+
+function proposal_latest_quality_check(int $draftId): ?array
+{
+    $statement = bueno_database()->prepare(
+        'SELECT * FROM quality_check_runs WHERE draft_version_id = :draft_id
+         AND status = "completed" ORDER BY id DESC LIMIT 1'
+    );
+    $statement->execute([':draft_id' => $draftId]);
+    $check = $statement->fetch();
+    return is_array($check) ? $check : null;
+}
+
+function proposal_reviewable_blocks(array $check): array
+{
+    return array_values(array_filter(
+        proposal_json_decode((string) ($check['hard_blocks_json'] ?? '[]')),
+        static fn (array $block): bool => ($block['code'] ?? '') === 'high_risk_without_human_approval'
+    ));
 }
 
 function find_proposal_draft(int $draftId): ?array
@@ -218,6 +265,39 @@ function prepare_article_feedback_revision(int $sourceDraftId, string $scope, st
         if ($database->inTransaction()) $database->rollBack();
         throw $exception;
     }
+}
+
+/** Completes a feedback revision, makes the validated draft current, then continues through QC and legal images. */
+function execute_article_feedback_pipeline(int $operationId, ?callable $transport = null): array
+{
+    $draftBefore = find_article_draft_by_operation($operationId);
+    if (!is_array($draftBefore) || $draftBefore['parent_version_id'] === null) {
+        throw new RuntimeException('Operacja nie jest poprawioną wersją artykułu.');
+    }
+    execute_generation_operation($operationId, $transport);
+    $draft = find_article_draft_by_operation($operationId);
+    $draftJson = is_array($draft) ? proposal_json_decode((string) ($draft['draft_json'] ?? '')) : [];
+    if (!is_array($draft) || (string) $draft['status'] !== 'completed' || article_draft_main_content_length($draftJson) <= 0) {
+        throw new RuntimeException('Gemini nie zwróciło kompletnej poprawionej wersji; poprzednia wersja pozostaje bieżąca.');
+    }
+
+    $postId = activate_proposal_version((int) $draft['id'], 'feedback_pipeline');
+    $qualityOperationId = prepare_quality_check_operation((int) $draft['id']);
+    execute_generation_operation($qualityOperationId, $transport);
+    $quality = find_quality_check_by_operation($qualityOperationId);
+    $qualityPassed = is_array($quality) && (int) $quality['passed'] === 1 && quality_active_hard_blocks($quality) === [];
+    $imageSummary = null;
+    if ($qualityPassed) {
+        $imageSummary = (bool) app_config('source_image_mock')
+            ? fulfill_article_source_images($postId, static fn (string $query): array => [], static fn (array $image): array => $image)
+            : fulfill_article_source_images($postId);
+    }
+    record_proposal_audit($postId, (int) $draft['id'], 'feedback_pipeline_completed', [
+        'quality_check_id' => is_array($quality) ? (int) $quality['id'] : null,
+        'quality_passed' => $qualityPassed,
+        'images_started' => $qualityPassed,
+    ]);
+    return ['draft' => $draft, 'quality' => $quality, 'quality_passed' => $qualityPassed, 'images' => $imageSummary];
 }
 
 /** Creates an image-only version without asking the text model to rewrite the article. */

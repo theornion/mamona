@@ -208,8 +208,8 @@ function prepare_research_package_operation(int $topicId): int
         throw new RuntimeException('Temat nie zawiera materiału źródłowego.');
     }
     $sourceIds = array_column($sources, 'source_id');
-    $policy = research_policy_decision(
-        list_verified_research_sources($topicId),
+    $policy = research_policy_for_topic(
+        $topicId,
         (string) ($topic['risk_level'] ?? 'low'),
         !empty($topic['is_controversial'])
     );
@@ -222,12 +222,17 @@ function prepare_research_package_operation(int $topicId): int
         'instructions' => [
             'Używaj wyłącznie tytułów i materiałów przekazanych w numbered_sources.',
             'Każde twierdzenie musi wskazywać source_ids i zawierać krótki, dosłowny excerpt z odpowiedniego materiału.',
+            'Excerpt przepisz znak w znak z pola title albo material tego samego numbered_sources.source_id. Nie parafrazuj cytatu, nie tłumacz go i nie dodawaj wielokropka.',
             'shared_facts zawiera wyłącznie fakty potwierdzone przez co najmniej dwa różne source_ids; przy jednym źródle zwróć pustą tablicę.',
             'contradictions porównuje co najmniej dwa różne źródła; przy jednym źródle zwróć pustą tablicę.',
             'Nie uzupełniaj wiedzy z pamięci ani z innych stron.',
             'Sprzeczności pozostaw jako unresolved lub partially_resolved; nie przedstawiaj ich jako pewników.',
             'Jeżeli materiał nie wystarcza do rzetelnego artykułu, ustaw recommendation.decision na reject.',
             'Polski kontekst i porównania dodawaj tylko wtedy, gdy mają podstawę w przekazanych źródłach; w przeciwnym razie zwróć puste tablice.',
+            ...(($policy['material_scope'] ?? '') === 'feed_excerpt_only' ? [
+                'Materiał ma zakres feed_excerpt_only: wolno używać wyłącznie dosłownego tytułu i opisu z feedu. Nie zakładaj treści pełnej strony.',
+                'Pewność claims opartych wyłącznie na feedzie nie może przekroczyć medium; brakujące szczegóły zapisz w unknowns.',
+            ] : []),
         ],
     ];
     $database = bueno_database();
@@ -352,6 +357,10 @@ function validate_research_package(array $package, array $input): array
             $sourceIds,
             "$.claims[{$index}].evidence"
         );
+        if (($input['research_policy']['confidence_cap'] ?? '') === 'medium'
+            && (string) ($claim['confidence'] ?? '') === 'high') {
+            throw new InvalidArgumentException("$.claims[{$index}].confidence przekracza limit medium dla materiału feedowego.");
+        }
         foreach ($sourceIds as $sourceId) {
             $citedSources[$sourceId] = true;
         }
@@ -468,7 +477,7 @@ function research_mock_generation_value(array $operation): array
                 'source_id' => $sourceId,
                 'excerpt' => $sourceTitle,
             ]],
-            'confidence' => 'high',
+            'confidence' => ($input['research_policy']['confidence_cap'] ?? '') === 'medium' ? 'medium' : 'high',
         ]],
         'shared_facts' => [],
         'contradictions' => [],

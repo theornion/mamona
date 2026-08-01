@@ -2,10 +2,124 @@
 
 declare(strict_types=1);
 
-const GENERATION_BATCH_ACTIVE_STATUSES = ['queued', 'research', 'draft', 'quality_check', 'images', 'rate_limited'];
-const GENERATION_BATCH_TERMINAL_STATUSES = ['ready', 'completed', 'already_complete', 'waiting_review', 'manual_review', 'skipped_prerequisite', 'invalid', 'failed', 'cancelled'];
+const GENERATION_BATCH_ACTIVE_STATUSES = ['queued', 'research', 'draft', 'auto_repair', 'quality_check', 'images', 'rate_limited', 'auto_retry_scheduled'];
+const GENERATION_BATCH_TERMINAL_STATUSES = ['ready', 'ready_for_preview', 'ready_with_notes', 'completed', 'already_complete', 'auto_rejected', 'waiting_review', 'manual_review', 'paused_by_operator', 'skipped_prerequisite', 'invalid', 'failed', 'cancelled'];
 const GENERATION_WORKFLOW_ACTIONS = ['research', 'draft', 'quality', 'images', 'generate_all', 'retry'];
 const GENERATION_WORKFLOW_STAGES = ['research', 'draft', 'quality_check', 'images'];
+
+function generation_automatic_dispatch_paused(): bool
+{
+    if ((bool) app_config('automatic_dispatch_paused')) return true;
+    $value = bueno_database()->query('SELECT automatic_dispatch_paused FROM generation_settings WHERE id=1')->fetchColumn();
+    return (int) $value === 1;
+}
+
+function generation_dispatch_pause_report(?PDO $database = null): array
+{
+    $database ??= bueno_database();
+    $statusRows = $database->query('SELECT status,COUNT(*) count FROM generation_batch_items GROUP BY status ORDER BY status')->fetchAll();
+    $statuses = [];
+    foreach ($statusRows as $row) $statuses[(string) $row['status']] = (int) $row['count'];
+    $active = array_sum(array_intersect_key($statuses, array_flip(GENERATION_BATCH_ACTIVE_STATUSES)));
+    $activeRows = $database->query('SELECT i.id item_id,i.topic_id,i.status,i.stage,b.id batch_id,b.dispatch_mode,b.created_by
+        FROM generation_batch_items i INNER JOIN generation_batches b ON b.id=i.batch_id
+        WHERE i.status IN ("queued","research","draft","auto_repair","quality_check","images","rate_limited","auto_retry_scheduled")
+        ORDER BY i.id')->fetchAll();
+    return [
+        'paused' => (int) $database->query('SELECT automatic_dispatch_paused FROM generation_settings WHERE id=1')->fetchColumn() === 1,
+        'statuses' => $statuses,
+        'active_items' => $active,
+        'active' => array_map(static fn (array $row): array => [
+            'item_id' => (int) $row['item_id'], 'topic_id' => (int) $row['topic_id'], 'batch_id' => (int) $row['batch_id'],
+            'status' => (string) $row['status'], 'stage' => (string) $row['stage'],
+            'dispatch_mode' => (string) $row['dispatch_mode'], 'created_by' => (string) $row['created_by'],
+        ], $activeRows),
+        'item_leases' => (int) $database->query('SELECT COUNT(*) FROM generation_batch_items WHERE lease_token IS NOT NULL')->fetchColumn(),
+        'model_leases' => (int) $database->query('SELECT COUNT(*) FROM gemini_model_leases')->fetchColumn(),
+        'worker_guards' => (int) $database->query('SELECT COUNT(*) FROM generation_worker_guard')->fetchColumn(),
+        'running_operations' => (int) $database->query('SELECT COUNT(*) FROM generation_operations WHERE status="running"')->fetchColumn(),
+        'running_operations_for_paused_topics' => (int) $database->query('SELECT COUNT(*) FROM generation_operations o WHERE o.status="running"
+            AND o.topic_id IN (SELECT DISTINCT topic_id FROM generation_batch_items WHERE status="paused_by_operator")')->fetchColumn(),
+        'preserved' => [
+            'approved_research' => (int) $database->query('SELECT COUNT(*) FROM research_packages WHERE status="approved"')->fetchColumn(),
+            'completed_drafts' => (int) $database->query('SELECT COUNT(*) FROM article_draft_versions WHERE status="completed"')->fetchColumn(),
+            'active_validated_drafts' => (int) $database->query('SELECT COUNT(*) FROM article_draft_versions WHERE status="completed" AND is_active=1')->fetchColumn(),
+            'completed_qc' => (int) $database->query('SELECT COUNT(*) FROM quality_check_runs WHERE status="completed"')->fetchColumn(),
+            'downloaded_images' => (int) $database->query('SELECT COUNT(*) FROM article_images WHERE status="downloaded"')->fetchColumn(),
+        ],
+    ];
+}
+
+function generation_set_automatic_dispatch_paused(bool $paused, string $actor = 'operator', bool $includeExistingManual = false): array
+{
+    $database = bueno_database();
+    $before = generation_dispatch_pause_report($database);
+    $database->exec('BEGIN IMMEDIATE');
+    try {
+        $database->prepare('UPDATE generation_settings SET automatic_dispatch_paused=:paused,
+            automatic_dispatch_paused_at=CASE WHEN :paused=1 THEN CURRENT_TIMESTAMP ELSE NULL END,updated_at=CURRENT_TIMESTAMP WHERE id=1')
+            ->execute([':paused' => $paused ? 1 : 0]);
+        $pausedItems = [];
+        $releasedItemLeases = 0;
+        $releasedModelLeases = 0;
+        $releasedWorkerGuards = 0;
+        $resetRunningOperations = 0;
+        $resetOrphanedOperations = 0;
+        if ($paused) {
+            $holders = implode(',', array_fill(0, count(GENERATION_BATCH_ACTIVE_STATUSES), '?'));
+            $manualFilter = $includeExistingManual ? '' : ' AND COALESCE(b.dispatch_mode,"automatic")<>"operator_manual"';
+            $select = $database->prepare('SELECT i.id,i.batch_id,i.topic_id,i.status,i.lease_token FROM generation_batch_items i
+                INNER JOIN generation_batches b ON b.id=i.batch_id
+                WHERE i.status IN (' . $holders . ')' . $manualFilter . ' ORDER BY i.id');
+            $select->execute(GENERATION_BATCH_ACTIVE_STATUSES);
+            $pausedItems = $select->fetchAll();
+            $releasedItemLeases = count(array_filter($pausedItems, static fn (array $item): bool => !empty($item['lease_token'] ?? null)));
+            foreach ($pausedItems as $item) {
+                if (!empty($item['status'])) {
+                    $database->prepare('UPDATE generation_batch_items SET
+                        paused_from_status=status,status="paused_by_operator",outcome="manual_ready_to_resume",
+                        wait_reason="Wstrzymany â€” uruchom rÄ™cznie.",next_retry_at=NULL,quota_dimension="",quota_model="",
+                        lease_token=NULL,lease_expires_at=NULL,paused_at=CURRENT_TIMESTAMP,completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+                        WHERE id=:id')->execute([':id' => (int) $item['id']]);
+                    $database->prepare('INSERT INTO generation_batch_audit(batch_id,item_id,action,actor,details_json)
+                        VALUES(:batch,:item,"automatic_dispatch_paused",:actor,:details)')->execute([
+                        ':batch' => (int) $item['batch_id'], ':item' => (int) $item['id'], ':actor' => mb_substr($actor, 0, 100),
+                        ':details' => generation_json(['previous_status' => (string) $item['status'], 'checkpoint_preserved' => true]),
+                    ]);
+                }
+            }
+            $database->exec('UPDATE generation_batches SET status="paused",updated_at=CURRENT_TIMESTAMP
+                WHERE id IN (SELECT DISTINCT batch_id FROM generation_batch_items WHERE status="paused_by_operator")');
+            $releasedModelLeases = $database->exec('DELETE FROM gemini_model_leases');
+            $releasedWorkerGuards = $database->exec('DELETE FROM generation_worker_guard');
+            $resetRunningOperations = $database->exec('UPDATE generation_operations SET status="prepared",next_retry_at=NULL,
+                updated_at=CURRENT_TIMESTAMP WHERE status="running" AND topic_id IN
+                (SELECT DISTINCT topic_id FROM generation_batch_items WHERE status="paused_by_operator")');
+            $resetOrphanedOperations = $database->exec('UPDATE generation_operations SET status="prepared",next_retry_at=NULL,
+                updated_at=CURRENT_TIMESTAMP WHERE status="running" AND NOT EXISTS
+                (SELECT 1 FROM generation_batch_items i WHERE i.topic_id=generation_operations.topic_id
+                 AND i.status IN ("queued","research","draft","auto_repair","quality_check","images","rate_limited","auto_retry_scheduled"))');
+            $database->exec('UPDATE gemini_quota_events SET status="cancelled",completed_at=CURRENT_TIMESTAMP
+                WHERE status="reserved" AND topic_id IN
+                (SELECT DISTINCT topic_id FROM generation_batch_items WHERE status="paused_by_operator")');
+        }
+        $database->exec('COMMIT');
+    } catch (Throwable $exception) {
+        try { $database->exec('ROLLBACK'); } catch (Throwable) {}
+        throw $exception;
+    }
+    return [
+        'before' => $before,
+        'after' => generation_dispatch_pause_report($database),
+        'changed' => $paused,
+        'paused_items' => isset($pausedItems) ? count($pausedItems) : 0,
+        'released_item_leases' => $releasedItemLeases ?? 0,
+        'released_model_leases' => $releasedModelLeases ?? 0,
+        'released_worker_guards' => $releasedWorkerGuards ?? 0,
+        'reset_running_operations' => $resetRunningOperations ?? 0,
+        'reset_orphaned_operations' => $resetOrphanedOperations ?? 0,
+    ];
+}
 
 function generation_batch_audit(int $batchId, ?int $itemId, string $action, string $actor = 'system', array $details = []): void
 {
@@ -69,13 +183,15 @@ function create_generation_batch(mixed $rawTopicIds, ?string $requestKey = null,
             throw new DomainException('Co najmniej jeden temat ma już aktywny element batcha.');
         }
         $database->prepare(
-            'INSERT INTO generation_batches (batch_key, request_key, item_count, created_by)
-             VALUES (:batch_key, :request_key, :item_count, :actor)'
+            'INSERT INTO generation_batches (batch_key, request_key, item_count, created_by, execution_mode, dispatch_mode)
+             VALUES (:batch_key, :request_key, :item_count, :actor, :execution_mode, :dispatch_mode)'
         )->execute([
             ':batch_key' => bin2hex(random_bytes(16)),
             ':request_key' => $requestKey,
             ':item_count' => count($topicIds),
             ':actor' => mb_substr($actor, 0, 100),
+            ':execution_mode' => generation_mode(),
+            ':dispatch_mode' => $actor === 'full-auto' ? 'automatic' : 'operator_manual',
         ]);
         $batchId = (int) $database->lastInsertId();
         $insert = $database->prepare(
@@ -133,9 +249,17 @@ function generation_topics_workflow_payload(array $topics): array
         $selectable = (int) ($topic['automatic_eligible'] ?? 0) === 1
             && !in_array((string) ($topic['status'] ?? ''), ['rejected', 'trash'], true)
             && $status['active_job_id'] === null;
+        $manualGenerateAllEnabled = $status['active_job_id'] === null
+            && !in_array((string) ($topic['primary_post_status'] ?? $topic['status'] ?? ''), ['rejected', 'trash', 'published', 'scheduled'], true);
         $researchDone = ($status['steps']['research']['status'] ?? '') === 'completed';
         $draftDone = ($status['steps']['draft']['status'] ?? '') === 'completed';
         $qualityDone = ($status['steps']['quality']['status'] ?? '') === 'completed';
+        $queueState = generation_workflow_queue_state($status);
+        $requiresAction = $queueState === 'action';
+        $canResumeLegacy = ($status['latest_job_status'] ?? '') === 'auto_rejected'
+            && ($status['latest_action'] ?? '') === 'generate_all'
+            && !in_array((string) ($topic['primary_post_status'] ?? $topic['status'] ?? ''), ['rejected','trash','published','scheduled'], true)
+            && $status['active_job_id'] === null;
         $reason = $selectable ? '' : ((string) ($status['wait_reason'] ?: $status['error']) ?: 'Automatyzacja jest zablokowana przez stan, scoring albo poziom ryzyka tematu.');
         return [
             'id' => $topicId, 'post_id' => (int) $topic['primary_post_id'], 'title' => (string) $topic['title'],
@@ -143,12 +267,15 @@ function generation_topics_workflow_payload(array $topics): array
             'automatic_eligible' => (int) $topic['automatic_eligible'] === 1, 'status' => (string) $topic['status'],
             'item_count' => (int) $topic['item_count'], 'source_count' => (int) $topic['source_count'],
             'source_names' => (string) $topic['source_names'], 'selectable' => $selectable, 'unavailable_reason' => $reason,
+            'requires_action' => $requiresAction,
+            'can_resume_legacy' => $canResumeLegacy,
+            'queue_state' => $queueState,
             'actions' => [
                 'research' => ['enabled' => $selectable, 'reason' => $reason],
                 'draft' => ['enabled' => $selectable && $researchDone, 'reason' => $researchDone ? $reason : 'Najpierw ukończ i zatwierdź research.'],
                 'quality' => ['enabled' => $selectable && $draftDone, 'reason' => $draftDone ? $reason : 'Najpierw wygeneruj szkic.'],
                 'images' => ['enabled' => $selectable && $qualityDone, 'reason' => $qualityDone ? $reason : 'Najpierw zalicz kontrolę jakości.'],
-                'generate_all' => ['enabled' => $selectable, 'reason' => $reason],
+                'generate_all' => ['enabled' => $manualGenerateAllEnabled || $canResumeLegacy, 'reason' => $canResumeLegacy ? 'Wznowienie nowym routerem od bezpiecznego checkpointu.' : ($manualGenerateAllEnabled ? '' : $reason)],
             ],
             'workflow' => ['research' => ['done' => $researchDone, 'version' => $status['steps']['research']['result_id'] ?? null],
                 'draft' => ['done' => $draftDone, 'version' => $status['steps']['draft']['version'] ?? null],
@@ -156,14 +283,60 @@ function generation_topics_workflow_payload(array $topics): array
                 'images' => ['done' => ($status['steps']['images']['status'] ?? '') === 'completed'], 'ready' => (bool) $status['readiness']],
             'workflow_status' => $status, 'job' => $status['latest_job_id'] === null ? null : [
                 'id' => $status['latest_job_id'], 'batch_id' => $status['latest_batch_id'], 'status' => $status['latest_job_status'],
+                'action' => $status['latest_action'], 'outcome' => $status['latest_outcome'],
                 'stage' => $status['latest_stage'], 'progress' => (int) $status['progress'], 'reason' => (string) ($status['wait_reason'] ?: $status['error']),
                 'technical_error' => (string) $status['error'],
                 'retryable' => (bool) $status['retryable'], 'review_url' => $status['proposal_url'],
                 'available_at' => $status['available_at'] ?? null,
+                'next_retry_at' => $status['next_retry_at'] ?? null,
+                'quota_dimension' => $status['quota_dimension'] ?? '',
+                'quota_model' => $status['quota_model'] ?? '',
+                'gemini_calls_used' => $status['gemini_calls_used'] ?? 0,
+                'gemini_call_budget' => $status['gemini_call_budget'] ?? 15,
                 'retry_after_seconds' => $status['retry_after_seconds'] ?? null],
+            'automation_report' => $status['latest_job_id'] === null ? ['events' => [], 'unresolved' => []] : repair_report_get((int) $status['latest_job_id']),
             'proposal_url' => $status['proposal_url'],
         ];
     }, $topics);
+}
+
+function generation_workflow_queue_state(array $status): string
+{
+    if (!empty($status['readiness'])) return 'ready';
+    return in_array((string) ($status['status'] ?? ''), ['waiting_review', 'manual_review', 'failed', 'rate_limited'], true)
+        ? 'action'
+        : 'work';
+}
+
+function generation_topic_queue_counts(array $topics): array
+{
+    $counts = ['work' => 0, 'action' => 0, 'ready' => 0];
+    foreach ($topics as $topic) {
+        $state = (string) ($topic['queue_state'] ?? 'work');
+        $counts[array_key_exists($state, $counts) ? $state : 'work']++;
+    }
+    return $counts;
+}
+
+function generation_topic_queue_visible(string $queueState, bool $showReady, bool $showAction): bool
+{
+    if ($queueState === 'ready') return $showReady;
+    if ($queueState === 'action') return $showAction;
+    return true;
+}
+
+function generation_active_topic_queue_counts(): array
+{
+    if (isset($GLOBALS['adminTopicQueueCounts']) && is_array($GLOBALS['adminTopicQueueCounts'])) return $GLOBALS['adminTopicQueueCounts'];
+    return generation_topic_queue_counts(generation_topics_workflow_payload(list_editorial_topics(1000, 'active')));
+}
+
+function list_action_required_topic_payload(): array
+{
+    return array_values(array_filter(
+        generation_topics_workflow_payload(list_editorial_topics(1000, 'active')),
+        static fn (array $topic): bool => !empty($topic['requires_action'])
+    ));
 }
 
 function create_generation_workflow_batch(mixed $rawTopicIds, string $action, ?string $requestKey = null, string $actor = 'admin', ?string $retryStage = null): array
@@ -182,8 +355,9 @@ function generation_workflow_latest(string $table, int $topicId): ?array
     if (!in_array($table, $allowed, true)) {
         throw new InvalidArgumentException('Nieprawidłowy typ wyniku workflow.');
     }
+    $order = $table === 'article_draft_versions' ? 'is_active DESC, id DESC' : 'id DESC';
     $statement = bueno_database()->prepare(
-        'SELECT * FROM ' . $table . ' WHERE topic_id = :topic_id ORDER BY id DESC LIMIT 1'
+        'SELECT * FROM ' . $table . ' WHERE topic_id = :topic_id ORDER BY ' . $order . ' LIMIT 1'
     );
     $statement->execute([':topic_id' => $topicId]);
     $row = $statement->fetch();
@@ -234,7 +408,9 @@ function generation_workflow_initial_item(int $topicId, string $action, ?string 
 {
     $requestedStage = $action === 'quality' ? 'quality' : ($action === 'generate_all' ? '' : ($retryStage ?: $action));
     $topic = find_editorial_topic($topicId);
-    if (!is_array($topic) || (int) ($topic['automatic_eligible'] ?? 0) !== 1 || ($topic['primary_post_status'] ?? '') === 'rejected') {
+    $manualGenerateAll = $action === 'generate_all';
+    $terminalPost = is_array($topic) && in_array((string) ($topic['primary_post_status'] ?? ''), ['rejected', 'trash', 'published', 'scheduled'], true);
+    if (!is_array($topic) || $terminalPost || (!$manualGenerateAll && (int) ($topic['automatic_eligible'] ?? 0) !== 1)) {
         return ['status' => 'invalid', 'stage' => $retryStage ?: 'research', 'requested_stage' => $requestedStage,
             'outcome' => 'invalid', 'progress_percent' => 0,
             'wait_reason' => 'Automatyzacja jest zablokowana przez stan, scoring albo poziom ryzyka tematu.',
@@ -242,7 +418,7 @@ function generation_workflow_initial_item(int $topicId, string $action, ?string 
     }
     $active = bueno_database()->prepare(
         'SELECT id, batch_id FROM generation_batch_items
-         WHERE topic_id = :topic_id AND status IN ("queued", "research", "draft", "quality_check", "images", "rate_limited")
+         WHERE topic_id = :topic_id AND status IN ("queued", "research", "draft", "auto_repair", "quality_check", "images", "rate_limited", "auto_retry_scheduled")
          LIMIT 1'
     );
     $active->execute([':topic_id' => $topicId]);
@@ -343,19 +519,35 @@ function create_topic_workflow_batch(mixed $rawTopicIds, string $action, ?string
     if (!in_array($action, GENERATION_WORKFLOW_ACTIONS, true)) throw new InvalidArgumentException('Nieprawidłowa akcja workflow.');
     if ($action === 'retry' && !in_array($retryStage, GENERATION_WORKFLOW_STAGES, true)) throw new InvalidArgumentException('Ponowienie wymaga konkretnego etapu.');
     $topicIds = generation_batch_validate_topic_ids($rawTopicIds);
+    $dispatchMode = $actor === 'full-auto' ? 'automatic' : 'operator_manual';
     $requestKey = trim((string) $requestKey) ?: bin2hex(random_bytes(16));
     if (strlen($requestKey) > 128 || preg_match('/^[a-zA-Z0-9._:-]+$/', $requestKey) !== 1) throw new InvalidArgumentException('Nieprawidłowy klucz idempotencji batcha.');
     $database = bueno_database();
     $existing = $database->prepare('SELECT id FROM generation_batches WHERE request_key = :key');
     $existing->execute([':key' => $requestKey]);
     if (($id = $existing->fetchColumn()) !== false) return generation_batch_payload((int) $id);
+    if ($action === 'generate_all' && $dispatchMode === 'operator_manual' && count($topicIds) === 1) {
+        $running = $database->prepare('SELECT b.id FROM generation_batches b INNER JOIN generation_batch_items i ON i.batch_id=b.id
+            WHERE i.topic_id=:topic AND b.dispatch_mode="operator_manual"
+              AND i.status IN ("queued","research","draft","auto_repair","quality_check","images","rate_limited","auto_retry_scheduled")
+            ORDER BY i.id DESC LIMIT 1');
+        $running->execute([':topic' => $topicIds[0]]);
+        if (($runningBatchId = $running->fetchColumn()) !== false) return generation_batch_payload((int) $runningBatchId);
+    }
     $database->beginTransaction();
     try {
-        $database->prepare('INSERT INTO generation_batches (batch_key, request_key, action, item_count, created_by) VALUES (:batch_key, :request_key, :action, :count, :actor)')
-            ->execute([':batch_key' => bin2hex(random_bytes(16)), ':request_key' => $requestKey, ':action' => $action, ':count' => count($topicIds), ':actor' => mb_substr($actor, 0, 100)]);
+        $database->prepare('INSERT INTO generation_batches (batch_key, request_key, action, item_count, created_by, execution_mode, dispatch_mode) VALUES (:batch_key, :request_key, :action, :count, :actor, :execution_mode, :dispatch_mode)')
+            ->execute([':batch_key' => bin2hex(random_bytes(16)), ':request_key' => $requestKey, ':action' => $action, ':count' => count($topicIds), ':actor' => mb_substr($actor, 0, 100), ':execution_mode' => generation_mode(), ':dispatch_mode' => $dispatchMode]);
         $batchId = (int) $database->lastInsertId();
         foreach ($topicIds as $topicId) {
             $initial = generation_workflow_initial_item($topicId, $action, $retryStage);
+            if ($action === 'generate_all' && generation_mode() === 'api'
+                && in_array((string) $initial['status'], ['waiting_review', 'manual_review'], true)) {
+                $initial['status'] = 'auto_repair';
+                $initial['outcome'] = 'repair_router_queued';
+                $initial['completed_at'] = null;
+                $initial['wait_reason'] = 'Router naprawczy wznawia autonomiczne przygotowanie pakietu.';
+            }
             $columns = ['batch_id', 'topic_id', ...array_keys($initial)];
             $sql = 'INSERT INTO generation_batch_items (' . implode(', ', $columns) . ') VALUES (' . implode(', ', array_map(static fn (string $column): string => ':' . $column, $columns)) . ')';
             $database->prepare($sql)->execute([':batch_id' => $batchId, ':topic_id' => $topicId, ...array_combine(array_map(static fn (string $key): string => ':' . $key, array_keys($initial)), array_values($initial))]);
@@ -403,11 +595,14 @@ function generation_batch_payload(int $batchId): array
         if (in_array((string) $item['status'], GENERATION_BATCH_TERMINAL_STATUSES, true)) {
             $terminal++;
         }
-        if ($item['status'] === 'ready') {
+        if (in_array((string) $item['status'], ['ready', 'ready_for_preview', 'ready_with_notes'], true)) {
             $ready++;
         }
     }
     unset($item);
+    $usageStatement = bueno_database()->prepare('SELECT COUNT(*) FROM gemini_quota_events WHERE batch_id=:batch AND status IN ("reserved","completed","failed")');
+    $usageStatement->execute([':batch'=>$batchId]);
+    $usedCalls = (int) $usageStatement->fetchColumn();
     return [
         'id' => (int) $batch['id'],
         'key' => (string) $batch['batch_key'],
@@ -416,6 +611,8 @@ function generation_batch_payload(int $batchId): array
         'item_count' => (int) $batch['item_count'],
         'completed_count' => $terminal,
         'ready_count' => $ready,
+        'estimated_gemini_calls' => 3 * (int) $batch['item_count'],
+        'gemini_calls_used' => $usedCalls,
         'terminal' => $terminal === count($items),
         'created_at' => (string) $batch['created_at'],
         'updated_at' => (string) $batch['updated_at'],
@@ -439,9 +636,9 @@ function list_generation_process_history(int $limit = 50): array
          FROM generation_batch_items AS items
          INNER JOIN generation_batches AS batches ON batches.id = items.batch_id
          INNER JOIN editorial_topics AS topics ON topics.id = items.topic_id
-         WHERE items.status IN ("queued", "research", "draft", "quality_check", "images", "rate_limited", "waiting_review", "failed", "ready", "cancelled")
+         WHERE items.status IN ("queued", "research", "draft", "auto_repair", "quality_check", "images", "rate_limited", "auto_retry_scheduled", "waiting_review", "failed", "ready", "ready_for_preview", "ready_with_notes", "auto_rejected", "cancelled")
          ORDER BY CASE
-            WHEN items.status IN ("queued", "research", "draft", "quality_check", "images", "rate_limited") THEN 0
+            WHEN items.status IN ("queued", "research", "draft", "auto_repair", "quality_check", "images", "rate_limited", "auto_retry_scheduled") THEN 0
             WHEN items.status IN ("waiting_review", "failed") THEN 1
             ELSE 2 END,
             datetime(items.updated_at) DESC, items.id DESC LIMIT :limit'
@@ -490,13 +687,13 @@ function generation_workflow_statuses(mixed $rawTopicIds): array
             WHERE r.topic_id IN (' . implode(',', $holders) . ')
         ),
         latest_draft AS (
-            SELECT d.*, o.status AS operation_status, ROW_NUMBER() OVER (PARTITION BY d.topic_id ORDER BY d.id DESC) rn
+            SELECT d.*, o.status AS operation_status, ROW_NUMBER() OVER (PARTITION BY d.topic_id ORDER BY d.is_active DESC, d.id DESC) rn
             FROM article_draft_versions d INNER JOIN generation_operations o ON o.id = d.generation_operation_id
             WHERE d.topic_id IN (' . implode(',', $holders) . ')
         ),
         latest_quality AS (
             SELECT q.*, o.status AS operation_status, d.topic_id,
-                   ROW_NUMBER() OVER (PARTITION BY d.topic_id ORDER BY q.id DESC) rn
+                   ROW_NUMBER() OVER (PARTITION BY q.draft_version_id ORDER BY q.id DESC) rn
             FROM quality_check_runs q
             INNER JOIN article_draft_versions d ON d.id = q.draft_version_id
             INNER JOIN generation_operations o ON o.id = q.generation_operation_id
@@ -514,8 +711,12 @@ function generation_workflow_statuses(mixed $rawTopicIds): array
                    SUM(CASE WHEN status = "manual_review" THEN 1 ELSE 0 END) manual,
                    SUM(CASE WHEN status IN ("missing", "planned") THEN 1 ELSE 0 END) pending
             FROM article_images GROUP BY post_id
+        ),
+        gemini_usage AS (
+            SELECT topic_id,COUNT(*) calls FROM gemini_quota_events
+            WHERE topic_id IS NOT NULL AND status IN ("reserved","completed","failed") GROUP BY topic_id
         )
-        SELECT t.id topic_id, p.status topic_status, t.automatic_eligible,
+        SELECT t.id topic_id, p.status topic_status, t.automatic_eligible,COALESCE(gu.calls,0) gemini_calls_used,
                r.id research_id, r.generation_operation_id research_operation_id, r.status research_status,
                r.operation_status research_operation_status, r.approved_at, r.validation_json research_validation,
                d.id draft_id, d.generation_operation_id draft_operation_id, d.version_number draft_version,
@@ -526,13 +727,15 @@ function generation_workflow_statuses(mixed $rawTopicIds): array
                COALESCE(img.total, 0) image_total, COALESCE(img.completed, 0) image_completed,
                COALESCE(img.manual, 0) image_manual, COALESCE(img.pending, 0) image_pending,
                j.id job_id, j.batch_id, j.batch_action, j.status job_status, j.stage job_stage,
-               j.progress_percent, j.available_at, j.wait_reason, j.error_message, j.outcome
+               j.progress_percent, j.available_at, j.next_retry_at, j.quota_dimension, j.quota_model,
+               j.wait_reason, j.error_message, j.outcome
         FROM editorial_topics t
         INNER JOIN posts p ON p.id = t.primary_post_id
         LEFT JOIN latest_research r ON r.topic_id = t.id AND r.rn = 1
         LEFT JOIN latest_draft d ON d.topic_id = t.id AND d.rn = 1
-        LEFT JOIN latest_quality q ON q.topic_id = t.id AND q.rn = 1
+        LEFT JOIN latest_quality q ON q.draft_version_id = d.id AND q.rn = 1
         LEFT JOIN image_counts img ON img.post_id = d.post_id
+        LEFT JOIN gemini_usage gu ON gu.topic_id = t.id
         LEFT JOIN latest_job j ON j.topic_id = t.id AND j.rn = 1
         WHERE t.id IN (' . implode(',', $holders) . ') ORDER BY t.id';
     $statement = bueno_database()->prepare($sql);
@@ -540,28 +743,44 @@ function generation_workflow_statuses(mixed $rawTopicIds): array
     $payload = [];
     foreach ($statement->fetchAll() as $row) {
         $hardBlocks = json_decode((string) ($row['hard_blocks_json'] ?? '[]'), true) ?: [];
+        if ((string) ($row['human_review_status'] ?? '') === 'approved') {
+            $hardBlocks = array_values(array_filter(
+                $hardBlocks,
+                static fn (array $block): bool => ($block['code'] ?? '') !== 'high_risk_without_human_approval'
+            ));
+        }
         $draftValidation = json_decode((string) ($row['draft_validation'] ?? '{}'), true) ?: [];
         $qualityIsCurrent = (int) ($row['quality_draft_id'] ?? 0) === (int) ($row['draft_id'] ?? 0);
         $qualityPassed = $qualityIsCurrent && (int) ($row['passed'] ?? 0) === 1 && $hardBlocks === [];
         $imageReady = (int) $row['image_total'] > 0 && (int) $row['image_total'] === (int) $row['image_completed'];
         $imageManual = (int) $row['image_manual'] > 0 || (int) $row['image_pending'] > 0;
-        $proposalReady = $qualityPassed && (int) $row['image_total'] > 0;
+        $proposalReviewable = ($row['draft_status'] ?? '') === 'completed'
+            && $qualityIsCurrent && ($row['quality_status'] ?? '') === 'completed';
+        $allStagesReady = ($row['research_status'] ?? '') === 'approved'
+            && !empty($row['approved_at'])
+            && ($row['draft_status'] ?? '') === 'completed'
+            && $qualityPassed
+            && $imageReady;
         $active = in_array((string) ($row['job_status'] ?? ''), GENERATION_BATCH_ACTIVE_STATUSES, true);
         $researchWaiting = ($row['research_status'] ?? '') === 'completed' && empty($row['approved_at']);
         $qualityWaiting = $qualityIsCurrent && ($row['quality_status'] ?? '') === 'completed' && !$qualityPassed;
-        $overall = $active ? (string) $row['job_status']
+        $jobStatus = (string) ($row['job_status'] ?? '');
+        $overall = $active ? $jobStatus
+            : (in_array($jobStatus, ['ready_for_preview', 'ready_with_notes'], true) ? $jobStatus
+            : ($jobStatus === 'auto_rejected' ? 'auto_rejected'
             : ($qualityWaiting || $researchWaiting ? 'waiting_review'
-            : ($proposalReady ? 'ready'
-            : (($row['job_status'] ?? '') === 'failed' ? 'failed' : 'eligible')));
+            : ($allStagesReady ? 'ready'
+            : ($jobStatus === 'failed' ? 'failed' : 'eligible')))));
         $progress = (int) ($row['progress_percent'] ?? 0);
-        $availableAt = !empty($row['available_at'])
-            ? gmdate('c', strtotime((string) $row['available_at'] . ' UTC'))
-            : null;
-        $retryAfterSeconds = $overall === 'rate_limited' && $availableAt !== null
+        $availableAt = !empty($row['next_retry_at'] ?? null)
+            ? gmdate('c', strtotime((string) $row['next_retry_at'] . ' UTC'))
+            : (!empty($row['available_at']) ? gmdate('c', strtotime((string) $row['available_at'] . ' UTC')) : null);
+        $retryAfterSeconds = in_array($overall, ['rate_limited', 'auto_retry_scheduled'], true) && $availableAt !== null
             ? max(0, strtotime($availableAt) - time())
             : null;
         $payload[] = [
             'topic_id' => (int) $row['topic_id'], 'status' => $overall,
+            'gemini_calls_used' => (int) ($row['gemini_calls_used'] ?? 0), 'gemini_call_budget' => 15,
             'steps' => [
                 'research' => ['status' => generation_workflow_step_status($row['research_status'], $row['research_operation_status'], !empty($row['approved_at']), $researchWaiting), 'progress' => $row['research_id'] ? ($researchWaiting ? 100 : ($active && $row['job_stage'] === 'research' ? min(99, $progress * 3) : 100)) : 0, 'result_id' => $row['research_id'] ? (int) $row['research_id'] : null],
                 'draft' => ['status' => generation_workflow_step_status($row['draft_status'], $row['draft_operation_status']), 'progress' => $row['draft_id'] ? ($active && $row['job_stage'] === 'draft' ? min(99, $progress) : 100) : 0, 'result_id' => $row['draft_id'] ? (int) $row['draft_id'] : null, 'version' => $row['draft_version'] ? (int) $row['draft_version'] : null],
@@ -569,21 +788,27 @@ function generation_workflow_statuses(mixed $rawTopicIds): array
                 'images' => ['status' => $imageManual ? 'manual_review' : ($imageReady ? 'completed' : ($active && $row['job_stage'] === 'images' ? 'running' : 'not_started')), 'progress' => (int) $row['image_total'] > 0 ? (int) floor(100 * (int) $row['image_completed'] / (int) $row['image_total']) : 0, 'completed' => (int) $row['image_completed'], 'total' => (int) $row['image_total']],
             ],
             'wait_reason' => (string) ($row['wait_reason'] ?? ''), 'error' => (string) ($row['error_message'] ?? ''),
-            'available_at' => $availableAt, 'retry_after_seconds' => $retryAfterSeconds,
+            'available_at' => $availableAt, 'next_retry_at' => $availableAt,
+            'quota_dimension' => (string) ($row['quota_dimension'] ?? ''), 'quota_model' => (string) ($row['quota_model'] ?? ''),
+            'retry_after_seconds' => $retryAfterSeconds,
             'active_job_id' => $active ? (int) $row['job_id'] : null, 'active_batch_id' => $active ? (int) $row['batch_id'] : null,
             'active_action' => $active ? (string) $row['batch_action'] : null,
             'active_stage' => $active ? (string) $row['job_stage'] : null,
             'latest_job_id' => $row['job_id'] ? (int) $row['job_id'] : null,
             'latest_batch_id' => $row['batch_id'] ? (int) $row['batch_id'] : null,
             'latest_job_status' => $row['job_status'] ? (string) $row['job_status'] : null,
+            'latest_action' => $row['batch_action'] ? (string) $row['batch_action'] : null,
+            'latest_outcome' => $row['outcome'] ? (string) $row['outcome'] : null,
             'latest_stage' => $row['job_stage'] ? (string) $row['job_stage'] : null,
             'retryable' => in_array((string) ($row['job_status'] ?? ''), ['rate_limited', 'cancelled'], true)
                 || ((string) ($row['job_status'] ?? '') === 'failed' && ((string) ($draftValidation['repair_scope'] ?? '') === 'titles' || (string) ($row['outcome'] ?? '') !== 'validation_contract')),
             'repair_scope' => (string) ($draftValidation['repair_scope'] ?? ''),
             'repair' => $draftValidation,
             'progress' => $row['job_id'] ? $progress : ($qualityPassed && $imageReady ? 100 : 0),
-            'readiness' => $proposalReady, 'publication_readiness' => $qualityPassed && $imageReady,
-            'proposal_url' => $proposalReady && $row['draft_id'] ? 'admin-proposals.php?draft=' . (int) $row['draft_id'] : null,
+            'readiness' => $allStagesReady, 'publication_readiness' => $allStagesReady,
+            'proposal_url' => $proposalReviewable && $row['draft_id']
+                ? 'admin-proposals.php?draft=' . (int) $row['draft_id'] . ($allStagesReady ? '' : '&queue=action')
+                : null,
             'result_ids' => ['research_package_id' => $row['research_id'] ? (int) $row['research_id'] : null, 'draft_version_id' => $row['draft_id'] ? (int) $row['draft_id'] : null, 'quality_check_id' => $row['quality_id'] ? (int) $row['quality_id'] : null],
         ];
     }
@@ -592,6 +817,14 @@ function generation_workflow_statuses(mixed $rawTopicIds): array
 
 function generation_batch_claim_items(?int $limit = null): array
 {
+    $dispatchPaused = generation_automatic_dispatch_paused();
+    if (!$dispatchPaused) {
+        generation_batch_reconcile_feed_enrichment_regression();
+        generation_batch_reconcile_legacy_quota_storm();
+        generation_batch_reconcile_field_constraint_retries();
+        generation_batch_reconcile_legacy_auto_rejected();
+        generation_batch_reconcile_autonomous_items();
+    }
     $configuredLimit = (int) app_config('batch_worker_concurrency');
     $requested = max(1, min($configuredLimit, $limit ?? $configuredLimit));
     $database = bueno_database();
@@ -611,11 +844,13 @@ function generation_batch_claim_items(?int $limit = null): array
             return [];
         }
         $select = $database->prepare(
-            'SELECT id FROM generation_batch_items
-             WHERE status IN ("queued", "research", "draft", "quality_check", "images", "rate_limited")
-               AND available_at <= CURRENT_TIMESTAMP AND lease_token IS NULL
-             ORDER BY available_at, id LIMIT :limit'
+            'SELECT items.id FROM generation_batch_items items INNER JOIN generation_batches batches ON batches.id=items.batch_id
+             WHERE items.status IN ("queued", "research", "draft", "auto_repair", "quality_check", "images", "rate_limited", "auto_retry_scheduled")
+               AND items.available_at <= CURRENT_TIMESTAMP AND items.lease_token IS NULL
+               AND (:paused=0 OR batches.dispatch_mode="operator_manual")
+             ORDER BY items.available_at, items.id LIMIT :limit'
         );
+        $select->bindValue(':paused', $dispatchPaused ? 1 : 0, PDO::PARAM_INT);
         $select->bindValue(':limit', $available, PDO::PARAM_INT);
         $select->execute();
         $ids = array_map('intval', $select->fetchAll(PDO::FETCH_COLUMN));
@@ -647,10 +882,84 @@ function generation_batch_claim_items(?int $limit = null): array
     }
 }
 
+function generation_batch_reconcile_field_constraint_retries(?array $itemIds = null): array
+{
+    $params = [];
+    $filter = '';
+    if (is_array($itemIds) && $itemIds !== []) {
+        $ids = array_values(array_filter(array_unique(array_map('intval', $itemIds)), static fn (int $id): bool => $id > 0));
+        if ($ids === []) return [];
+        $filter = ' AND items.id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')';
+        $params = $ids;
+    }
+    $statement = bueno_database()->prepare(
+        'SELECT items.*, batches.action batch_action, batches.execution_mode batch_execution_mode
+         FROM generation_batch_items items
+         INNER JOIN generation_batches batches ON batches.id=items.batch_id
+         WHERE items.status="auto_retry_scheduled"
+           AND items.outcome IN ("validation_retry_scheduled","infrastructure_retry_scheduled")
+           AND batches.action="generate_all" AND batches.execution_mode="api"' . $filter . ' ORDER BY items.id'
+    );
+    $statement->execute($params);
+    $results = [];
+    foreach ($statement->fetchAll() as $item) {
+        $operationId = match ((string) $item['stage']) {
+            'research' => (int) ($item['research_operation_id'] ?? 0),
+            'draft', 'auto_repair' => (int) ($item['draft_operation_id'] ?? 0),
+            'quality_check' => (int) ($item['quality_operation_id'] ?? 0),
+            default => 0,
+        };
+        $operation = $operationId > 0 ? find_generation_operation($operationId) : null;
+        if (!is_array($operation)) continue;
+        if ((string) ($operation['output_json'] ?? '') === '' && (string) $item['stage'] === 'draft') {
+            $draft = find_article_draft_by_operation($operationId);
+            $saved = is_array($draft) ? json_decode((string) ($draft['draft_json'] ?? ''), true) : null;
+            if (is_array($saved) && $saved !== []) {
+                bueno_database()->prepare('UPDATE generation_operations SET output_json=:output WHERE id=:id')
+                    ->execute([':output' => generation_json($saved), ':id' => $operationId]);
+                $operation['output_json'] = generation_json($saved);
+            }
+        }
+        $constraint = generation_saved_field_constraint($operation);
+        if ($constraint === null) continue;
+        $field = ltrim($constraint->jsonPath, '$.');
+        generation_batch_update_item((int) $item['id'], [
+            'status' => 'queued', 'available_at' => gmdate('Y-m-d H:i:s'), 'completed_at' => null,
+            'wait_reason' => "Automatycznie dopasowuję długość pola {$field} (obecnie {$constraint->actualLength}, wymagane "
+                . ($constraint->minimumLength ?? 0) . '–' . ($constraint->maximumLength ?? '∞') . ').',
+            'error_message' => '', 'outcome' => 'field_constraint_repair_queued',
+        ]);
+        generation_batch_audit((int) $item['batch_id'], (int) $item['id'], 'legacy_field_constraint_reconciled', 'system', [
+            'operation_id' => $operationId, 'json_path' => $constraint->jsonPath,
+            'actual_length' => $constraint->actualLength, 'old_available_at' => (string) $item['available_at'],
+        ]);
+        $results[] = ['item_id' => (int) $item['id'], 'operation_id' => $operationId, 'json_path' => $constraint->jsonPath];
+    }
+    return $results;
+}
+
+/** Stops the legacy 429 -> field repair reconcile loop without touching real field constraints. */
+function generation_batch_reconcile_legacy_quota_storm(): int
+{
+    $database = bueno_database();
+    $retry = gmdate('Y-m-d H:i:s', gemini_next_daily_reset(time()));
+    $statement = $database->prepare(
+        'UPDATE generation_batch_items SET outcome="quota_retry_scheduled",status="auto_retry_scheduled",
+            quota_dimension="RPD",quota_model=:model,next_retry_at=:retry,available_at=:retry,
+            wait_reason=:reason,updated_at=CURRENT_TIMESTAMP
+         WHERE status IN ("queued","auto_retry_scheduled","rate_limited")
+           AND outcome IN ("validation_retry_scheduled","infrastructure_retry_scheduled","field_constraint_repair_queued","quota_retry_scheduled")
+           AND (error_message LIKE "%limit: 500%" OR error_message LIKE "%requests per day%" OR error_message LIKE "%RPD%")'
+    );
+    $model = (string) app_config('gemini_model');
+    $statement->execute([':model'=>$model,':retry'=>$retry,':reason'=>'Wyczerpano dzienny limit modelu '.$model.'.']);
+    return $statement->rowCount();
+}
+
 function generation_batch_find_item(int $itemId): ?array
 {
     $statement = bueno_database()->prepare(
-        'SELECT items.*, batches.action AS batch_action FROM generation_batch_items items
+        'SELECT items.*, batches.action AS batch_action, batches.created_by, batches.execution_mode AS batch_execution_mode, batches.dispatch_mode FROM generation_batch_items items
          INNER JOIN generation_batches batches ON batches.id = items.batch_id WHERE items.id = :id'
     );
     $statement->execute([':id' => $itemId]);
@@ -663,7 +972,7 @@ function generation_batch_update_item(int $itemId, array $changes): void
     $allowed = [
         'status', 'stage', 'progress_percent', 'research_operation_id', 'research_package_id',
         'draft_operation_id', 'draft_version_id', 'quality_operation_id', 'quality_check_id',
-        'post_id', 'retry_count', 'available_at', 'wait_reason', 'error_message', 'completed_at',
+        'post_id', 'retry_count', 'auto_repair_count', 'available_at', 'next_retry_at', 'quota_dimension', 'quota_model', 'wait_reason', 'error_message', 'completed_at',
         'lease_token', 'lease_expires_at', 'requested_stage', 'outcome',
     ];
     $sets = ['updated_at = CURRENT_TIMESTAMP'];
@@ -678,6 +987,238 @@ function generation_batch_update_item(int $itemId, array $changes): void
     bueno_database()->prepare(
         'UPDATE generation_batch_items SET ' . implode(', ', $sets) . ' WHERE id = :id'
     )->execute($params);
+}
+
+function generation_batch_is_autonomous(array $item): bool
+{
+    return (string) ($item['batch_action'] ?? '') === 'generate_all'
+        && (string) ($item['batch_execution_mode'] ?? '') === 'api';
+}
+
+function generation_batch_legacy_checkpoint(int $topicId): array
+{
+    $drafts=bueno_database()->prepare('SELECT d.*,r.generation_operation_id research_operation_id,r.status research_status
+        FROM article_draft_versions d INNER JOIN research_packages r ON r.id=d.research_package_id
+        WHERE d.topic_id=:topic AND d.is_active=1 AND d.status="completed" AND r.status="approved"
+        ORDER BY d.id DESC');
+    $drafts->execute([':topic'=>$topicId]);
+    foreach($drafts->fetchAll() as $draft){
+        $validation=json_decode((string)$draft['validation_json'],true)?:[];$json=json_decode((string)$draft['draft_json'],true)?:[];
+        if(($validation['valid']??false)!==true||$json===[]||article_draft_main_content_length($json)<=0)continue;
+        return ['checkpoint'=>'validated_active_draft','stage'=>'quality_check','status'=>'queued','post_id'=>(int)$draft['post_id'],
+            'research_package_id'=>(int)$draft['research_package_id'],'research_operation_id'=>(int)$draft['research_operation_id'],
+            'draft_version_id'=>(int)$draft['id'],'draft_operation_id'=>(int)$draft['generation_operation_id']];
+    }
+    $research=generation_workflow_latest_approved_research($topicId);
+    if(is_array($research))return ['checkpoint'=>'approved_research','stage'=>'draft','status'=>'queued','post_id'=>(int)$research['post_id'],
+        'research_package_id'=>(int)$research['id'],'research_operation_id'=>(int)$research['generation_operation_id']];
+    $feed=list_safe_feed_research_sources($topicId);
+    if($feed!==[])return ['checkpoint'=>'safe_feed','stage'=>'research','status'=>'queued','post_id'=>(int)(find_editorial_topic($topicId)['primary_post_id']??0),
+        'wait_reason'=>'Pełna strona niedostępna — kontynuuję z danymi RSS i szukam drugiego źródła.'];
+    return ['checkpoint'=>'no_material','stage'=>'research','status'=>'auto_retry_scheduled','post_id'=>(int)(find_editorial_topic($topicId)['primary_post_id']??0),
+        'outcome'=>'source_discovery_scheduled','available_at'=>gmdate('Y-m-d H:i:s',time()+300),
+        'wait_reason'=>'Brak jakiegokolwiek materiału — zaplanowano autonomiczne pozyskanie źródeł.'];
+}
+
+function generation_batch_resume_legacy_item(int $legacyItemId,string $actor='system'): array
+{
+    $legacy=generation_batch_find_item($legacyItemId);
+    if(!is_array($legacy)||(string)$legacy['status']!=='auto_rejected'||!generation_batch_is_autonomous($legacy))throw new DomainException('Element nie jest automatycznie odrzuconym przebiegiem generate_all/API.');
+    $topic=find_editorial_topic((int)$legacy['topic_id']);
+    if(!is_array($topic)||in_array((string)($topic['primary_post_status']??''),['rejected','trash','published','scheduled'],true))throw new DomainException('Temat został ręcznie odrzucony albo zakończony i nie może być wznowiony automatycznie.');
+    $existing=bueno_database()->prepare('SELECT * FROM generation_batch_items WHERE migrated_from_item_id=:legacy LIMIT 1');$existing->execute([':legacy'=>$legacyItemId]);
+    if(is_array($row=$existing->fetch()))return ['created'=>false,'item'=>$row,'checkpoint'=>(string)$row['chosen_checkpoint']];
+    generation_batch_supersede_stale_legacy_predecessors($legacy,$actor);
+    $active=bueno_database()->prepare('SELECT id FROM generation_batch_items WHERE topic_id=:topic AND id<>:legacy AND status IN ("queued","research","draft","auto_repair","quality_check","images","rate_limited","auto_retry_scheduled") LIMIT 1');
+    $active->execute([':topic'=>(int)$legacy['topic_id'],':legacy'=>$legacyItemId]);
+    if($active->fetchColumn()!==false)throw new DomainException('Temat ma już aktywny autonomiczny przebieg.');
+    $checkpoint=generation_batch_legacy_checkpoint((int)$legacy['topic_id']);$db=bueno_database();$db->beginTransaction();
+    try{
+        $requestKey='legacy-router-resume-'.$legacyItemId;
+        $db->prepare('INSERT INTO generation_batches(batch_key,request_key,action,item_count,created_by,execution_mode,status) VALUES(:key,:request,"generate_all",1,:actor,"api","running")')
+            ->execute([':key'=>bin2hex(random_bytes(16)),':request'=>$requestKey,':actor'=>mb_substr($actor,0,100)]);
+        $batchId=(int)$db->lastInsertId();
+        $values=[':batch'=>$batchId,':topic'=>(int)$legacy['topic_id'],':status'=>$checkpoint['status'],':stage'=>$checkpoint['stage'],
+            ':progress'=>$checkpoint['stage']==='research'?5:($checkpoint['stage']==='draft'?35:70),':research_operation'=>$checkpoint['research_operation_id']??null,
+            ':research_package'=>$checkpoint['research_package_id']??null,':draft_operation'=>$checkpoint['draft_operation_id']??null,
+            ':draft_version'=>$checkpoint['draft_version_id']??null,':post'=>$checkpoint['post_id']??null,':outcome'=>$checkpoint['outcome']??'legacy_checkpoint_resumed',
+            ':wait_reason'=>$checkpoint['wait_reason']??'Wznowiono od ostatniego bezpiecznego checkpointu.',':available'=>$checkpoint['available_at']??gmdate('Y-m-d H:i:s'),
+            ':legacy'=>$legacyItemId,':checkpoint'=>$checkpoint['checkpoint']];
+        $db->prepare('INSERT INTO generation_batch_items(batch_id,topic_id,status,stage,progress_percent,research_operation_id,research_package_id,draft_operation_id,draft_version_id,post_id,outcome,wait_reason,available_at,migrated_from_item_id,chosen_checkpoint)
+            VALUES(:batch,:topic,:status,:stage,:progress,:research_operation,:research_package,:draft_operation,:draft_version,:post,:outcome,:wait_reason,:available,:legacy,:checkpoint)')->execute($values);
+        $itemId=(int)$db->lastInsertId();
+        $db->prepare('UPDATE editorial_topics SET automatic_eligible=1,automation_status=:status,automation_reason=:reason,automation_updated_at=CURRENT_TIMESTAMP WHERE id=:id')
+            ->execute([':status'=>$checkpoint['status'],':reason'=>'Wznowienie nowym routerem od '.$checkpoint['checkpoint'],':id'=>(int)$legacy['topic_id']]);
+        generation_batch_audit($batchId,$itemId,'legacy_checkpoint_resume_created',$actor,['migrated_from_item_id'=>$legacyItemId,'chosen_checkpoint'=>$checkpoint['checkpoint'],'preserved_old_item'=>true]);
+        generation_batch_audit((int)$legacy['batch_id'],$legacyItemId,'legacy_migrated_to_new_router',$actor,['new_batch_id'=>$batchId,'new_item_id'=>$itemId,'chosen_checkpoint'=>$checkpoint['checkpoint']]);
+        $db->commit();return ['created'=>true,'batch_id'=>$batchId,'item_id'=>$itemId,'checkpoint'=>$checkpoint['checkpoint']];
+    }catch(Throwable $e){if($db->inTransaction())$db->rollBack();throw $e;}
+}
+
+function generation_batch_supersede_stale_legacy_predecessors(array $legacy,string $actor='system'): array
+{
+    $statement=bueno_database()->prepare('SELECT i.*,b.action batch_action,b.execution_mode batch_execution_mode
+        FROM generation_batch_items i INNER JOIN generation_batches b ON b.id=i.batch_id
+        WHERE i.topic_id=:topic AND i.id<:legacy AND i.status="auto_retry_scheduled"
+          AND b.action="generate_all" AND b.execution_mode="api" ORDER BY i.id');
+    $statement->execute([':topic'=>(int)$legacy['topic_id'],':legacy'=>(int)$legacy['id']]);$superseded=[];
+    foreach($statement->fetchAll() as $item){
+        $text=mb_strtolower((string)($item['error_message']??'').' '.(string)($item['wait_reason']??''));
+        $transient=str_contains($text,'429')||str_contains($text,'rate limit')||str_contains($text,'limit api')
+            ||str_contains($text,'timeout')||str_contains($text,'timed out')||str_contains($text,'temporarily unavailable');
+        $missingCheckpoint=((string)$item['stage']==='quality_check'&&(int)($item['draft_version_id']??0)<=0)
+            ||((string)$item['stage']==='draft'&&(int)($item['research_package_id']??0)<=0);
+        $legacyOutcome=in_array((string)($item['outcome']??''),['validation_retry_scheduled','infrastructure_retry_scheduled','reconcile_state_retry'],true);
+        if($transient||!$missingCheckpoint||!$legacyOutcome)continue;
+        generation_batch_update_item((int)$item['id'],['status'=>'cancelled','outcome'=>'legacy_superseded_by_checkpoint_resume',
+            'wait_reason'=>'Stary nieodtwarzalny retry został zastąpiony wznowieniem od bezpiecznego checkpointu.','completed_at'=>gmdate('Y-m-d H:i:s')]);
+        generation_batch_audit((int)$item['batch_id'],(int)$item['id'],'legacy_stale_retry_superseded',$actor,
+            ['superseded_by_legacy_item_id'=>(int)$legacy['id'],'preserved_old_item'=>true,'transient_failure'=>false]);
+        $superseded[]=(int)$item['id'];
+    }
+    return $superseded;
+}
+
+function generation_batch_reconcile_legacy_auto_rejected(?array $itemIds=null): array
+{
+    $params=[];$filter='';if(is_array($itemIds)&&$itemIds!==[]){$ids=array_values(array_filter(array_unique(array_map('intval',$itemIds)),static fn(int $id):bool=>$id>0));if($ids===[])return[];$filter=' AND i.id IN ('.implode(',',array_fill(0,count($ids),'?')).')';$params=$ids;}
+    $statement=bueno_database()->prepare('SELECT i.id FROM generation_batch_items i INNER JOIN generation_batches b ON b.id=i.batch_id INNER JOIN posts p ON p.id=(SELECT primary_post_id FROM editorial_topics WHERE id=i.topic_id)
+        WHERE i.status="auto_rejected" AND b.action="generate_all" AND b.execution_mode="api" AND p.status NOT IN ("rejected","trash","published","scheduled")
+          AND NOT EXISTS(SELECT 1 FROM generation_batch_items migrated WHERE migrated.migrated_from_item_id=i.id)
+          AND NOT EXISTS(SELECT 1 FROM generation_batch_items newer WHERE newer.topic_id=i.topic_id AND newer.id>i.id AND newer.status IN ("queued","research","draft","auto_repair","quality_check","images","rate_limited","auto_retry_scheduled"))'.$filter.' ORDER BY i.id DESC');
+    $statement->execute($params);$results=[];$topics=[];
+    foreach($statement->fetchAll(PDO::FETCH_COLUMN) as $id){$legacy=generation_batch_find_item((int)$id);if(!is_array($legacy)||isset($topics[(int)$legacy['topic_id']]))continue;$topics[(int)$legacy['topic_id']]=true;try{$results[]=generation_batch_resume_legacy_item((int)$id,'reconcile');}catch(DomainException){}}
+    return $results;
+}
+
+function generation_batch_can_retry_research(array $item): bool
+{
+    return (int) ($item['auto_repair_count'] ?? 0) < 2
+        && (list_verified_research_sources((int) $item['topic_id']) !== [] || topic_feed_items((int) $item['topic_id']) !== []);
+}
+
+function generation_batch_queue_research_retry(array $item, string $reason, array $details = []): void
+{
+    $attempt = (int) ($item['auto_repair_count'] ?? 0) + 1;
+    generation_batch_update_item((int) $item['id'], [
+        'status' => 'auto_repair', 'stage' => 'research', 'progress_percent' => 15,
+        'research_operation_id' => null, 'research_package_id' => null,
+        'draft_operation_id' => null, 'draft_version_id' => null,
+        'quality_operation_id' => null, 'quality_check_id' => null,
+        'retry_count' => max((int) $item['retry_count'], $attempt), 'auto_repair_count' => $attempt,
+        'outcome' => 'research_retry', 'wait_reason' => 'Ponowny research ' . $attempt . '/2: ' . mb_substr($reason, 0, 700),
+        'error_message' => '', 'completed_at' => null, 'available_at' => gmdate('Y-m-d H:i:s'),
+    ]);
+    generation_batch_audit((int) $item['batch_id'], (int) $item['id'], 'research_auto_retry_queued', 'worker', [
+        'attempt' => $attempt, 'reason' => $reason, 'previous_research_package_id' => $item['research_package_id'] ?? null,
+        ...$details,
+    ]);
+}
+
+/** Reconciles legacy autonomous generate_all items without replaying approved research or completed drafts. */
+function generation_batch_reconcile_autonomous_items(?array $itemIds = null): array
+{
+    $params = [];
+    $filter = '';
+    if (is_array($itemIds) && $itemIds !== []) {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $itemIds), static fn (int $id): bool => $id > 0)));
+        if ($ids === []) return [];
+        $filter = ' AND items.id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')';
+        $params = $ids;
+    }
+    $statement = bueno_database()->prepare(
+        'SELECT items.*, batches.action AS batch_action, batches.execution_mode AS batch_execution_mode, batches.created_by
+         FROM generation_batch_items items
+         INNER JOIN generation_batches batches ON batches.id=items.batch_id
+         WHERE items.status IN ("waiting_review","auto_rejected") AND batches.action="generate_all"
+           AND batches.execution_mode="api"
+           AND (items.status="waiting_review" OR items.outcome IN ("auto_repair_limit","auto_repair_limit_reconciled"))'
+           . ' AND NOT EXISTS (SELECT 1 FROM generation_batch_items active_item
+                WHERE active_item.topic_id=items.topic_id AND active_item.id<>items.id
+                  AND active_item.status IN ("queued","research","draft","auto_repair","quality_check","images","rate_limited","auto_retry_scheduled"))'
+           . $filter . ' ORDER BY items.id'
+    );
+    $statement->execute($params);
+    $results = [];
+    foreach ($statement->fetchAll() as $item) {
+        $audit = bueno_database()->prepare(
+            'SELECT details_json FROM generation_batch_audit
+             WHERE item_id=:item AND action="auto_repair_draft_validated" ORDER BY id'
+        );
+        $audit->execute([':item' => (int) $item['id']]);
+        $performedAttempts = [];
+        foreach ($audit->fetchAll(PDO::FETCH_COLUMN) as $detailsJson) {
+            $details = json_decode((string) $detailsJson, true) ?: [];
+            $attempt = (int) ($details['attempt'] ?? 0);
+            if ($attempt >= 1 && $attempt <= 2) $performedAttempts[$attempt] = true;
+        }
+        if ($performedAttempts === [] && (int) ($item['post_id'] ?? 0) > 0) {
+            $legacy = bueno_database()->prepare(
+                'SELECT COUNT(*) FROM article_draft_versions
+                 WHERE post_id=:post AND change_source="auto_qc_repair" AND status="completed"'
+            );
+            $legacy->execute([':post' => (int) $item['post_id']]);
+            $legacyCount = min(2, (int) $legacy->fetchColumn());
+            for ($attempt = 1; $attempt <= $legacyCount; $attempt++) $performedAttempts[$attempt] = true;
+        }
+        $performed = count($performedAttempts);
+        if ($performed >= 2) {
+            generation_batch_update_item((int) $item['id'], ['status' => 'auto_repair', 'stage' => 'quality_check',
+                'outcome' => 'safe_composer_queued', 'progress_percent' => 84, 'completed_at' => null,
+                'wait_reason' => 'Uruchamiam deterministyczny bezpieczny kompozytor.', 'error_message' => '',
+                'available_at' => gmdate('Y-m-d H:i:s')]);
+            bueno_database()->prepare('UPDATE editorial_topics SET automatic_eligible=1,automation_status="auto_repair",automation_reason="Wznowienie przez safe composer",automation_updated_at=CURRENT_TIMESTAMP WHERE id=:id')
+                ->execute([':id' => (int) $item['topic_id']]);
+            repair_report_append((int) $item['id'], 'final_package', 'safe_composer', ['reconciled' => true, 'performed_attempts' => $performed]);
+            generation_batch_audit((int) $item['batch_id'], (int) $item['id'], 'autonomous_item_reconciled', 'system', ['decision' => 'safe_composer_queued', 'performed_attempts' => $performed]);
+            $results[] = ['item_id' => (int) $item['id'], 'decision' => 'safe_composer_queued', 'performed_attempts' => $performed];
+            generation_batch_refresh_status((int) $item['batch_id']);
+            continue;
+        }
+        $draft = find_article_draft_by_id((int) ($item['draft_version_id'] ?? 0));
+        $check = (int) ($item['quality_operation_id'] ?? 0) > 0
+            ? find_quality_check_by_operation((int) $item['quality_operation_id'])
+            : (is_array($draft) ? generation_workflow_latest_quality((int) $draft['id']) : null);
+        if (!is_array($draft) || !is_array($check)) {
+            generation_batch_update_item((int) $item['id'], ['status' => 'auto_retry_scheduled', 'outcome' => 'reconcile_state_retry',
+                'wait_reason' => 'Automatyczne wznowienie po odtworzeniu stanu operacji.', 'available_at' => gmdate('Y-m-d H:i:s', time() + 60), 'completed_at' => null]);
+            $results[] = ['item_id' => (int) $item['id'], 'decision' => 'auto_retry_scheduled', 'performed_attempts' => $performed];
+            generation_batch_refresh_status((int) $item['batch_id']);
+            continue;
+        }
+        $decision = quality_check_auto_repair_decision($check);
+        if (($decision['repairable'] ?? false) !== true || ($decision['target_stage'] ?? 'draft') !== 'draft') {
+            generation_batch_update_item((int) $item['id'], ['status' => 'auto_repair', 'stage' => 'quality_check', 'outcome' => 'safe_composer_queued',
+                'wait_reason' => 'Router usuwa niewspierane elementy przez safe composer.', 'available_at' => gmdate('Y-m-d H:i:s'), 'completed_at' => null]);
+            repair_report_append((int) $item['id'], 'factual_source', 'safe_composer', ['reasons' => $decision['reasons'] ?? []]);
+            $results[] = ['item_id' => (int) $item['id'], 'decision' => 'safe_composer_queued', 'performed_attempts' => $performed];
+            generation_batch_refresh_status((int) $item['batch_id']);
+            continue;
+        }
+        $attempt = $performed + 1;
+        $strategy = $attempt === 1 ? 'targeted_repair' : 'fresh_conservative_rewrite';
+        $operationId = prepare_article_qc_repair_operation((int) $draft['id'], $check, $decision, $attempt);
+        $repairDraft = find_article_draft_by_operation($operationId);
+        if (!is_array($repairDraft)) throw new RuntimeException('Reconcile nie utworzył wersji korekty.');
+        generation_batch_update_item((int) $item['id'], [
+            'status' => 'auto_repair', 'stage' => 'draft', 'progress_percent' => 55,
+            'draft_operation_id' => $operationId, 'draft_version_id' => (int) $repairDraft['id'],
+            'quality_operation_id' => null, 'quality_check_id' => null,
+            'retry_count' => max((int) $item['retry_count'], $attempt), 'auto_repair_count' => $attempt,
+            'outcome' => 'auto_repair', 'wait_reason' => $strategy === 'fresh_conservative_rewrite'
+                ? 'Tworzę uproszczoną wersję awaryjną (próba 2/2).'
+                : 'Automatyczna poprawka 1/2.',
+            'error_message' => '', 'completed_at' => null, 'available_at' => gmdate('Y-m-d H:i:s'),
+        ]);
+        generation_batch_audit((int) $item['batch_id'], (int) $item['id'], 'autonomous_item_reconciled', 'system', [
+            'decision' => 'queued', 'attempt' => $attempt, 'strategy' => $strategy,
+            'source_draft_version_id' => (int) $draft['id'], 'repair_draft_version_id' => (int) $repairDraft['id'],
+            'research_package_id' => (int) $draft['research_package_id'],
+        ]);
+        $results[] = ['item_id' => (int) $item['id'], 'decision' => 'queued', 'attempt' => $attempt, 'strategy' => $strategy];
+        generation_batch_refresh_status((int) $item['batch_id']);
+    }
+    return $results;
 }
 
 function generation_batch_research_allows_auto_approval(array $package): bool
@@ -697,7 +1238,8 @@ function research_policy_message(array $policy, bool $recovering = false): strin
 {
     if ($recovering) return 'Ponawiam weryfikację źródła.';
     return match ((string)($policy['code'] ?? '')) {
-        'no_complete_primary' => 'Brak kompletnego, zweryfikowanego źródła pierwotnego.',
+        'no_complete_primary', 'no_source_material' => 'Brak jakiegokolwiek legalnego materiału wejściowego; system szuka innego źródła.',
+        'safe_feed_excerpt' => 'Pełna strona niedostępna — kontynuuję z danymi RSS i szukam drugiego źródła.',
         'contradiction' => 'Źródła są sprzeczne i wymagają decyzji redakcyjnej.',
         'second_independent_source_required' => 'Polityka ryzyka wymaga drugiego niezależnego źródła.',
         'enrichment_technical_error' => 'Błąd techniczny weryfikacji źródła; system ponowi enrichment.',
@@ -708,6 +1250,41 @@ function research_policy_message(array $policy, bool $recovering = false): strin
 function research_sources_fingerprint(int $topicId): string
 {
     return hash('sha256', generation_json(research_numbered_sources($topicId)));
+}
+
+function generation_batch_should_attempt_research_enrichment(int $itemId, string $fingerprint): bool
+{
+    $previous = bueno_database()->prepare(
+        'SELECT COUNT(*) FROM generation_batch_audit
+         WHERE item_id=:item AND action="research_enrichment_attempted"
+           AND json_extract(details_json,"$.fingerprint")=:fingerprint'
+    );
+    $previous->execute([':item' => $itemId, ':fingerprint' => $fingerprint]);
+    return (int) $previous->fetchColumn() === 0;
+}
+
+function generation_batch_reconcile_feed_enrichment_regression(?array $itemIds = null): array
+{
+    $params=[];$filter='';
+    if(is_array($itemIds)&&$itemIds!==[]){$ids=array_values(array_filter(array_unique(array_map('intval',$itemIds)),static fn(int $id):bool=>$id>0));if($ids===[])return[];$filter=' AND items.id IN ('.implode(',',array_fill(0,count($ids),'?')).')';$params=$ids;}
+    $statement=bueno_database()->prepare('SELECT items.*,batches.action batch_action,batches.execution_mode batch_execution_mode
+        FROM generation_batch_items items INNER JOIN generation_batches batches ON batches.id=items.batch_id
+        WHERE items.status="auto_retry_scheduled" AND items.stage="research" AND items.outcome="research_enrichment_scheduled"
+          AND batches.action="generate_all" AND batches.execution_mode="api"'.$filter.' ORDER BY items.id');
+    $statement->execute($params);$results=[];
+    foreach($statement->fetchAll() as $item){
+        $feed=list_safe_feed_research_sources((int)$item['topic_id']);if($feed===[])continue;
+        $audit=bueno_database()->prepare('SELECT details_json FROM generation_batch_audit WHERE item_id=:item AND action="research_auto_retry_queued" ORDER BY id DESC LIMIT 1');
+        $audit->execute([':item'=>(int)$item['id']]);$details=json_decode((string)($audit->fetchColumn()?:'{}'),true)?:[];
+        $transient=false;foreach((array)($details['enrichment']['errors']??[]) as $error){$message=mb_strtolower((string)($error['error']??''));$status=(int)($error['http_status']??0);if(!empty($error['retryable'])||$status===429||$status>=500||str_contains($message,'timeout')||str_contains($message,'timed out')){$transient=true;break;}}
+        if($transient)continue;
+        generation_batch_update_item((int)$item['id'],['status'=>'queued','stage'=>'research','outcome'=>'safe_feed_research_queued','progress_percent'=>5,
+            'available_at'=>gmdate('Y-m-d H:i:s'),'completed_at'=>null,'error_message'=>'','wait_reason'=>'Pełna strona niedostępna — kontynuuję z danymi RSS i szukam drugiego źródła.']);
+        bueno_database()->prepare('UPDATE editorial_topics SET automatic_eligible=1,automation_status="queued",automation_reason="Kontynuacja z legalnych danych RSS",automation_updated_at=CURRENT_TIMESTAMP WHERE id=:id')->execute([':id'=>(int)$item['topic_id']]);
+        generation_batch_audit((int)$item['batch_id'],(int)$item['id'],'feed_enrichment_regression_reconciled','system',['chosen_strategy'=>'safe_feed_research','feed_item_ids'=>array_column($feed,'feed_item_id'),'preserved_retry_count'=>(int)$item['retry_count']]);
+        $results[]=['item_id'=>(int)$item['id'],'topic_id'=>(int)$item['topic_id'],'strategy'=>'safe_feed_research'];
+    }
+    return $results;
 }
 
 function generation_batch_backfill_research_sources(?array $topicIds = null, ?callable $pageFetcher = null, ?callable $registry = null): array
@@ -744,6 +1321,18 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
     if ($item === null || !hash_equals((string) ($item['lease_token'] ?? ''), $leaseToken)) {
         return;
     }
+    if (generation_automatic_dispatch_paused() && (string) ($item['dispatch_mode'] ?? 'automatic') !== 'operator_manual') {
+        bueno_database()->prepare('UPDATE generation_batch_items SET paused_from_status=status,status="paused_by_operator",
+            outcome="manual_ready_to_resume",wait_reason="Wstrzymany â€” uruchom rÄ™cznie.",next_retry_at=NULL,
+            quota_dimension="",quota_model="",lease_token=NULL,lease_expires_at=NULL,paused_at=CURRENT_TIMESTAMP,
+            completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=:id')->execute([':id' => $itemId]);
+        bueno_database()->prepare('UPDATE generation_batches SET status="paused",updated_at=CURRENT_TIMESTAMP WHERE id=:id')
+            ->execute([':id' => (int) $item['batch_id']]);
+        generation_batch_audit((int) $item['batch_id'], $itemId, 'automatic_dispatch_pause_race_blocked', 'worker', [
+            'previous_status' => (string) $item['status'], 'gemini_called' => false,
+        ]);
+        return;
+    }
     try {
         $stage = (string) $item['stage'];
         $batchAction = (string) ($item['batch_action'] ?? 'generate_all');
@@ -751,15 +1340,38 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
             generation_batch_update_item($itemId, ['status' => 'research', 'progress_percent' => 10]);
             $operationId = (int) ($item['research_operation_id'] ?? 0);
             if ($operationId <= 0) {
-                $enrichment = enrich_topic_sources((int) $item['topic_id']);
                 $topic = find_editorial_topic((int) $item['topic_id']);
-                $policy = research_policy_decision(list_verified_research_sources((int) $item['topic_id']), (string) ($topic['risk_level'] ?? 'low'), !empty($topic['is_controversial']));
+                $policy = research_policy_for_topic((int)$item['topic_id'],(string)($topic['risk_level']??'low'),!empty($topic['is_controversial']));
+                $enrichment = ['verified'=>0,'failed'=>0,'retryable_failed'=>0,'permanent_failed'=>0,'errors'=>[],'skipped'=>true];
                 if (($policy['decision'] ?? '') !== 'continue') {
-                    if ((int) ($enrichment['failed'] ?? 0) > 0 && list_verified_research_sources((int) $item['topic_id']) === []) {
+                    $fingerprint=research_sources_fingerprint((int)$item['topic_id']);
+                    if(generation_batch_should_attempt_research_enrichment($itemId,$fingerprint)){
+                        generation_batch_audit((int)$item['batch_id'],$itemId,'research_enrichment_attempted','worker',['fingerprint'=>$fingerprint,'gap'=>$policy['enrichment_gap']??$policy['code']??'unknown','strategy'=>'full_page_then_registry']);
+                        $enrichment=enrich_topic_sources((int)$item['topic_id']);
+                        $policy=research_policy_for_topic((int)$item['topic_id'],(string)($topic['risk_level']??'low'),!empty($topic['is_controversial']));
+                    }else{
+                        $enrichment=['verified'=>0,'failed'=>0,'retryable_failed'=>0,'permanent_failed'=>0,'errors'=>[],'skipped'=>true,'circuit_breaker'=>'unchanged_fingerprint'];
+                    }
+                }
+                if (($policy['decision'] ?? '') !== 'continue') {
+                    if ((int) ($enrichment['retryable_failed'] ?? 0) > 0 && list_verified_research_sources((int) $item['topic_id']) === [] && list_safe_feed_research_sources((int)$item['topic_id'])===[]) {
                         $policy = ['decision'=>'blocked','code'=>'enrichment_technical_error','reason'=>'Enrichment nie pobrał źródła z powodu błędu technicznego.'];
                     }
-                    generation_batch_update_item($itemId, ['status'=>'waiting_review','progress_percent'=>20,'wait_reason'=>research_policy_message($policy),'completed_at'=>gmdate('Y-m-d H:i:s')]);
-                    generation_batch_audit((int) $item['batch_id'], $itemId, 'research_policy_blocked_before_generation', 'worker', ['policy'=>$policy,'enrichment'=>$enrichment]);
+                    $reason = research_policy_message($policy);
+                    if (generation_batch_is_autonomous($item)) {
+                        if (generation_batch_can_retry_research($item)) {
+                            generation_batch_queue_research_retry($item, $reason, ['policy'=>$policy,'enrichment'=>$enrichment]);
+                        } else {
+                            $delay = max(300, (int) app_config('batch_rate_limit_backoff_seconds'));
+                            generation_batch_update_item($itemId, ['status'=>'auto_retry_scheduled','outcome'=>'research_enrichment_scheduled',
+                                'available_at'=>gmdate('Y-m-d H:i:s', time()+$delay),'wait_reason'=>'Zaplanowano ponowne pozyskanie legalnych źródeł. '.$reason,'completed_at'=>null]);
+                            repair_report_append($itemId, 'factual_source', 'research_enrichment', ['policy'=>$policy,'enrichment'=>$enrichment,
+                                'verified_sources'=>array_values(array_filter(array_map(static fn(array $source): string => (string)($source['source_id']??$source['id']??''),list_verified_research_sources((int)$item['topic_id']))))], [$reason]);
+                        }
+                    } else {
+                        generation_batch_update_item($itemId, ['status'=>'waiting_review','progress_percent'=>20,'wait_reason'=>$reason,'completed_at'=>gmdate('Y-m-d H:i:s')]);
+                        generation_batch_audit((int) $item['batch_id'], $itemId, 'research_policy_blocked_before_generation', 'worker', ['policy'=>$policy,'enrichment'=>$enrichment]);
+                    }
                     return;
                 }
                 $operationId = prepare_research_package_operation((int) $item['topic_id']);
@@ -773,12 +1385,25 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
             execute_generation_operation($operationId, $transport);
             $package = find_research_package_by_operation($operationId);
             if (!is_array($package) || !generation_batch_research_allows_auto_approval($package)) {
-                generation_batch_update_item($itemId, [
-                    'status' => 'waiting_review', 'progress_percent' => 30,
-                    'wait_reason' => research_policy_message(json_decode((string) ($package['policy_json'] ?? '{}'), true) ?: []),
-                    'completed_at' => gmdate('Y-m-d H:i:s'),
-                ]);
-                generation_batch_audit((int) $item['batch_id'], $itemId, 'research_waiting_review');
+                $policy = is_array($package) ? (json_decode((string) ($package['policy_json'] ?? '{}'), true) ?: []) : [];
+                $reason = is_array($package) ? research_policy_message($policy) : 'Research nie zwrócił kompletnego, zwalidowanego pakietu.';
+                if (generation_batch_is_autonomous($item)) {
+                    if (generation_batch_can_retry_research($item)) {
+                        generation_batch_queue_research_retry($item, $reason, ['policy'=>$policy]);
+                    } else {
+                        $delay = max(300, (int) app_config('batch_rate_limit_backoff_seconds'));
+                        generation_batch_update_item($itemId, ['status'=>'auto_retry_scheduled','outcome'=>'research_enrichment_scheduled',
+                            'available_at'=>gmdate('Y-m-d H:i:s', time()+$delay),'wait_reason'=>'Ponowny research został zaplanowany; niewystarczające źródła nie zostaną obejściem factual gate.','completed_at'=>null]);
+                        repair_report_append($itemId, 'factual_source', 'research_enrichment', ['policy'=>$policy,
+                            'verified_sources'=>array_values(array_filter(array_map(static fn(array $source): string => (string)($source['source_id']??$source['id']??''),list_verified_research_sources((int)$item['topic_id']))))], [$reason]);
+                    }
+                } else {
+                    generation_batch_update_item($itemId, [
+                        'status' => 'waiting_review', 'progress_percent' => 30, 'wait_reason' => $reason,
+                        'completed_at' => gmdate('Y-m-d H:i:s'),
+                    ]);
+                    generation_batch_audit((int) $item['batch_id'], $itemId, 'research_waiting_review');
+                }
             } else {
                 approve_research_package((int) $package['id']);
                 $researchOnly = (string) ($item['requested_stage'] ?? '') === 'research';
@@ -791,7 +1416,8 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
                 generation_batch_audit((int) $item['batch_id'], $itemId, 'research_auto_approved');
             }
         } elseif ($stage === 'draft') {
-            generation_batch_update_item($itemId, ['status' => 'draft', 'progress_percent' => 45]);
+            $isAutoRepair = (string) ($item['outcome'] ?? '') === 'auto_repair';
+            generation_batch_update_item($itemId, ['status' => $isAutoRepair ? 'auto_repair' : 'draft', 'progress_percent' => $isAutoRepair ? 58 : 45]);
             $operationId = (int) ($item['draft_operation_id'] ?? 0);
             if ($operationId <= 0) {
                 $operationId = prepare_article_draft_operation((int) $item['research_package_id'], 'informational');
@@ -809,6 +1435,15 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
             }
             $completedDraft = find_article_draft_by_operation($operationId);
             $completedValidation = is_array($completedDraft) ? (json_decode((string)$completedDraft['validation_json'], true) ?: []) : [];
+            if ($isAutoRepair) {
+                if (!is_array($completedDraft)) throw new RuntimeException('Nie zapisano wersji automatycznej korekty.');
+                activate_completed_article_qc_repair((int) $completedDraft['id']);
+                generation_batch_audit((int) $item['batch_id'], $itemId, 'auto_repair_draft_validated', 'worker', [
+                    'attempt' => (int) ($item['auto_repair_count'] ?? 0), 'draft_version_id' => (int) $completedDraft['id'],
+                    'parent_version_id' => (int) ($completedDraft['parent_version_id'] ?? 0),
+                    'strategy' => (string) ($completedDraft['repair_strategy'] ?? ''),
+                ]);
+            }
             $draftOnly = (string) ($item['requested_stage'] ?? '') === 'draft';
             generation_batch_update_item($itemId, $draftOnly ? [
                 'status' => 'completed', 'stage' => 'draft', 'progress_percent' => 100,
@@ -819,6 +1454,21 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
             generation_batch_audit((int) $item['batch_id'], $itemId, 'draft_completed', 'worker', ['operation_id' => $operationId, 'repair_scope'=>$completedValidation['repair_scope'] ?? null]);
         } elseif ($stage === 'quality_check') {
             generation_batch_update_item($itemId, ['status' => 'quality_check', 'progress_percent' => 72]);
+            if (generation_batch_is_autonomous($item) && (string) ($item['outcome'] ?? '') === 'safe_composer_queued') {
+                $salvaged = salvage_execute_safe_composer($item);
+                generation_batch_update_item($itemId, ['status' => 'images', 'stage' => 'images', 'progress_percent' => 85,
+                    'draft_operation_id' => (int) $salvaged['draft']['generation_operation_id'],
+                    'draft_version_id' => (int) $salvaged['draft']['id'],
+                    'quality_operation_id' => (int) $salvaged['quality']['generation_operation_id'],
+                    'quality_check_id' => (int) $salvaged['quality']['id'], 'outcome' => 'safe_composer_validated',
+                    'wait_reason' => 'Bezpieczny kompozytor przeszedł factual gate; przygotowuję obrazy.']);
+                $safeDraftJson = json_decode((string)$salvaged['draft']['draft_json'], true) ?: [];
+                repair_report_append($itemId, 'factual_source', 'safe_composer', ['draft_version_id' => (int) $salvaged['draft']['id'],
+                    'factual_gate' => 'passed', 'title_selection' => ['selected' => (string)($safeDraftJson['title']??''),
+                        'candidates' => array_values(array_filter(array_map(static fn(array $variant): string => (string)($variant['title']??''),(array)($safeDraftJson['title_variants']??[]))))]]);
+                generation_batch_audit((int) $item['batch_id'], $itemId, 'safe_composer_validated', 'worker', ['draft_version_id' => (int) $salvaged['draft']['id'], 'quality_check_id' => (int) $salvaged['quality']['id']]);
+                return;
+            }
             $operationId = (int) ($item['quality_operation_id'] ?? 0);
             if ($operationId <= 0) {
                 $operationId = prepare_quality_check_operation((int) $item['draft_version_id']);
@@ -830,12 +1480,84 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
             execute_generation_operation($operationId, $transport);
             $check = find_quality_check_by_operation($operationId);
             if (!is_array($check) || (int) $check['passed'] !== 1 || quality_active_hard_blocks($check) !== []) {
-                generation_batch_update_item($itemId, [
-                    'status' => 'waiting_review', 'progress_percent' => 82,
-                    'wait_reason' => 'Kontrola jakości wymaga decyzji redakcyjnej.',
-                    'completed_at' => gmdate('Y-m-d H:i:s'),
-                ]);
-                generation_batch_audit((int) $item['batch_id'], $itemId, 'quality_waiting_review', 'worker', ['quality_check_id' => is_array($check) ? (int) $check['id'] : null]);
+                $routerAssessment = repair_router_assess(is_array($check) ? $check : []);
+                $decision = is_array($check)
+                    ? quality_check_auto_repair_decision($check)
+                    : ['repairable' => false, 'human_required' => true, 'reasons' => ['Brak kompletnego wyniku QC.']];
+                $repairAttempt = (int) ($item['auto_repair_count'] ?? 0) + 1;
+                if (($decision['repairable'] ?? false) === true && ($decision['target_stage'] ?? 'draft') === 'research'
+                    && generation_batch_is_autonomous($item)) {
+                    $reason = implode(' ', (array) ($decision['feedback'] ?? ['Źródła wymagają ponownego researchu.']));
+                    if (generation_batch_can_retry_research($item)) {
+                        repair_report_append($itemId, 'factual_source', 'research_enrichment', ['issues' => $routerAssessment['issues'], 'reason' => $reason]);
+                        generation_batch_queue_research_retry($item, $reason, [
+                            'quality_check_id' => is_array($check) ? (int) $check['id'] : null,
+                            'categories' => $decision['categories'] ?? [],
+                        ]);
+                    } else {
+                        generation_batch_update_item($itemId, ['status' => 'auto_repair', 'stage' => 'quality_check', 'outcome' => 'safe_composer_queued',
+                            'progress_percent' => 84, 'wait_reason' => 'Research nie dostarczył bezpiecznego rozszerzenia; buduję pakiet wyłącznie z zatwierdzonych faktów.',
+                            'quality_operation_id' => null, 'quality_check_id' => null, 'completed_at' => null]);
+                        repair_report_append($itemId, 'factual_source', 'safe_composer', ['reason' => $reason, 'research_budget_exhausted' => true]);
+                    }
+                } elseif (($decision['repairable'] ?? false) === true && $repairAttempt <= 2 && generation_batch_is_autonomous($item)) {
+                    $strategy = $repairAttempt === 1 ? 'targeted_repair' : 'fresh_conservative_rewrite';
+                    $repairOperationId = prepare_article_qc_repair_operation(
+                        (int) $item['draft_version_id'],
+                        $check,
+                        $decision,
+                        $repairAttempt
+                    );
+                    $repairDraft = find_article_draft_by_operation($repairOperationId);
+                    if (!is_array($repairDraft)) throw new RuntimeException('Nie utworzono wersji automatycznej korekty QC.');
+                    generation_batch_update_item($itemId, [
+                        'status' => 'auto_repair', 'stage' => 'draft', 'progress_percent' => 55,
+                        'draft_operation_id' => $repairOperationId, 'draft_version_id' => (int) $repairDraft['id'],
+                        'quality_operation_id' => null, 'quality_check_id' => null,
+                        'retry_count' => max((int) $item['retry_count'], $repairAttempt), 'auto_repair_count' => $repairAttempt,
+                        'outcome' => 'auto_repair',
+                        'wait_reason' => $strategy === 'fresh_conservative_rewrite'
+                            ? 'Tworzę uproszczoną wersję awaryjną (próba 2/2).'
+                            : 'Automatyczna poprawka 1/2.',
+                        'completed_at' => null,
+                    ]);
+                    generation_batch_audit((int) $item['batch_id'], $itemId, 'quality_auto_repair_queued', 'worker', [
+                        'attempt' => $repairAttempt, 'quality_check_id' => (int) $check['id'],
+                        'source_draft_version_id' => (int) $item['draft_version_id'], 'repair_draft_version_id' => (int) $repairDraft['id'],
+                        'strategy' => $strategy, 'categories' => $decision['categories'] ?? [], 'feedback' => $decision['feedback'] ?? [],
+                    ]);
+                    repair_report_append($itemId, (string) ($routerAssessment['issues'][0]['gate'] ?? 'final_package'), $strategy, [
+                        'quality_check_id' => (int) $check['id'], 'issues' => $routerAssessment['issues'],
+                        'feedback' => $decision['feedback'] ?? [], 'budget' => repair_router_budget_state($itemId, (string) ($routerAssessment['issues'][0]['gate'] ?? 'final_package')),
+                    ]);
+                } else {
+                    $limitReached = ($decision['repairable'] ?? false) === true && $repairAttempt > 2;
+                    $reasons = $limitReached
+                        ? ['Dwie korekty modelowe nie przeszły pełnej kontroli jakości; uruchamiam deterministyczny safe composer.']
+                        : (array) ($decision['reasons'] ?? ['Kontrola jakości wymaga decyzji redakcyjnej.']);
+                    if (generation_batch_is_autonomous($item)) {
+                        generation_batch_update_item($itemId, ['status' => 'auto_repair', 'stage' => 'quality_check', 'outcome' => 'safe_composer_queued',
+                            'progress_percent' => 84, 'wait_reason' => 'Wyczerpano strategie modelowe; usuwam ryzykowne elementy i składam wersję wyłącznie ze zwalidowanych faktów.',
+                            'quality_operation_id' => null, 'quality_check_id' => null, 'completed_at' => null]);
+                        $routerIssues = repair_router_assess(is_array($check) ? $check : [])['issues'];
+                        repair_report_append($itemId, 'final_package', 'safe_composer', ['quality_check_id' => is_array($check) ? (int) $check['id'] : null,
+                            'issues' => $routerIssues, 'reasons' => $reasons,
+                            'removed_claims_or_quotes' => array_values(array_map(static fn(array $issue): string => (string)($issue['message']??$issue['code']),
+                                array_filter($routerIssues, static fn(array $issue): bool => in_array((string)($issue['code']??''),['unsupported_claim','false_quote','high_risk'],true))))]);
+                        generation_batch_audit((int) $item['batch_id'], $itemId, 'safe_composer_queued', 'worker', ['limit_reached' => $limitReached, 'reasons' => $reasons]);
+                    } else {
+                        generation_batch_update_item($itemId, [
+                            'status' => 'waiting_review', 'progress_percent' => 82,
+                            'outcome' => $limitReached ? 'auto_repair_limit' : 'human_review_required',
+                            'wait_reason' => implode(' ', $reasons), 'completed_at' => gmdate('Y-m-d H:i:s'),
+                        ]);
+                        generation_batch_audit((int) $item['batch_id'], $itemId, 'quality_waiting_review', 'worker', [
+                            'quality_check_id' => is_array($check) ? (int) $check['id'] : null,
+                            'repair_attempts' => (int) ($item['auto_repair_count'] ?? 0), 'limit_reached' => $limitReached,
+                            'reasons' => $reasons,
+                        ]);
+                    }
+                }
             } else {
                 $qualityOnly = (string) ($item['requested_stage'] ?? '') === 'quality';
                 generation_batch_update_item($itemId, $qualityOnly ? [
@@ -876,12 +1598,23 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
             $imageSummary = (bool) app_config('source_image_mock')
                 ? fulfill_article_source_images($postId, static fn (string $query): array => [], static fn (array $image): array => $image)
                 : fulfill_article_source_images($postId);
+            if (generation_batch_is_autonomous($item)) {
+                repair_report_append($itemId, 'image_plan', 'source_image_waterfall', ['summary' => $imageSummary,
+                    'waterfall' => ['primary_source', 'institutional_repository', 'topic_bc_queries', 'local_fallback']]);
+            }
             $requiresReview = ((int) $imageSummary['missing'] + (int) $imageSummary['manual_review']) > 0;
+            $localFallback = [];
+            if ($requiresReview && generation_batch_is_autonomous($item)) {
+                $localFallback = salvage_local_editorial_images($postId);
+                $requiresReview = false;
+                repair_report_append($itemId, 'image_plan', 'local_editorial_illustration', ['assets' => $localFallback, 'waterfall' => ['primary_source', 'institutional_repository', 'topic_bc_queries', 'local_fallback']]);
+            }
             $imageWaitReason = $requiresReview
                 ? 'Gotowa propozycja jest dostępna. Brakujące lub niezweryfikowane ilustracje oznaczono jako wymagające uwagi; publikacja pozostaje zablokowana.'
                 : 'Legalne ilustracje źródłowe zostały użyte automatycznie; gotowa propozycja jest dostępna.';
             generation_batch_update_item($itemId, [
-                'status' => (string) ($item['requested_stage'] ?? '') === 'images' ? 'completed' : 'ready',
+                'status' => (string) ($item['requested_stage'] ?? '') === 'images' ? 'completed'
+                    : (generation_batch_is_autonomous($item) ? ($localFallback !== [] || (int) ($item['auto_repair_count'] ?? 0) > 0 || (string) ($item['outcome'] ?? '') === 'safe_composer_validated' ? 'ready_with_notes' : 'ready_for_preview') : 'ready'),
                 'stage' => (string) ($item['requested_stage'] ?? '') === 'images' ? 'images' : 'ready',
                 'outcome' => $requiresReview ? 'completed_with_warnings' : 'completed', 'progress_percent' => 100,
                 'wait_reason' => $imageWaitReason,
@@ -890,12 +1623,61 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
             generation_batch_audit((int) $item['batch_id'], $itemId, $requiresReview ? 'item_ready_with_image_warnings' : 'item_ready', 'worker', [
                 'draft_version_id' => (int) $item['draft_version_id'], 'published' => false,
                 'planned_legal_images' => $plannedCount, 'source_image_summary' => $imageSummary,
-                'ai_image_generation_calls' => 0,
+                'ai_image_generation_calls' => 0, 'local_editorial_fallbacks' => $localFallback,
             ]);
         }
     } catch (Throwable $exception) {
         $message = mb_substr($exception->getMessage(), 0, 2000);
         $classification = generation_error_classification($exception);
+        if ($exception instanceof GeminiTopicBudgetException && generation_batch_is_autonomous($item)) {
+            generation_batch_update_item($itemId, [
+                'status'=>'auto_repair','stage'=>'quality_check','outcome'=>'safe_composer_queued','progress_percent'=>84,
+                'wait_reason'=>'Budzet modelowy wykorzystany; uruchamiam lokalny source-bounded safe composer.',
+                'available_at'=>gmdate('Y-m-d H:i:s'),'next_retry_at'=>null,'quota_dimension'=>'','quota_model'=>'','completed_at'=>null,
+            ]);
+            repair_report_append($itemId, 'final_package', 'safe_composer', ['live_requests_used'=>$exception->usedRequests,'request_cap'=>15,'publication_recommended'=>false]);
+            generation_batch_audit((int)$item['batch_id'],$itemId,'gemini_topic_budget_salvage','worker',['live_requests_used'=>$exception->usedRequests,'request_cap'=>15,'next'=>'deterministic_safe_composer']);
+            return;
+        }
+        if ($exception instanceof GeminiQuotaWaitException) {
+            $retryAt = gmdate('Y-m-d H:i:s', strtotime($exception->nextRetryAt));
+            generation_batch_update_item($itemId, [
+                'status' => generation_batch_is_autonomous($item) ? 'auto_retry_scheduled' : 'rate_limited',
+                'outcome' => 'quota_retry_scheduled',
+                'available_at' => $retryAt, 'next_retry_at' => $retryAt,
+                'quota_dimension' => $exception->quotaDimension, 'quota_model' => $exception->quotaModel,
+                'wait_reason' => gemini_quota_wait_message($exception->quotaDimension, $exception->quotaModel),
+                'error_message' => $message,
+            ]);
+            generation_batch_audit((int) $item['batch_id'], $itemId, 'quota_retry_scheduled', 'worker', [
+                'next_retry_at' => gmdate('c', strtotime($exception->nextRetryAt)),
+                'quota_dimension' => $exception->quotaDimension, 'model' => $exception->quotaModel,
+            ]);
+            return;
+        }
+        $finalQcContractFailure = generation_batch_is_autonomous($item)
+            && $stage === 'quality_check'
+            && $classification['class'] === 'validation_contract'
+            && gemini_topic_live_request_count((int) $item['topic_id']) >= 15;
+        if ($finalQcContractFailure) {
+            generation_batch_update_item($itemId, [
+                'status' => 'auto_repair', 'stage' => 'quality_check', 'outcome' => 'safe_composer_queued',
+                'progress_percent' => 94,
+                'wait_reason' => 'Finalne QC modelowe zwrÃ³ciÅ‚o nieprawidÅ‚owy kontrakt; wykonujÄ™ deterministyczny post-QC gate bez kolejnego requestu.',
+                'available_at' => gmdate('Y-m-d H:i:s'), 'next_retry_at' => null,
+                'quota_dimension' => '', 'quota_model' => '', 'completed_at' => null,
+            ]);
+            repair_report_append($itemId, 'final_package', 'deterministic_post_qc_gate', [
+                'model_qc_status' => 'invalid_contract', 'live_requests_used' => 15,
+                'model_qc_passed' => false, 'next' => 'source_bounded_safe_composer',
+                'publication_recommended' => false,
+            ], ['Finalne modelowe QC nie dostarczyÅ‚o poprawnego kontraktu; gotowoÅ›Ä‡ zostanie oparta na bramkach deterministycznych.']);
+            generation_batch_audit((int) $item['batch_id'], $itemId, 'final_qc_contract_salvage', 'worker', [
+                'live_requests_used' => 15, 'model_qc_passed' => false,
+                'decision_basis' => 'deterministic_preflight_and_post_qc_gate',
+            ]);
+            return;
+        }
         $rateLimited = str_contains(mb_strtolower($message), 'limit free tier')
             || str_contains($message, '429') || str_contains(mb_strtolower($message), 'rate limit')
             || str_contains(mb_strtolower($message), 'timeout') || str_contains(mb_strtolower($message), 'timed out')
@@ -906,24 +1688,35 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
             $retryAfter = isset($retryAfterMatch[1]) ? (int) $retryAfterMatch[1] : 0;
             $delay = min(86400, max($retryAfter, (int) app_config('batch_rate_limit_backoff_seconds') * (2 ** min(5, $retry - 1))));
             generation_batch_update_item($itemId, [
-                'status' => 'rate_limited', 'retry_count' => $retry,
+                'status' => generation_batch_is_autonomous($item) ? 'auto_retry_scheduled' : 'rate_limited', 'retry_count' => $retry,
+                'outcome' => 'transport_retry_scheduled',
                 'available_at' => gmdate('Y-m-d H:i:s', time() + $delay),
-                'wait_reason' => 'Oczekiwanie na limit API (' . $delay . ' s).', 'error_message' => $message,
+                'next_retry_at' => gmdate('Y-m-d H:i:s', time() + $delay),
+                'quota_dimension' => 'transport', 'quota_model' => (string) app_config('gemini_model'),
+                'wait_reason' => 'Oczekiwanie na wznowienie transportu API.', 'error_message' => $message,
             ]);
-            generation_batch_audit((int) $item['batch_id'], $itemId, 'rate_limited', 'worker', ['delay_seconds' => $delay]);
+            generation_batch_audit((int) $item['batch_id'], $itemId, generation_batch_is_autonomous($item) ? 'auto_retry_scheduled' : 'rate_limited', 'worker', ['delay_seconds' => $delay]);
         } else {
-            $contractError = (string) $item['stage'] === 'quality_check'
-                && str_starts_with($message, 'Nieprawidłowa odpowiedź Gemini API:');
+            $contractError = str_starts_with($message, 'Nieprawidłowa odpowiedź Gemini API:');
             $display = $contractError
                 ? 'Błąd formatu odpowiedzi / wymaga poprawy kontraktu lub nowej operacji po aktualizacji.'
                 : $message;
-            generation_batch_update_item($itemId, [
-                'status' => 'failed', 'outcome' => $contractError ? 'validation_contract' : 'failed',
-                'wait_reason' => $display, 'error_message' => $message,
-            ]);
-            generation_batch_audit((int) $item['batch_id'], $itemId, 'item_failed', 'worker', [
-                'error' => $message, 'classification' => $contractError ? 'validation_contract' : $classification['class'],
-            ]);
+            if (generation_batch_is_autonomous($item)) {
+                $delay = max(60, (int) app_config('batch_rate_limit_backoff_seconds'));
+                generation_batch_update_item($itemId, ['status' => 'auto_retry_scheduled', 'outcome' => $contractError ? 'validation_retry_scheduled' : 'infrastructure_retry_scheduled',
+                    'available_at' => gmdate('Y-m-d H:i:s', time() + $delay),
+                    'wait_reason' => $contractError ? 'Walidacja kontraktu wymaga naprawy bieżącego etapu.' : 'Automatyczne wznowienie operacji po błędzie infrastruktury.',
+                    'error_message' => $message]);
+                generation_batch_audit((int) $item['batch_id'], $itemId, 'auto_retry_scheduled', 'worker', ['error' => $message, 'classification' => $contractError ? 'validation_contract' : $classification['class']]);
+            } else {
+                generation_batch_update_item($itemId, [
+                    'status' => 'failed', 'outcome' => $contractError ? 'validation_contract' : 'failed',
+                    'wait_reason' => $display, 'error_message' => $message,
+                ]);
+                generation_batch_audit((int) $item['batch_id'], $itemId, 'item_failed', 'worker', [
+                    'error' => $message, 'classification' => $contractError ? 'validation_contract' : $classification['class'],
+                ]);
+            }
         }
     } finally {
         generation_batch_update_item($itemId, ['lease_token' => null, 'lease_expires_at' => null]);
@@ -948,7 +1741,7 @@ function generation_batch_refresh_status(int $batchId): void
 function cancel_generation_batch_item(int $itemId, string $actor = 'admin'): void
 {
     $item = generation_batch_find_item($itemId);
-    if (!is_array($item) || !in_array($item['status'], ['queued', 'rate_limited'], true) || $item['lease_token'] !== null) {
+    if (!is_array($item) || !in_array($item['status'], ['queued', 'rate_limited', 'auto_retry_scheduled'], true) || $item['lease_token'] !== null) {
         throw new RuntimeException('Można anulować tylko oczekujący, nieprzetwarzany element.');
     }
     generation_batch_update_item($itemId, [
@@ -961,7 +1754,7 @@ function cancel_generation_batch_item(int $itemId, string $actor = 'admin'): voi
 function retry_generation_batch_item(int $itemId, string $actor = 'admin'): void
 {
     $item = generation_batch_find_item($itemId);
-    if (!is_array($item) || !in_array($item['status'], ['failed', 'rate_limited', 'cancelled'], true)) {
+    if (!is_array($item) || !in_array($item['status'], ['failed', 'rate_limited', 'auto_retry_scheduled', 'cancelled'], true)) {
         throw new RuntimeException('Ponowić można wyłącznie element nieudany, oczekujący na limit albo anulowany.');
     }
     if ((string) ($item['outcome'] ?? '') === 'validation_contract') {
@@ -989,7 +1782,7 @@ function retry_generation_batch(int $batchId, string $actor = 'admin'): int
 {
     $count = 0;
     foreach (generation_batch_item_rows($batchId) as $item) {
-        if (in_array($item['status'], ['failed', 'rate_limited', 'cancelled'], true)) {
+        if (in_array($item['status'], ['failed', 'rate_limited', 'auto_retry_scheduled', 'cancelled'], true)) {
             retry_generation_batch_item((int) $item['id'], $actor);
             $count++;
         }
@@ -1001,25 +1794,43 @@ function retry_generation_batch(int $batchId, string $actor = 'admin'): int
 function generation_batch_launch_worker(): void
 {
     if (getenv('CMS_BATCH_NO_SPAWN') === '1') return;
+    if (!generation_batch_has_due_items()) return;
+    $database = bueno_database();
+    $token = bin2hex(random_bytes(16));
+    $database->exec('BEGIN IMMEDIATE');
+    try {
+        $database->exec('DELETE FROM generation_worker_guard WHERE expires_at<=CURRENT_TIMESTAMP');
+        $guard = $database->prepare('INSERT OR IGNORE INTO generation_worker_guard(guard_key,lease_token,expires_at) VALUES(1,:token,:expires)');
+        $guard->execute([':token'=>$token,':expires'=>gmdate('Y-m-d H:i:s',time()+(int)app_config('batch_lease_seconds'))]);
+        $acquired = $guard->rowCount() === 1;
+        $database->exec('COMMIT');
+    } catch (Throwable $exception) {
+        try { $database->exec('ROLLBACK'); } catch (Throwable) {}
+        throw $exception;
+    }
+    if (!$acquired) return;
     $php = function_exists('content_studio_php_cli') ? content_studio_php_cli() : PHP_BINARY;
     $worker = __DIR__ . DIRECTORY_SEPARATOR . 'generation-batch-worker.php';
     for ($slot = 0; $slot < (int) app_config('batch_worker_concurrency'); $slot++) {
         if (PHP_OS_FAMILY === 'Windows') {
-            $handle = popen('start "" /B ' . escapeshellarg($php) . ' ' . escapeshellarg($worker) . ' --drain > NUL 2>&1', 'r');
+            $handle = popen('start "" /B ' . escapeshellarg($php) . ' ' . escapeshellarg($worker) . ' --drain --guard=' . escapeshellarg($token) . ' > NUL 2>&1', 'r');
             if ($handle === false) throw new RuntimeException('Nie udało się uruchomić workera batch.');
             pclose($handle);
             continue;
         }
-        exec(escapeshellarg($php) . ' ' . escapeshellarg($worker) . ' --drain > /dev/null 2>&1 &', $output, $exitCode);
+        exec(escapeshellarg($php) . ' ' . escapeshellarg($worker) . ' --drain --guard=' . escapeshellarg($token) . ' > /dev/null 2>&1 &', $output, $exitCode);
         if ($exitCode !== 0) throw new RuntimeException('Nie udało się uruchomić workera batch.');
     }
 }
 
 function generation_batch_has_due_items(): bool
 {
-    return (bool) bueno_database()->query(
-        'SELECT EXISTS(SELECT 1 FROM generation_batch_items
-         WHERE status IN ("queued", "rate_limited") AND available_at <= CURRENT_TIMESTAMP
-           AND lease_token IS NULL LIMIT 1)'
-    )->fetchColumn();
+    $statement = bueno_database()->prepare(
+        'SELECT EXISTS(SELECT 1 FROM generation_batch_items items INNER JOIN generation_batches batches ON batches.id=items.batch_id
+         WHERE items.status IN ("queued", "research", "draft", "auto_repair", "quality_check", "images", "rate_limited", "auto_retry_scheduled")
+           AND items.available_at <= CURRENT_TIMESTAMP AND items.lease_token IS NULL
+           AND (:paused=0 OR batches.dispatch_mode="operator_manual") LIMIT 1)'
+    );
+    $statement->execute([':paused' => generation_automatic_dispatch_paused() ? 1 : 0]);
+    return (bool) $statement->fetchColumn();
 }

@@ -7,11 +7,17 @@ require_once __DIR__ . '/admin-database.php';
 bueno_database();
 
 $drain = in_array('--drain', $argv, true);
-generation_batch_backfill_research_sources();
-do {
-    $claims = generation_batch_claim_items(1);
-    foreach ($claims as $claim) {
-        generation_batch_process_item((int) $claim['id'], (string) $claim['lease_token']);
-    }
-    if (!$drain || $claims === []) break;
-} while (true);
+$guardToken = '';
+foreach ($argv as $argument) if (str_starts_with((string)$argument, '--guard=')) $guardToken = substr((string)$argument, 8);
+try {
+    generation_batch_backfill_research_sources();
+    do {
+        $claims = generation_batch_claim_items(1);
+        foreach ($claims as $claim) {
+            generation_batch_process_item((int) $claim['id'], (string) $claim['lease_token']);
+        }
+        if (!$drain || $claims === []) break;
+    } while (true);
+} finally {
+    if ($guardToken !== '') bueno_database()->prepare('DELETE FROM generation_worker_guard WHERE guard_key=1 AND lease_token=:token')->execute([':token'=>$guardToken]);
+}

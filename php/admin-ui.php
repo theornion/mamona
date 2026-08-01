@@ -13,7 +13,7 @@ function admin_page_open(string $title, string $active): void
 {
     $pageLabels = [
         'studio' => 'Studio redakcyjne', 'topics' => 'Tematy', 'generation' => 'Generowanie',
-        'proposals' => 'Gotowe propozycje', 'editorial' => 'Procesy / Historia', 'posts' => 'Posty',
+        'action-required' => 'Wymagające akcji', 'proposals' => 'Gotowe propozycje', 'editorial' => 'Procesy / Historia', 'posts' => 'Posty',
         'gallery' => 'Galerie', 'sources' => 'Źródła techniczne', 'messages' => 'Wiadomości',
         'styles' => 'Wygląd strony', 'contact' => 'Dane kontaktowe', 'social' => 'Social media',
         'trash' => 'Kosz treści', 'topic-trash' => 'Kosz tematów', 'profile' => 'Profil',
@@ -21,6 +21,7 @@ function admin_page_open(string $title, string $active): void
     $nextSteps = [
         'studio' => ['Tematy', 'admin-editorial-topics.php'],
         'topics' => ['Przejdź do propozycji', 'admin-proposals.php'],
+        'action-required' => ['Przejdź do gotowych', 'admin-proposals.php'],
         'generation' => ['Wróć do tematów', 'admin-editorial-topics.php'],
         'proposals' => ['Zarządzaj postami', 'admin-posts.php'],
         'editorial' => ['Wróć do tematów', 'admin-editorial-topics.php'],
@@ -92,7 +93,8 @@ function admin_page_close(): void
     <script src="../assets/js/admin-sortable.js?v=bueno-release-20260721c"></script>
     <script src="../assets/js/admin-generation.js?v=bueno-release-20260724a"></script>
     <script src="../assets/js/admin-content-studio.js?v=bueno-release-20260731b"></script>
-    <script src="../assets/js/admin-editorial-topics.js?v=bueno-release-20260731a"></script>
+    <script src="../assets/js/topic-filter-state.js?v=topics-filter-20260801a"></script>
+    <script src="../assets/js/admin-editorial-topics.js?v=topics-filter-20260801a"></script>
 </body>
 </html>
     <?php

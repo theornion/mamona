@@ -4617,6 +4617,11 @@ a.news-feed-card.gallery-overview-card .news-feed-content {
 	width: 100%;
 }
 
+/* Alpha assets keep their pixels intact; only their own image area gets a readable canvas. */
+.article-illustration--transparent > img {
+	background: #fff;
+}
+
 .article-illustration--hero {
 	width:100%;
 	max-width:58rem;
@@ -4644,6 +4649,21 @@ a.news-feed-card.gallery-overview-card .news-feed-content {
 
 .article-illustration figcaption small {
 	display: block;
+}
+
+.article-image-caption {
+	display: block;
+}
+
+.article-image-context-note {
+	color: #8a949d;
+	font-size: 0.84em;
+	font-style: normal;
+	margin-top: 0.18rem;
+}
+
+.article-image-credit {
+	margin-top: 0.28rem;
 }
 
 .article-illustration--left,

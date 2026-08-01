@@ -57,6 +57,20 @@ public_theme_assert(
     preg_match('/figcaption\s*\{[^}]*background:\s*transparent\s*!important;[^}]*text-align:\s*center\s*!important;/s', $css) === 1,
     'Podpis ilustracji nie jest wycentrowany na przezroczystym tle.'
 );
+public_theme_assert(
+    preg_match('/body:not\(\.admin-page\)\s+\.post-ai-disclosure\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*0\.82rem;[^}]*text-align:\s*center;/s', $css) === 1,
+    'Informacja o wsparciu AI nadal ma box albo nie jest dyskretnym, wycentrowanym tekstem.'
+);
+public_theme_assert(
+    !str_contains($css, ':where(.post-sources, .post-related, .post-ai-disclosure)'),
+    'Informacja o wsparciu AI nadal dziedziczy wygląd paneli źródeł i materiałów powiązanych.'
+);
+$renderer = (string) file_get_contents(dirname(__DIR__) . '/php/admin-database.php');
+public_theme_assert(
+    strpos($renderer, '{$relatedHtml}') < strpos($renderer, '{$aiHtml}')
+        && strpos($renderer, '{$aiHtml}') < strpos($renderer, '<ul class="actions special">'),
+    'Informacja o wsparciu AI nie znajduje się bezpośrednio nad powrotem do aktualności.'
+);
 
 $parallax = (string) file_get_contents(dirname(__DIR__) . '/assets/js/parallax.js');
 public_theme_assert(
