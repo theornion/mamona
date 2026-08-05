@@ -1,2 +1,2 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Twoja marka</title><link>http://localhost:8000</link><description>Najnowsze publikacje serwisu Twoja marka</description><language>pl-PL</language><atom:link href="http://localhost:8000/feed.xml" rel="self" type="application/rss+xml"/></channel></rss>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Twoja marka</title><link>https://racing-epic-dear-los.trycloudflare.com/php</link><description>Najnowsze publikacje serwisu Twoja marka</description><language>pl-PL</language><atom:link href="https://racing-epic-dear-los.trycloudflare.com/php/feed.xml" rel="self" type="application/rss+xml"/></channel></rss>
