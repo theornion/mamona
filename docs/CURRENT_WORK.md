@@ -1,65 +1,66 @@
-# Current work
+# Current Work
 
-## Status
+## Current goal
 
-No concrete next implementation task has been recorded yet.
+Do uzupełnienia przed pierwszą sesją Roo Code.
 
-The documented repository baseline states that TASK-01 through TASK-22 are completed. Before making the next change, replace this section with one narrowly defined goal.
+## Expected result
 
-## Next session goal
+- Zadanie jest wykonane zgodnie z istniejącą architekturą projektu.
+- Nie są zmieniane niepowiązane elementy.
+- Odpowiednie testy przechodzą poprawnie.
+- Agent podaje listę zmienionych plików.
 
-```text
-Describe one concrete result, for example:
-“Fix X so that Y happens, without changing Z.”
-```
+## Current state
 
-## Acceptance criteria
+- Repozytorium Mamona jest dostępne lokalnie.
+- Dodano konfigurację Roo Code i Vast.ai.
+- Dodano `AGENTS.md` oraz dokumentację kontekstu.
+- Nie rozpoczęto jeszcze implementacji nowego zadania.
 
-- [ ] Add measurable criteria here.
-- [ ] Identify what must not regress.
-- [ ] Identify the required test or manual verification.
+## Completed
+
+- [x] Przygotowano pliki kontekstu dla agentów.
+- [x] Dodano skrypty konfiguracji Vast.ai.
+- [x] Zapisano zmiany w GitHubie.
+- [ ] Ustalono pierwsze zadanie programistyczne.
+- [ ] Uruchomiono model na Vast.ai.
+- [ ] Podłączono Roo Code do zdalnej Ollamy.
+
+## Next steps
+
+1. Ustalić pierwsze konkretne zadanie.
+2. Uzupełnić sekcję `Current goal`.
+3. Wynająć RTX 3090 24 GB.
+4. Uruchomić `scripts/setup-vast.sh`.
+5. Utworzyć tunel przez `scripts/connect-vast.ps1`.
+6. Skonfigurować profile modeli w Roo Code.
+7. Zlecić agentowi wykonanie zadania.
 
 ## Relevant files
 
-```text
-Add only the files or directories known to be relevant.
-```
+- `AGENTS.md`
+- `.roomodes`
+- `docs/PROJECT_CONTEXT.md`
+- `docs/CURRENT_WORK.md`
+- `docs/END_SESSION.md`
+- `scripts/setup-vast.sh`
+- `scripts/connect-vast.ps1`
 
-## Work completed in the current task
+## Blockers
 
-- Nothing recorded yet.
+Pierwsze zadanie programistyczne nie zostało jeszcze określone.
 
-## Remaining work
+## Validation status
 
-- Define the next concrete task.
+Nie dotyczy — nie rozpoczęto zmian w kodzie aplikacji.
 
-## Known blockers or uncertainties
+## Session handoff
 
-- Local branch, uncommitted changes and environment must be checked at session start.
-- Exact XAMPP project path is not documented here.
+Następny agent powinien:
 
-## Validation log
-
-| Date | Command/test | Result | Notes |
-|---|---|---|---|
-| — | — | — | — |
-
-## Handoff prompt for a new agent
-
-```text
-Read AGENTS.md, docs/PROJECT_CONTEXT.md and docs/CURRENT_WORK.md.
-Check git status and the latest five commits.
-Continue only the goal and acceptance criteria in CURRENT_WORK.md.
-Inspect the smallest relevant part of the repository first.
-Do not run paid APIs, publish content or perform destructive operations without approval.
-```
-
-## Update rules
-
-At the end of every meaningful session:
-
-1. Replace stale statements instead of appending an endless diary.
-2. Record the exact current goal, completed work and next action.
-3. List relevant files and validation results.
-4. Move durable architectural knowledge to `PROJECT_CONTEXT.md`.
-5. Do not include secrets, full credentials or private production data.
+1. Przeczytać `AGENTS.md`.
+2. Przeczytać `docs/PROJECT_CONTEXT.md`.
+3. Przeczytać ten plik.
+4. Nie analizować całego repozytorium, dopóki nie zostanie określone pierwsze zadanie.
+5. Nie modyfikować kodu bez konkretnego celu.
