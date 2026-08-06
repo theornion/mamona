@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://racing-epic-dear-los.trycloudflare.com/php</loc></url>
-  <url><loc>https://racing-epic-dear-los.trycloudflare.com/php/pages/galerie.html</loc></url>
-  <url><loc>https://racing-epic-dear-los.trycloudflare.com/php/pages/o-serwisie.html</loc></url>
-  <url><loc>https://racing-epic-dear-los.trycloudflare.com/php/pages/autorzy.html</loc></url>
-  <url><loc>https://racing-epic-dear-los.trycloudflare.com/php/pages/polityka-redakcyjna.html</loc></url>
-  <url><loc>https://racing-epic-dear-los.trycloudflare.com/php/pages/jak-uzywamy-ai.html</loc></url>
-  <url><loc>https://racing-epic-dear-los.trycloudflare.com/php/pages/korekty-i-aktualizacje.html</loc></url>
-  <url><loc>https://racing-epic-dear-los.trycloudflare.com/php/pages/kontakt.html</loc></url>
-  <url><loc>https://racing-epic-dear-los.trycloudflare.com/php/pages/polityka-prywatnosci.html</loc></url>
-  <url><loc>https://racing-epic-dear-los.trycloudflare.com/php/pages/autor-redakcja.html</loc></url>
-  <url><loc>https://racing-epic-dear-los.trycloudflare.com/php/pages/kategoria-nowa-kategoria.html</loc></url>
+  <url><loc>http://localhost:8000</loc></url>
+  <url><loc>http://localhost:8000/pages/galerie.html</loc></url>
+  <url><loc>http://localhost:8000/pages/o-serwisie.html</loc></url>
+  <url><loc>http://localhost:8000/pages/autorzy.html</loc></url>
+  <url><loc>http://localhost:8000/pages/polityka-redakcyjna.html</loc></url>
+  <url><loc>http://localhost:8000/pages/jak-uzywamy-ai.html</loc></url>
+  <url><loc>http://localhost:8000/pages/korekty-i-aktualizacje.html</loc></url>
+  <url><loc>http://localhost:8000/pages/kontakt.html</loc></url>
+  <url><loc>http://localhost:8000/pages/polityka-prywatnosci.html</loc></url>
+  <url><loc>http://localhost:8000/pages/autor-redakcja.html</loc></url>
+  <url><loc>http://localhost:8000/pages/kategoria-nowa-kategoria.html</loc></url>
 </urlset>

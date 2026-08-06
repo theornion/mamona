@@ -1,4 +1,4 @@
-﻿# Decyzje procesowe — TASK-23
+# Decyzje procesowe — TASK-23
 
 ## Status
 
@@ -16,3 +16,17 @@ Zatwierdzone 2026-08-05 po analizie P0
 | D6 | Implementacja po specyfikacji i akceptacji | Kolejność faz | Nie implementować kodu przed zapisaniem root cause i zaakceptowaniem specyfikacji w dokumentach | 2026-08-05 | CURRENT_WORK.md Zasady wykonania, faza P1 checkpoint |
 | D7 | Brak auto-publikacji z niesprawdzonymi obrazami | Ochrona produkcji | Do zakończenia zadania nie publikować automatycznie kolejnych materiałów z niesprawdzonymi obrazami | 2026-08-05 | CURRENT_WORK.md Główny cel |
 | D8 | Fixture DonkeyHotey jako test regresji, nie jako filtr | R2 regression | Przypadek `"Big Orange Zombie Eating Brains"` ma być deterministycznym fixture'em testowym, a nie jednorazowym filtrem na nazwisko | 2026-08-05 | CURRENT_WORK.md Funkcjonalne wymagania §2 |
+
+
+## Decyzje produktowe — MAMONA-24
+
+```text
+Zatwierdzone przez użytkownika 2026-08-06; wymagają potwierdzenia w kodzie podczas P0/P1.
+```
+
+| # | Decyzja | Kontekst | Powód | Data | Źródło |
+|---|---|---|---|---|---|
+| D9 | Brak placeholderów i fallbacków w finalnym artykule | Kontrakt grafik V2 | Każdy artykuł ma mieć rzeczywiste, trafne grafiki; asset zastępczy nie jest akceptowalnym wynikiem | 2026-08-06 | Decyzja użytkownika; MAMONA-24 §3 |
+| D10 | D4 jest historyczne i zastąpione przez D9 dla finalnego renderu | Zgodność TASK-23 → MAMONA-24 | Fallback może pozostać wyłącznie wewnętrznym sygnałem błędu, ale nie może być renderowany ani publikowany | 2026-08-06 | MAMONA-24 §3 |
+| D11 | Wadliwe istniejące artykuły zostaną wyzerowane bez Gemini po naprawie generatora | Remediacja danych | Użytkownik chce ponownie przetestować pełną generację treści i grafik na tych samych seedach | 2026-08-06 | MAMONA-24 §8 i P5 |
+| D12 | Reset zachowuje seed i historię, czyści artefakty pochodne i nie uruchamia regeneracji | Bezpieczeństwo danych | Pozwala na audyt i ręczny test bez ponoszenia kosztu API podczas samej naprawy | 2026-08-06 | MAMONA-24 §8 i P5 |

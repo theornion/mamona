@@ -1,0 +1,151 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+  "model": "ollama/qwen3.6:27b",
+  "small_model": "ollama/qwen3.5:9b",
+  "share": "disabled",
+  "snapshot": true,
+  "autoupdate": "notify",
+  "web_search": false,
+  "provider": {
+    "ollama": {
+      "options": {
+        "baseURL": "http://127.0.0.1:11436/v1",
+        "timeout": 1800000,
+        "chunkTimeout": 600000
+      },
+      "whitelist": [
+        "qwen3.6:27b",
+        "qwen3.6-no-think",
+        "qwen3.5:9b"
+      ],
+      "models": {
+        "qwen3.6:27b": {
+          "id": "qwen3.6:27b",
+          "name": "Qwen 3.6 27B — Mamona Main 128K / 64K output",
+          "tool_call": true,
+          "reasoning": true,
+          "temperature": true,
+          "attachment": false,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 131072,
+            "output": 65536
+          },
+          "variants": {
+            "balanced": {
+              "reasoning_effort": "medium"
+            },
+            "deep": {
+              "reasoning_effort": "high"
+            }
+          }
+        },
+        "qwen3.6-no-think": {
+          "id": "qwen3.6:27b",
+          "name": "Qwen 3.6 27B — Mamona No-Think 128K",
+          "tool_call": true,
+          "reasoning": false,
+          "temperature": true,
+          "attachment": false,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "options": {
+            "reasoning_effort": "none"
+          },
+          "limit": {
+            "context": 131072,
+            "output": 32768
+          }
+        },
+        "qwen3.5:9b": {
+          "id": "qwen3.5:9b",
+          "name": "Qwen 3.5 9B — Mamona Fast 128K",
+          "tool_call": true,
+          "reasoning": true,
+          "temperature": true,
+          "attachment": false,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          },
+          "variants": {
+            "no-think": {
+              "reasoning_effort": "none"
+            },
+            "balanced": {
+              "reasoning_effort": "medium"
+            },
+            "deep": {
+              "reasoning_effort": "high"
+            }
+          }
+        }
+      }
+    }
+  },
+  "indexing": {
+    "enabled": true,
+    "provider": "ollama",
+    "model": "nomic-embed-text",
+    "dimension": 768,
+    "vectorStore": "lancedb",
+    "ollama": {
+      "baseUrl": "http://127.0.0.1:11436"
+    },
+    "lancedb": {},
+    "fileExtensions": [
+      ".php",
+      ".js",
+      ".css",
+      ".html",
+      ".md",
+      ".json",
+      ".jsonc",
+      ".sql",
+      ".xml",
+      ".ps1",
+      ".sh"
+    ],
+    "searchMinScore": 0.48,
+    "searchMaxResults": 12,
+    "embeddingBatchSize": 24,
+    "scannerMaxBatchRetries": 3
+  },
+  "compaction": {
+    "auto": false,
+    "prune": true
+  },
+  "permission": {
+    "external_directory": "deny",
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "edit": "ask",
+    "bash": "ask",
+    "task": "ask",
+    "webfetch": "deny",
+    "websearch": "deny",
+    "doom_loop": "ask"
+  }
+}

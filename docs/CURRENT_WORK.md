@@ -1,104 +1,113 @@
-﻿# Current Work â€” TASK-23: image selection and rendering regression
+# Current Work — MAMONA-24: Article Generation & Visual Narrative Pipeline V2
 
 ## ACTIVE
 
 ```text
-MAMONA-23-P0 â€” INITIAL INDEXED MAP
+MAMONA-24-P0 — REPOSITORY RECONNAISSANCE
 ```
 
-Wykonaj tylko aktywnÄ… fazÄ™. Nie przechodÅº automatycznie do nastÄ™pnej.
+Wykonaj tylko aktywną fazę. Nie przechodź automatycznie do następnej.
 
-## GÅ‚Ã³wny cel
+---
 
-NaprawiÄ‡ automatyczny dobÃ³r oraz renderowanie obrazÃ³w w artykuÅ‚ach.
+## Historia — TASK-23 (archiwum)
 
-Po ostatniej aktualizacji wystÄ™pujÄ… dwie klasy regresji:
+Zakończony zakres: image selection and rendering regression (R1 fallback caption, R2 token dominance).
+Potwierdzone dokumenty: `docs/ARCHITECTURE.md`, `docs/IMAGE_PIPELINE_MAP.md`, `docs/DECISIONS.md`, `docs/CONTEXT_INDEX.md`.
+P0 TASK-23 zakończony 2026-08-05. P1 nie uruchomiono.
+---
 
-1. Neutralny fallback wyÅ›wietla caption lub alt opisujÄ…cy konkretny obraz, ktÃ³rego finalnie nie ma.
-2. Legalny, ale semantycznie albo redakcyjnie niepasujÄ…cy obraz moÅ¼e wygraÄ‡ przez przypadkowe dopasowanie pojedynczego sÅ‚owa.
+## Główny cel
 
-Do zakoÅ„czenia zadania nie publikowaÄ‡ automatycznie kolejnych materiaÅ‚Ã³w z niesprawdzonymi obrazami.
+Naprawić automatyczny dobór oraz renderowanie obrazów w artykułach.
 
-## PrzykÅ‚ady referencyjne
+Po ostatniej aktualizacji występują dwie klasy regresji:
 
-### R1 â€” faÅ‚szywy caption fallbacku
+1. Neutralny fallback wyświetla caption lub alt opisujący konkretny obraz, którego finalnie nie ma.
+2. Legalny, ale semantycznie albo redakcyjnie niepasujący obraz może wygrać przez przypadkowe dopasowanie pojedynczego słowa.
 
-ArtykuÅ‚ o pingwinie AdÃ©lie pokazuje neutralnÄ… grafikÄ™ geometrycznÄ…, ale caption twierdzi, Å¼e przedstawia pingwina w naturalnym Å›rodowisku.
+Do zakończenia zadania nie publikować automatycznie kolejnych materiałów z niesprawdzonymi obrazami.
 
-Oczekiwane: fallback ma wÅ‚asny neutralny caption, alt i brak zewnÄ™trznego creditu.
+## Przykłady referencyjne
 
-### R2 â€” legalny, ale niedopuszczalny obraz
+### R1 — fałszywy caption fallbacku
 
-ArtykuÅ‚ o neuroplastycznoÅ›ci otrzymuje satyryczny obraz polityka-zombie jedzÄ…cego mÃ³zg, poniewaÅ¼ metadane zawierajÄ… token `brain`.
+Artykuł o pingwinie Adélie pokazuje neutralną grafikę geometryczną, ale caption twierdzi, że przedstawia pingwina w naturalnym środowisku.
 
-Oczekiwane: legalnoÅ›Ä‡ przechodzi osobnÄ… walidacjÄ™, ale kandydat odpada na bramce semantycznej/redakcyjnej.
+Oczekiwane: fallback ma własny neutralny caption, alt i brak zewnętrznego creditu.
+
+### R2 — legalny, ale niedopuszczalny obraz
+
+Artykuł o neuroplastyczności otrzymuje satyryczny obraz polityka-zombie jedzącego mózg, ponieważ metadane zawierają token `brain`.
+
+Oczekiwane: legalność przechodzi osobną walidację, ale kandydat odpada na bramce semantycznej/redakcyjnej.
 
 ## Zasady wykonania
 
-- UÅ¼ywaj semantycznego indeksu przed rÄ™cznym otwieraniem plikÃ³w.
-- Maksymalnie 12 plikÃ³w na jeden subtask eksploracyjny.
-- Nie czytaj ponownie pliku bez nazwania konkretnego brakujÄ…cego pytania.
-- BrakujÄ…cego pliku nie otwieraj drugi raz.
+- Używaj semantycznego indeksu przed ręcznym otwieraniem plików.
+- Maksymalnie 12 plików na jeden subtask eksploracyjny.
+- Nie czytaj ponownie pliku bez nazwania konkretnego brakującego pytania.
+- Brakującego pliku nie otwieraj drugi raz.
 - Nie implementuj przed zapisaniem root cause i zaakceptowaniem specyfikacji.
-- Nie uruchamiaj realnych providerÃ³w, pÅ‚atnych API ani publikacji.
-- Nie osÅ‚abiaj walidacji praw i licencji.
-- Nie opieraj filtra wyÅ‚Ä…cznie na liÅ›cie nazwisk albo pojedynczych sÅ‚owach.
-- Po kaÅ¼dej fazie zatrzymaj siÄ™ na checkpoint.
+- Nie uruchamiaj realnych providerów, płatnych API ani publikacji.
+- Nie osłabiaj walidacji praw i licencji.
+- Nie opieraj filtra wyłącznie na liście nazwisk albo pojedynczych słowach.
+- Po każdej fazie zatrzymaj się na checkpoint.
 
 # Kolejka faz
 
-## MAMONA-23-P0 â€” INITIAL INDEXED MAP â€” ACTIVE
+## MAMONA-23-P0 — INITIAL INDEXED MAP — ACTIVE
 
-**Agent nadrzÄ™dny:** `mamona-orchestrator`  
-**Subagenci:** 2 Ã— `repo-scout`  
+**Agent nadrzędny:** `mamona-orchestrator`  
+**Subagenci:** 2 × `repo-scout`  
 **Modele:** scout `qwen3.5:9b/fast`, synteza `qwen3.6:27b/deep`  
 **Edycja kodu:** zabroniona
 
 ### Cel
 
-ZbudowaÄ‡ potwierdzonÄ… mapÄ™ istniejÄ…cego przepÅ‚ywu obrazÃ³w przy minimalnym odczycie plikÃ³w.
+Zbudować potwierdzoną mapę istniejącego przepływu obrazów przy minimalnym odczycie plików.
 
-### Zadania rÃ³wnolegÅ‚e
+### Zadania równoległe
 
-#### P0-A â€” selection pipeline
+#### P0-A — selection pipeline
 
-ZnajdÅº:
+Znajdź:
 
-1. dane artykuÅ‚u/researchu/kategorii uÅ¼ywane do zapytaÅ„;
+1. dane artykułu/researchu/kategorii używane do zapytań;
 2. generowanie query;
-3. providerÃ³w i pobieranie kandydatÃ³w;
+3. providerów i pobieranie kandydatów;
 4. prawa/licencje;
 5. ranking semantyczny i redakcyjny;
-6. wybÃ³r zwyciÄ™zcy.
+6. wybór zwycięzcy.
 
-#### P0-B â€” metadata and rendering pipeline
+#### P0-B — metadata and rendering pipeline
 
-ZnajdÅº:
+Znajdź:
 
 1. finalny plik i identyfikator assetu;
 2. source page i direct file;
 3. creator i credit;
 4. caption i alt;
 5. rights manifest;
-6. flagÄ™/typ fallbacku;
+6. flagę/typ fallbacku;
 7. fallback creation;
 8. publiczny renderer HTML;
-9. zachowanie przy niedostÄ™pnym pliku.
+9. zachowanie przy niedostępnym pliku.
 
 ### Wyniki
 
-- uzupeÅ‚nione `docs/ARCHITECTURE.md`;
-- uzupeÅ‚nione `docs/IMAGE_PIPELINE_MAP.md`;
-- lista maksymalnie 16 najwaÅ¼niejszych plikÃ³w Å‚Ä…cznie;
-- lista luk, ktÃ³rych indeks/kod nie rozstrzyga.
+- uzupełnione `docs/ARCHITECTURE.md`;
+- uzupełnione `docs/IMAGE_PIPELINE_MAP.md`;
+- lista maksymalnie 16 najważniejszych plików łącznie;
+- lista luk, których indeks/kod nie rozstrzyga.
 
-### Kryterium zakoÅ„czenia
+### Kryterium zakończenia
 
-Mapa zawiera potwierdzonÄ… kolejnoÅ›Ä‡ funkcji i pola przenoszone miÄ™dzy etapami. Brak implementacji i testÃ³w.
+Mapa zawiera potwierdzoną kolejność funkcji i pola przenoszone między etapami. Brak implementacji i testów.
 
 ---
 
-## MAMONA-23-P1 â€” ROOT CAUSE AND SPEC â€” BLOCKED BY P0
+## MAMONA-23-P1 — ROOT CAUSE AND SPEC — BLOCKED BY P0
 
 **Agent:** `mamona-architect`  
 **Model:** `qwen3.6:27b/deep`  
@@ -106,62 +115,62 @@ Mapa zawiera potwierdzonÄ… kolejnoÅ›Ä‡ funkcji i pola przenoszone miÄ�
 
 ### Cel
 
-UstaliÄ‡ konkretnÄ… przyczynÄ™ obu regresji i zapisaÄ‡ specyfikacjÄ™:
+Ustalić konkretną przyczynę obu regresji i zapisać specyfikację:
 
 ```text
 docs/specs/TASK-23-image-selection-rendering-regression.md
 ```
 
-### ObowiÄ…zkowe ustalenia
+### Obowiązkowe ustalenia
 
-- gdzie finalny asset moÅ¼e rozminÄ…Ä‡ siÄ™ z captionem/alt/credit/source;
+- gdzie finalny asset może rozminąć się z captionem/alt/credit/source;
 - czy fallback dziedziczy metadane kandydata;
-- co dzieje siÄ™, gdy plik nie istnieje albo processing koÅ„czy siÄ™ bÅ‚Ä™dem;
+- co dzieje się, gdy plik nie istnieje albo processing kończy się błędem;
 - jak powstaje relevance score;
-- czy pojedynczy token moÅ¼e zdominowaÄ‡ ranking;
-- gdzie legalnoÅ›Ä‡ jest mylona z uÅ¼ytecznoÅ›ciÄ… redakcyjnÄ…;
-- jakie negatywne sygnaÅ‚y sÄ… dostÄ™pne w metadanych;
-- czy naprawa wymaga migracji istniejÄ…cych rekordÃ³w.
+- czy pojedynczy token może zdominować ranking;
+- gdzie legalność jest mylona z użytecznością redakcyjną;
+- jakie negatywne sygnały są dostępne w metadanych;
+- czy naprawa wymaga migracji istniejących rekordów.
 
 ### Checkpoint
 
-Po specyfikacji zatrzymaj siÄ™ i poproÅ› o akceptacjÄ™. Nie implementuj.
+Po specyfikacji zatrzymaj się i poproś o akceptację. Nie implementuj.
 
 ---
 
-## MAMONA-23-P2 â€” FINAL ASSET AND FALLBACK CONSISTENCY â€” BLOCKED BY APPROVAL
+## MAMONA-23-P2 — FINAL ASSET AND FALLBACK CONSISTENCY — BLOCKED BY APPROVAL
 
 **Agent:** `mamona-coder`  
 **Model:** `qwen3.6:27b/balanced`
 
 ### Cel
 
-ZapewniÄ‡, Å¼e finalnie wyÅ›wietlany plik, caption, alt, credit, source i rights manifest naleÅ¼Ä… do jednego finalnego assetu.
+Zapewnić, że finalnie wyświetlany plik, caption, alt, credit, source i rights manifest należą do jednego finalnego assetu.
 
 ### Wymagania
 
-- fallback ma wÅ‚asne neutralne metadane;
-- fallback nie dziedziczy danych odrzuconego lub niedostÄ™pnego kandydata;
-- niedostÄ™pny finalny plik nie renderuje podpisu/creditu ÅºrÃ³dÅ‚a;
-- renderer uÅ¼ywa wyÅ‚Ä…cznie zweryfikowanego finalnego rekordu;
-- istniejÄ…ce poprawne assety zachowujÄ… dotychczasowe dane.
+- fallback ma własne neutralne metadane;
+- fallback nie dziedziczy danych odrzuconego lub niedostępnego kandydata;
+- niedostępny finalny plik nie renderuje podpisu/creditu źródła;
+- renderer używa wyłącznie zweryfikowanego finalnego rekordu;
+- istniejące poprawne assety zachowują dotychczasowe dane.
 
 ### Minimalna walidacja
 
 - test pingwina/fallbacku;
-- test niedostÄ™pnego pliku;
+- test niedostępnego pliku;
 - test poprawnego legalnego obrazu.
 
 ---
 
-## MAMONA-23-P3 â€” SEMANTIC AND EDITORIAL RELEVANCE GATE â€” BLOCKED BY P2
+## MAMONA-23-P3 — SEMANTIC AND EDITORIAL RELEVANCE GATE — BLOCKED BY P2
 
 **Agent:** `mamona-coder`  
-**Model:** `qwen3.6:27b/deep` dla projektu reguÅ‚, potem `balanced` dla implementacji
+**Model:** `qwen3.6:27b/deep` dla projektu reguł, potem `balanced` dla implementacji
 
 ### Cel
 
-OddzieliÄ‡:
+Oddzielić:
 
 ```text
 rights validation
@@ -173,50 +182,50 @@ od:
 semantic and editorial suitability
 ```
 
-### SygnaÅ‚y pozytywne
+### Sygnały pozytywne
 
-- gÅ‚Ã³wny temat;
-- tytuÅ‚;
+- główny temat;
+- tytuł;
 - kategoria;
 - kluczowe encje;
 - gatunki, obiekty, procesy i instytucje z researchu;
 - title, description i tags assetu.
 
-### SygnaÅ‚y negatywne
+### Sygnały negatywne
 
-- inny gÅ‚Ã³wny kontekst niÅ¼ artykuÅ‚;
-- osoby publiczne niebÄ™dÄ…ce tematem;
+- inny główny kontekst niż artykuł;
+- osoby publiczne niebędące tematem;
 - polityczna satyra;
 - zombie, gore, makabra, przemoc;
 - memy i karykatury;
-- szokujÄ…cy albo sensacyjny przekaz nieobecny w artykule.
+- szokujący albo sensacyjny przekaz nieobecny w artykule.
 
-RozwiÄ…zanie musi byÄ‡ ogÃ³lne i oparte na dostÄ™pnych metadanych. Nie moÅ¼e bazowaÄ‡ wyÅ‚Ä…cznie na jednej liÅ›cie nazwisk lub sÅ‚Ã³w.
+Rozwiązanie musi być ogólne i oparte na dostępnych metadanych. Nie może bazować wyłącznie na jednej liście nazwisk lub słów.
 
-JeÅ¼eli Å¼aden kandydat nie speÅ‚nia minimum, wybierz neutralny fallback.
+Jeżeli żaden kandydat nie spełnia minimum, wybierz neutralny fallback.
 
 ---
 
-## MAMONA-23-P4 â€” DIAGNOSTICS â€” BLOCKED BY P3
+## MAMONA-23-P4 — DIAGNOSTICS — BLOCKED BY P3
 
 **Agent:** `mamona-coder`  
 **Model:** `qwen3.6:27b/balanced`
 
-Zapisuj bez sekretÃ³w:
+Zapisuj bez sekretów:
 
-- query dla kaÅ¼dego providera;
-- liczbÄ™ kandydatÃ³w;
-- przyczynÄ™ odrzucenia;
+- query dla każdego providera;
+- liczbę kandydatów;
+- przyczynę odrzucenia;
 - relevance score;
-- najwaÅ¼niejsze sygnaÅ‚y pozytywne i negatywne;
-- przyczynÄ™ fallbacku;
+- najważniejsze sygnały pozytywne i negatywne;
+- przyczynę fallbacku;
 - identyfikator finalnego assetu.
 
-Diagnostyka ma byÄ‡ wystarczajÄ…ca do odtworzenia decyzji, ale nie moÅ¼e logowaÄ‡ kluczy API ani peÅ‚nych sekretÃ³w.
+Diagnostyka ma być wystarczająca do odtworzenia decyzji, ale nie może logować kluczy API ani pełnych sekretów.
 
 ---
 
-## MAMONA-23-P5 â€” REGRESSION TESTS AND VALIDATION â€” BLOCKED BY P2â€“P4
+## MAMONA-23-P5 — REGRESSION TESTS AND VALIDATION — BLOCKED BY P2–P4
 
 **Agent:** `mamona-tester`  
 **Model:** `qwen3.6:27b/balanced`  
@@ -225,33 +234,33 @@ Diagnostyka ma byÄ‡ wystarczajÄ…ca do odtworzenia decyzji, ale nie moÅ¼e
 ### Test matrix
 
 1. Pingwin:
-   - trafny obraz pingwina wygrywa z ogÃ³lnÄ… naturÄ…;
-   - fallback nie twierdzi, Å¼e przedstawia pingwina.
+   - trafny obraz pingwina wygrywa z ogólną naturą;
+   - fallback nie twierdzi, że przedstawia pingwina.
 
-2. NeuroplastycznoÅ›Ä‡:
-   - naukowy obraz mÃ³zgu moÅ¼e przejÅ›Ä‡;
+2. Neuroplastyczność:
+   - naukowy obraz mózgu może przejść;
    - polityk-zombie odpada;
    - sam token `brain` nie wystarcza.
 
 3. Brak odpowiedniego obrazu:
    - fallback;
    - brak starego captionu;
-   - brak faÅ‚szywego creditu i ÅºrÃ³dÅ‚a.
+   - brak fałszywego creditu i źródła.
 
-4. NiedostÄ™pny plik:
-   - brak podpisu do nieistniejÄ…cego zdjÄ™cia;
-   - bezpieczny fallback albo pominiÄ™cie figury zgodnie z architekturÄ….
+4. Niedostępny plik:
+   - brak podpisu do nieistniejącego zdjęcia;
+   - bezpieczny fallback albo pominięcie figury zgodnie z architekturą.
 
-5. Legalny, ale niepasujÄ…cy:
-   - prawa przechodzÄ…;
+5. Legalny, ale niepasujący:
+   - prawa przechodzą;
    - redakcja odrzuca;
-   - kandydat nie trafia do artykuÅ‚u.
+   - kandydat nie trafia do artykułu.
 
-6. PasujÄ…cy i legalny:
+6. Pasujący i legalny:
    - nadal wygrywa;
-   - caption, alt, credit i source pozostajÄ… spÃ³jne.
+   - caption, alt, credit i source pozostają spójne.
 
-### IstniejÄ…ce testy do sprawdzenia
+### Istniejące testy do sprawdzenia
 
 - `tests/article-image-pipeline-smoke.php`
 - `tests/image-rights-providers-smoke.php`
@@ -260,7 +269,7 @@ Diagnostyka ma byÄ‡ wystarczajÄ…ca do odtworzenia decyzji, ale nie moÅ¼e
 - `tests/generate-all-regression.php`
 - `tests/editorial-pipeline-e2e.php`
 
-Nie usuwaj istniejÄ…cych testÃ³w i nie osÅ‚abiaj walidacji licencji.
+Nie usuwaj istniejących testów i nie osłabiaj walidacji licencji.
 
 ### Minimalne komendy walidacyjne
 
@@ -272,47 +281,92 @@ C:\xampp\php\php.exe tests\post-renderer-smoke.php
 C:\xampp\php\php.exe tests\generate-all-regression.php
 ```
 
-PeÅ‚ny `editorial-pipeline-e2e.php` uruchom dopiero po sprawdzeniu wymaganych flag i tylko wtedy, gdy zakres faktycznie dotyka peÅ‚nego pipeline'u.
+Pełny `editorial-pipeline-e2e.php` uruchom dopiero po sprawdzeniu wymaganych flag i tylko wtedy, gdy zakres faktycznie dotyka pełnego pipeline'u.
 
-# Stan wykonania
+## Stan wykonania — MAMONA-24
 
-## ZakoÅ„czone
-
-- [ ] P0 â€” initial indexed map
-- [ ] P1 â€” root cause and spec
-- [ ] P2 â€” final asset/fallback consistency
-- [ ] P3 â€” semantic/editorial gate
-- [ ] P4 â€” diagnostics
-- [ ] P5 â€” tests, validation and review
-
-## Sprawdzone pliki
-
-UzupeÅ‚niaj listÄ™ zamiast otwieraÄ‡ pliki ponownie bez powodu:
+### Aktywny stan
 
 ```text
-â€” brak; P0 jeszcze nie wykonano
+P0 zakończone — oczekiwanie na checkpoint i akceptację użytkownika przed P1
 ```
 
-## Decyzje i pytania
+**Zakaz rozpoczęcia P1 bez wyraźnej akceptacji użytkownika.**
 
-```text
-â€” brak; P0 jeszcze nie wykonano
-```
+### Zakończone
 
-## Validation log
+- [x] P0 — repository reconnaissance (COMPLETE, 2026-08-06)
+
+### W toku
+
+- Brak
+
+### Zablokowane
+
+- P1 — root cause and spec (BLOCKED BY akceptacja użytkownika P0)
+- P2 — implementacja (BLOCKED BY P1 akceptacja)
+- P3 — testy (BLOCKED BY P2)
+- P4 — review (BLOCKED BY P3)
+- P5 — audyt i reset wadliwych artykułów (BLOCKED BY P2-P4)
+- P6 — dokumentacja i handoff (BLOCKED BY P5)
+
+### Subagenty P0 — wyniki
+
+| Subtask | Agent | Model | Status | Pliki otwarte |
+|---|---|---|---|---|
+| P0-A2 text types and limits | repo-scout | qwen3.6:27b/balanced | COMPLETE | 6 |
+| P0-B2 Gemini call graph | repo-scout | qwen3.6:27b/balanced (wznowiony) | COMPLETE | 10 |
+| P0-C2 narrative and image flow | repo-scout | qwen3.6:27b/balanced (wznowiony) | COMPLETE | 9 |
+| P0-D2 invalid article inventory | repo-scout | qwen3.6:27b/balanced | COMPLETE | 5 |
+
+### Dokumenty utworzone lub zaktualizowane w P0
+
+| Dokument | Status | Opis |
+|---|---|---|
+| `docs/research/MAMONA-24-P0-repository-map.md` | Utworzony | Pełna mapa P0: typy tekstów, call graph Gemini, retry/quota/salvage, narracja/QC, obrazy/fallbacki, schemat danych, luki |
+| `docs/ARCHITECTURE.md` | Zaktualizowany | Dodano przepływ generacji, call graph Gemini, moduły, data contracts, ograniczenia, planowane zmiany MAMONA-24 |
+| `docs/IMAGE_PIPELINE_MAP.md` | Zaktualizowany | Dodano salvage fallback, advertising wrapper, problemy MAMONA-24 (placeholdery, fallbacki techniczne, brak wymaganых grafik) |
+| `docs/CONTEXT_INDEX.md` | Zaktualizowany | Nowy punkt wejścia dla MAMONA-24 z mapą plików i symboli |
+| `docs/CURRENT_WORK.md` | Zaktualizowany | Ten plik — stan P0, subagenty, dokumenty |
+
+### Najważniejsze luki
+
+1. Czy istnieją inne typy tekstów poza `informational` i `problem_discovery_return`?
+2. Jakie są limity dla pól `lead.text`, `why_important.text`, `key_facts[*].text`?
+3. Dokładna implementacja `quality_check_auto_repair_decision()` — ciało funkcji nieotwarte
+4. Implementacja `promote_article_draft_to_post()` — szczegóły promocji nieprzeczytane
+5. Czy istnieje mechanizm logowania wywołań Gemini poza `gemini_quota_events`?
+6. Szczegóły `generation_batch_worker.php` — kolejność przetwarzania itemów
+7. Czy cache `gemini_call_cache` ma TTL / politykę expiracji?
+8. Gdzie zdefiniowana jest stała `QUALITY_PASS_SCORE`?
+9. Jak wygląda pełna funkcja `quality_check_schema()`?
+10. Czy istnieje dedykowana funkcja "reset wadliwego artykułu"?
+11. Jakie są dokładne warunki w `assert_post_quality_allows_publication()`?
+12. Jak `post_legacy_publication_flag()` mapuje status na is_published?
+
+### Ryzyka
+
+1. Brak centralnego budżetu 20 odpowiedzi Gemini — istnieje budżet tematyczny 15, ale bez convergence mode ani ścieżki do manual_review po wyczerpaniu.
+2. Fallback obrazów renderowany jako asset finalny — `salvage_local_editorial_images()` generuje SVG CC0 mogący trafić do renderu.
+3. Brak bramki semantycznej/redakcyjnej dla obrazów — ranking nie odróżnia legalności od trafności redakcyjnej.
+4. Fallback może dziedziczyć metadane kandydata (R1) — caption/alt placeholderu mogą pochodzić z odrzuconego obrazu.
+5. Ranking premiuje pojedynczy token (R2) — satyryczny obraz może wygrać przez przypadkowe dopasowanie tokenu.
+
+### Validation log — MAMONA-24
 
 | Data | Faza | Komenda/test | Wynik | Uwagi |
 |---|---|---|---|---|
-| â€” | â€” | â€” | â€” | â€” |
+| 2026-08-06 | P0 | 4x repo-scout task (A2-D2) | COMPLETE | Wszystkie subtaski zwróciły SUBTASK_RESULT |
+| 2026-08-06 | P0 | git diff docs/ | OK | Zmieniono tylko wymagane pliki, UTF-8 poprawny |
 
-## Format raportu po fazie
+### Format raportu po fazie
 
-1. ZakoÅ„czona faza.
+1. Zakończona faza.
 2. Potwierdzone ustalenia.
 3. Zmienione pliki.
 4. Walidacja.
 5. Ryzyka.
-6. Jedna nastÄ™pna faza.
-7. Czy wymagana jest akceptacja uÅ¼ytkownika.
+6. Jedna następna faza.
+7. Czy wymagana jest akceptacja użytkownika.
 
 

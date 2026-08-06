@@ -1,131 +1,220 @@
 # AGENTS.md — Mamona
 
-## 1. Cel projektu
+## 1. Cel
 
-Mamona jest produkcyjnym systemem CMS i automatyzacji redakcyjnej zbudowanym w PHP 8.1+ i SQLite. Publiczna strona, panel administratora, źródła, research, generowanie tekstów, kontrola jakości, obrazy, publikacja, RSS, sitemap i wygenerowane strony są jednym audytowalnym przepływem.
+Mamona jest produkcyjnym systemem CMS i automatyzacji redakcyjnej zbudowanym w PHP 8.1+ i SQLite. Publiczna strona, panel administratora, research, generowanie tekstów, QC, obrazy, publikacja, RSS, sitemap i wygenerowane strony tworzą jeden audytowalny przepływ.
 
-Preferuj małe, sprawdzalne zmiany. Nie zmieniaj zachowania poza bieżącym zakresem.
+Preferuj małe, sprawdzalne zmiany. Nie zmieniaj zachowania poza aktywnym zakresem.
 
-## 2. Stack
+## 2. Źródła prawdy
 
-- PHP 8.1+
-- SQLite przez PDO
-- Apache/XAMPP jako główne środowisko Windows
-- zwykły HTML, CSS i JavaScript
-- PHP CLI dla workerów, utrzymania i testów
-- opcjonalnie Python 3 + Pillow do obrazów
-
-Projekt nie ładuje automatycznie `.env`. Sekrety pochodzą ze środowiska procesu, Apache, hostingu, crona lub Harmonogramu zadań Windows.
-
-## 3. Kolejność źródeł prawdy
+Kolejność:
 
 1. Aktualne polecenie użytkownika.
-2. `docs/CURRENT_WORK.md`.
-3. Aktualny kod i konfiguracja.
-4. `docs/ARCHITECTURE.md` oraz `docs/PROJECT_CONTEXT.md`.
-5. README i dokumentacja operacyjna.
+2. Aktywny task oraz zaakceptowany checkpoint.
+3. `docs/CURRENT_WORK.md`.
+4. Aktualny kod, schemat bazy, konfiguracja i testy.
+5. `docs/ARCHITECTURE.md`, `docs/IMAGE_PIPELINE_MAP.md`, `docs/DECISIONS.md`, `docs/CONTEXT_INDEX.md`.
+6. README i dokumentacja operacyjna.
 
-Stare taski, archiwa i kopie zapasowe nie są źródłem prawdy.
+Stare taski, archiwa, wcześniejsze raporty i wynik indeksu są wskazówkami. Trwałe ustalenie wymaga potwierdzenia w aktualnym kodzie, schemacie, konfiguracji albo teście.
 
-## 4. Protokół startu zadania
+## 3. Protokół startu
 
-Na początku zadania:
+1. Przeczytaj aktywny task i właściwą część `docs/CURRENT_WORK.md`.
+2. Sprawdź `git status --short` i `git log --oneline -5`.
+3. Ustal aktualny root repozytorium albo worktree.
+4. Nie nadpisuj niezacommitowanych zmian użytkownika.
+5. Najpierw użyj indeksu, `grep`, `glob` i wyszukiwania symboli.
+6. Przed `read` potwierdź ścieżkę przez `glob`, `git ls-files` albo aktualny kod.
+7. Używaj ścieżek względnych wobec bieżącego worktree.
+8. Nie skanuj całego repo bez konkretnego celu.
+9. Nie czytaj ponownie tego samego zakresu bez nazwania nierozstrzygniętego pytania.
 
-1. Przeczytaj raz `docs/CURRENT_WORK.md`.
-2. Przeczytaj tylko potrzebne sekcje `docs/ARCHITECTURE.md` i `docs/PROJECT_CONTEXT.md`.
-3. Sprawdź:
-   - `git status --short`;
-   - `git log --oneline -5`;
-   - istniejące niezacommitowane zmiany.
-4. Najpierw użyj `semantic_search`, `grep` i wyszukiwania symboli.
-5. Otwórz tylko pliki wskazane przez wyniki wyszukiwania.
-6. Nie wykonuj rekursywnego odczytu całego repozytorium.
-7. Nie czytaj ponownie pliku bez konkretnego, nierozstrzygniętego pytania.
+## 4. Modele i ich przeznaczenie
 
-## 5. Ochrona przed zapętlaniem
+### `ollama/qwen3.6:27b`
 
-- Nie próbuj ponownie otwierać pliku, który nie istnieje. Zapisz ten fakt i kontynuuj.
-- Maksymalnie dwa równoważne wyszukiwania dla jednego zagadnienia.
-- Po znalezieniu potwierdzonego przepływu wykonania zakończ ogólne rozpoznanie.
-- Nie wracaj do początku repozytorium po znalezieniu właściwych symboli.
-- Prowadź krótką listę już sprawdzonych plików.
-- Jeżeli następny krok powtarza poprzedni bez nowej hipotezy, zatrzymaj się.
-- Nie obchodź pytania `doom_loop`; podaj użytkownikowi powód powtórzenia.
-- Gdy brakuje jednej decyzji produktowej, zadaj jedno konkretne pytanie zamiast rozszerzać skan.
+Główny model do:
 
-## 6. Orkiestracja Kilo
+- orkiestracji;
+- architektury;
+- root cause;
+- implementacji;
+- trudnych testów;
+- review.
 
-Domyślny agent `mamona-orchestrator` klasyfikuje zadanie i deleguje je:
+Warianty:
 
-- `repo-scout` — szybkie, tylko do odczytu wyszukiwanie i mapa symboli;
-- `mamona-architect` — root cause, specyfikacja, zależności i plan;
-- `mamona-coder` — implementacja zaakceptowanego zakresu;
-- `mamona-tester` — testy, odtwarzanie regresji i debug;
-- `mamona-reviewer` — kontrola diffu, bezpieczeństwa i zgodności;
-- `quick-maintainer` — wyłącznie proste, lokalne i mechaniczne zmiany.
+- `balanced` — orkiestracja, implementacja, testy i kontrolowane rozpoznanie;
+- `deep` — architektura, trudne decyzje, krytyczne review.
 
-Orkiestrator nie powinien bezpośrednio implementować kodu źródłowego.
+Nie używaj `deep` do mechanicznego przepisywania dokumentów.
 
-Przy złożonym zadaniu kolejność jest obowiązkowa:
+### `ollama/qwen3.6-no-think`
+
+Alias tego samego fizycznego modelu `qwen3.6:27b`, ale z wyłączonym reasoningiem.
+
+Używaj wyłącznie do:
+
+- mechanicznego zapisu gotowych ustaleń;
+- aktualizacji pojedynczych dokumentów;
+- formatowania;
+- markerów sukcesu;
+- generowania końcowego checkpointu na podstawie gotowych danych;
+- prostego handoffu.
+
+Nie używaj do:
+
+- root cause;
+- projektowania architektury;
+- podejmowania decyzji;
+- implementacji;
+- debugowania;
+- review;
+- uzupełniania braków.
+
+### `ollama/qwen3.5:9b`
+
+Model szybki do krótkich, niekrytycznych zadań. Krytyczny tool calling wymaga wcześniejszego potwierdzenia stabilności.
+
+## 5. Role
+
+- `mamona-orchestrator` — fazy, delegacja, checkpointy i walidacja wyników.
+- `repo-scout` — potwierdzone rozpoznanie repozytorium, tylko odczyt.
+- `mamona-architect` — root cause, kontrakty, migracja i test matrix.
+- `mamona-coder` — implementacja zaakceptowanego zakresu.
+- `mamona-tester` — testy, reprodukcja i diagnostyka.
+- `mamona-reviewer` — niezależne review.
+- `quick-maintainer` — mechaniczna aktualizacja dokumentów na `qwen3.6-no-think`.
+- `checkpoint-writer` — końcowy checkpoint na `qwen3.6-no-think`.
+
+Dla złożonego zadania:
 
 ```text
-repo-scout → architect → akceptacja/spec → coder → tester → reviewer
+repo-scout → architect → checkpoint → coder → tester → reviewer
 ```
 
-Można równolegle uruchomić kilka subagentów tylko wtedy, gdy ich zadania są niezależne i nie edytują tych samych plików.
+Każdy task wskazuje: agenta, model, wariant, zakres, uprawnienia, limit i warunek zakończenia.
 
-## 7. Nienaruszalne reguły produktu
+## 6. Kontrakt subagentów
 
-1. `editorial_status` jest źródłem prawdy dla widoczności artykułu.
-2. Publiczny może być wyłącznie nieusunięty artykuł o statusie `published`.
-3. `is_published` jest tylko kompatybilnym lustrem.
-4. Podgląd szkicu musi pozostać prywatny, uwierzytelniony, `noindex` i bez cache.
-5. Zapisy wygenerowanych plików publicznych muszą pozostać atomowe.
-6. Zwykły zapis nie może publikować.
-7. Research, draft, quality check i thumbnail muszą zachować audytowalne wersje.
-8. Nie omijaj zabezpieczeń publikacji i harmonogramu.
-9. Nie dodawaj do Git sekretów, danych produkcyjnych, sesji, logów ani bazy.
-10. Nie loguj pełnych sekretów.
-11. Automatyzacja obrazów musi zachować walidację praw, credit i źródło dla każdego assetu.
-12. Legalność obrazu nie oznacza trafności redakcyjnej.
-13. Fetchery muszą zachować ochronę SSRF, redirectów, schematów, portów, rozmiarów i timeoutów.
-14. Testy mutujące dane wymagają udokumentowanych `CMS_ALLOW_*`, izolacji i sprzątania.
-15. Nie uruchamiaj realnych płatnych API ani publikacji bez zgody.
+Pełny protokół:
 
-## 8. Reguły edycji
-
-- Zmień najmniejszy zestaw plików, który kompletnie rozwiązuje zadanie.
-- Nie refaktoryzuj rzeczy niezwiązanych.
-- Rozszerz istniejący service/repository zamiast duplikować logikę w controllerze lub view.
-- Nie zmieniaj semantyki bazy, statusów, URL-i ani kontraktów bez specyfikacji kompatybilności.
-- Kod, identyfikatory i komentarze techniczne zapisuj po angielsku.
-- Komunikację z użytkownikiem prowadź po polsku.
-- Nie dodawaj zależności bez wyraźnej wartości i zgody.
-- Zachowaj zgodność Windows/XAMPP.
-
-## 9. Walidacja
-
-Najpierw przeczytaj początek testu i użyj wyłącznie flag, które sam dokumentuje.
-
-PHP lint na Windows:
-
-```powershell
-Get-ChildItem -Recurse -Filter *.php |
-  ForEach-Object { C:\xampp\php\php.exe -l $_.FullName }
+```text
+docs/AGENT_EXECUTION_PROTOCOL.md
 ```
 
-Uruchamiaj najpierw test bezpośrednio związany ze zmianą. Pełny E2E uruchamiaj tylko przy zmianach przepływu redakcyjnego albo przed istotnym wydaniem.
+Minimum:
 
-Nigdy nie publikuj realnych treści podczas walidacji.
+- pierwszą czynnością subagenta jest tool call, nie opis planu;
+- subtask eksploracyjny otwiera domyślnie maksymalnie 12 nowych plików;
+- wynik `semantic_search` jest śladem, nie dowodem;
+- każdy subagent kończy `SUBTASK_RESULT`;
+- brak raportu oznacza niekompletny subtask;
+- orkiestrator nie zastępuje brakującego raportu własną analizą;
+- najpierw kontynuacja istniejącego kontekstu, potem najwyżej jeden celowany recovery subtask;
+- po drugim niepowodzeniu status `BLOCKED`;
+- przy `OLLAMA_NUM_PARALLEL=1` subagenci działają sekwencyjnie;
+- subagent nie uruchamia dalszych subagentów.
 
-## 10. Zakończenie etapu
+## 7. Budżet odpowiedzi
 
-Przed zakończeniem:
+Domyślnie:
+
+```text
+70–80% budżetu: narzędzia i analiza
+20–30% budżetu: raport, zapis albo checkpoint
+```
+
+Przy zbliżaniu się do limitu:
+
+1. zatrzymaj nowe odczyty;
+2. nie zaczynaj dużego pliku;
+3. zapisz stan;
+4. oznacz braki;
+5. zwróć wynik użytkowy.
+
+Nie zużywaj całego outputu na reasoning.
+
+## 8. Mechanical finalization
+
+Po zakończeniu pracy merytorycznej utwórz osobną fazę:
+
+```text
+MECHANICAL_FINALIZATION
+```
+
+Zasady:
+
+1. Użyj `quick-maintainer` na `ollama/qwen3.6-no-think`.
+2. Jeden subtask aktualizuje jeden plik albo mały atomowy pakiet.
+3. Przekaż gotową treść, raport albo jednoznaczny zakres.
+4. Zabroń nowego researchu, grep, glob, task i szerokiej diagnostyki.
+5. Po każdym zapisie wymagaj krótkiego markera sukcesu.
+6. Checkpoint twórz dopiero po zapisaniu dokumentów.
+7. Do checkpointu użyj `checkpoint-writer` na `ollama/qwen3.6-no-think`.
+8. Nie łącz ciężkiej analizy, wielu edycji i checkpointu w jednej odpowiedzi.
+9. Model no-think nie może podejmować nowych decyzji. Brak danych oznacza blocker i powrót do właściwego agenta reasoningowego.
+
+## 9. Ochrona przed zapętleniem
+
+- Maksymalnie dwie równoważne próby dla jednego problemu.
+- Identyczna nieudana komenda może być ponowiona najwyżej dwa razy.
+- Po drugim niepowodzeniu zgłoś blocker.
+- Brakującego pliku nie odczytuj ponownie bez nowej, potwierdzonej ścieżki.
+- Gdy kolejny krok powtarza poprzedni bez nowej hipotezy, zatrzymaj się.
+- Nie obchodź `doom_loop: ask`.
+- Przy 70% limitu kroków nie rozpoczynaj nowej dużej jednostki.
+- Ucięcie odpowiedzi nie jest zgodą na pominięcie checkpointu.
+
+## 10. Checkpointy
+
+- Eksploracja nie przechodzi automatycznie do architektury.
+- Architektura nie przechodzi automatycznie do implementacji.
+- Implementacja nie uruchamia realnych providerów, publikacji ani mutacji bez osobnej zgody.
+- Każdy wymagany checkpoint jest twardym stopem.
+- Faza nie jest kompletna bez wymaganych raportów.
+
+Checkpoint zawiera:
+
+1. status;
+2. agentów, modele i warianty;
+3. potwierdzone fakty;
+4. zmienione pliki;
+5. testy;
+6. luki;
+7. ryzyka;
+8. następną fazę;
+9. dokładny tekst wymaganej akceptacji.
+
+## 11. Reguły produktu
+
+1. `editorial_status` jest źródłem prawdy widoczności.
+2. Publiczny może być wyłącznie nieusunięty artykuł ze statusem `published`.
+3. Zwykły zapis nie może publikować.
+4. Publiczne zapisy plików muszą pozostać atomowe.
+5. Research, draft, QC i obrazy zachowują audytowalne wersje.
+6. Nie omijaj praw, licencji, creditu ani ochron SSRF.
+7. Placeholder, fallback techniczny i grafika redakcyjna zastępcza nie mogą być finalnym assetem.
+8. Artykuł bez wymaganych prawidłowych grafik nie może zostać ukończony ani opublikowany.
+9. Nie uruchamiaj płatnych API, publikacji ani mutujących testów bez zgody.
+10. Nie commituj i nie pushuj bez prośby użytkownika.
+
+## 12. Kodowanie
+
+- Zmieniane pliki tekstowe zapisuj jako UTF-8.
+- Kod źródłowy zapisuj bez BOM, chyba że format wymaga inaczej.
+- Zachowuj polskie znaki.
+- Nie konwertuj przez Windows-1250 ani Windows-1252.
+- Przed checkpointem sprawdź `�`, `Ã`, `Â`, `Ä`, `Å`, `â€`.
+
+## 13. Zakończenie etapu
 
 1. Przejrzyj `git diff`.
 2. Uruchom najmniejszy wystarczający zestaw testów.
-3. Sprawdź, czy nie dodano sekretów, bazy, logów, sesji ani artefaktów.
+3. Sprawdź sekrety, logi, bazę i artefakty.
 4. Zaktualizuj `docs/CURRENT_WORK.md`.
-5. Aktualizuj `docs/ARCHITECTURE.md` tylko o potwierdzoną, trwałą wiedzę.
-6. Podaj zmienione pliki, wyniki testów, założenia i ryzyka.
-7. Nie commituj i nie pushuj bez prośby użytkownika.
+5. Zapisz tylko potwierdzoną wiedzę.
+6. Sprawdź UTF-8.
+7. Zwróć krótki raport.
