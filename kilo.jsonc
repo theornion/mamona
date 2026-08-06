@@ -1,0 +1,191 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+  "enabled_providers": [
+    "ollama"
+  ],
+  "model": "ollama/qwen3.6:27b",
+  "small_model": "ollama/qwen3.5:9b",
+  "default_agent": "mamona-orchestrator",
+  "share": "disabled",
+  "snapshot": true,
+  "autoupdate": "notify",
+  "web_search": false,
+  "provider": {
+    "ollama": {
+      "options": {
+      	"baseURL": "http://127.0.0.1:11436/v1",
+	"timeout": 1800000,
+	"chunkTimeout": 600000
+      },
+      "whitelist": [
+        "qwen3.6:27b",
+        "qwen3.5:9b",
+        "nomic-embed-text"
+      ],
+      "models": {
+        "qwen3.6:27b": {
+          "name": "Qwen 3.6 27B — Mamona Main",
+          "tool_call": true,
+          "reasoning": true,
+          "temperature": true,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 65536,
+            "output": 16384
+          },
+          "variants": {
+            "fast": {
+              "think": false
+            },
+            "balanced": {
+              "think": true
+            },
+            "deep": {
+              "think": "high"
+            }
+          }
+        },
+        "qwen3.5:9b": {
+          "name": "Qwen 3.5 9B — Mamona Fast",
+          "tool_call": true,
+          "reasoning": true,
+          "temperature": true,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          },
+          "variants": {
+            "fast": {
+              "think": false
+            },
+            "reasoned": {
+              "think": true
+            }
+          }
+        },
+        "nomic-embed-text": {
+          "name": "Nomic Embed Text — Mamona Index",
+          "tool_call": false,
+          "reasoning": false,
+          "temperature": false,
+          "attachment": false,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 2048,
+            "output": 1
+          }
+        }
+      }
+    }
+  },
+  "agent": {
+    "title": {
+      "model": "ollama/qwen3.5:9b",
+      "variant": "fast",
+      "steps": 2
+    },
+    "summary": {
+      "model": "ollama/qwen3.5:9b",
+      "variant": "fast",
+      "steps": 3
+    },
+    "compaction": {
+      "model": "ollama/qwen3.5:9b",
+      "variant": "fast",
+      "steps": 3
+    },
+    "explore": {
+      "model": "ollama/qwen3.5:9b",
+      "variant": "fast",
+      "steps": 6,
+      "permission": {
+        "edit": "deny",
+        "bash": "deny",
+        "task": "deny",
+        "doom_loop": "ask"
+      }
+    }
+  },
+  "indexing": {
+    "enabled": true,
+    "provider": "ollama",
+    "model": "nomic-embed-text",
+    "dimension": 768,
+    "vectorStore": "lancedb",
+    "ollama": {
+      "baseUrl": "http://127.0.0.1:11436"
+    },
+    "lancedb": {},
+    "fileExtensions": [
+      ".php",
+      ".js",
+      ".css",
+      ".html",
+      ".md",
+      ".json",
+      ".jsonc",
+      ".sql",
+      ".xml",
+      ".ps1",
+      ".sh"
+    ],
+    "searchMinScore": 0.48,
+    "searchMaxResults": 12,
+    "embeddingBatchSize": 24,
+    "scannerMaxBatchRetries": 3
+  },
+  "permission": {
+    "external_directory": "deny",
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "edit": "ask",
+    "bash": "ask",
+    "task": "ask",
+    "webfetch": "deny",
+    "websearch": "deny",
+    "doom_loop": "ask"
+  },
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "tail_turns": 3,
+    "preserve_recent_tokens": 12000,
+    "reserved": 8192
+  },
+  "tool_output": {
+    "max_lines": 1200,
+    "max_bytes": 60000
+  },
+  "experimental": {
+    "batch_tool": true,
+    "continue_loop_on_deny": false,
+    "openTelemetry": false
+  }
+}

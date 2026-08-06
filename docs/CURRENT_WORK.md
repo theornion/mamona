@@ -1,509 +1,318 @@
-# Current Work
+﻿# Current Work â€” TASK-23: image selection and rendering regression
 
-## Current goal
-
-Naprawić regresję w automatycznym doborze obrazów artykułów, a następnie bezpiecznie przepuścić wszystkie wykryte wadliwe artykuły przez poprawiony pipeline obrazów.
-
-Problem został potwierdzony wizualnie po ostatniej aktualizacji:
-
-1. Neutralny placeholder jest wyświetlany z podpisem opisującym konkretne zdjęcie, którego faktycznie nie ma.
-2. Do artykułu o neuroplastyczności został dobrany satyryczny obraz polityka-zombie jedzącego mózg (`"Big Orange Zombie Eating Brains"` / DonkeyHotey).
-3. W ostatnio wygenerowanych artykułach neutralna ilustracja pojawia się nieproporcjonalnie często, co sugeruje regresję w wyszukiwaniu, rankingu, pobieraniu, walidacji albo zapisie finalnego assetu.
-
-Zadanie obejmuje zarówno naprawę przyczyny, jak i kontrolowaną naprawę już wadliwych artykułów.
-
-## Important scope clarification
-
-W tym zadaniu „ponowne generowanie” oznacza wyłącznie ponowne wykonanie pipeline'u obrazów:
-
-- wyszukanie kandydatów;
-- ocenę trafności;
-- walidację praw;
-- pobranie i przetworzenie finalnego pliku;
-- zapis spójnych metadanych;
-- odświeżenie renderowanego artykułu.
-
-Nie regenerować treści artykułów, researchu, szkiców ani kontroli jakości.
-
-Nie zmieniać:
-
-- tytułu;
-- treści;
-- sluga i publicznego URL-a;
-- autora;
-- źródeł merytorycznych;
-- SEO;
-- dat publikacji;
-- statusu redakcyjnego;
-- historii wersji niezwiązanej z obrazami.
-
-## Reported examples
-
-### Example 1 — misleading fallback caption
-
-Artykuł dotyczący pingwina Adélie pokazuje neutralną geometryczną ilustrację zastępczą, ale podpis brzmi:
-
-> Ilustracja redakcyjna: Zbliżenie na pingwina Adélie w naturalnym środowisku.
-
-Finalny plik nie przedstawia pingwina. Placeholder przejął caption albo alt przygotowany dla innego, niedostępnego lub odrzuconego assetu.
-
-### Example 2 — irrelevant and inappropriate image
-
-Artykuł o neuroplastyczności i adaptacji układu wzrokowego otrzymał grafikę:
-
-> "Big Orange Zombie Eating Brains" by DonkeyHotey
-
-Obraz jest polityczną, satyryczną i makabryczną karykaturą. Dopasowanie mogło nastąpić przez pojedynczy token `brain`, mimo całkowitej niezgodności z tematem i tonem materiału.
-
-## Existing repository paths to inspect first
-
-Przed zmianami prześledzić aktualny kod i istniejące narzędzia, w szczególności:
-
-- `scripts/refill-article-images.php`
-- `php/admin-database.php`
-- funkcję `fulfill_article_source_images(...)`
-- kod providerów i centralnej walidacji praw assetu
-- kod tworzący neutralny SVG
-- kod rankingu kandydatów
-- zapis tabeli `article_images`
-- renderer publicznego `<figure>`, captionu, altu, creditu i źródła
-- batch stage `images`
-- synchronizację opublikowanej strony po zmianie obrazu
-
-Istniejący `scripts/refill-article-images.php` jest punktem odniesienia, ale nie zakładać, że wystarczy bez zmian. Obecnie obsługuje pojedynczy dokładny tytuł i odmawia modyfikacji opublikowanego artykułu.
-
-## Required investigation
-
-Prześledzić cały przepływ od danych artykułu do finalnego HTML:
-
-1. Jak z tytułu, kategorii, researchu i encji powstają zapytania obrazów.
-2. Jakie zapytania trafiają do każdego providera.
-3. Jak kandydaci są normalizowani.
-4. Jak walidowane są licencja, prawa i credit.
-5. Jak liczona jest trafność tematyczna.
-6. Czy pojedynczy wspólny token może przeważyć nad sprzecznymi metadanymi.
-7. Jak wybierany jest fallback.
-8. Kiedy caption, alt, creator, credit i source URL są przypisywane do rekordu.
-9. Co dzieje się, gdy download lub processing finalnego pliku nie powiedzie się.
-10. Jak renderer rozpoznaje, czy metadata należą do rzeczywiście wyświetlanego pliku.
-11. Dlaczego udział fallbacków wzrósł po ostatniej aktualizacji.
-12. Czy regresja dotyczy wszystkich providerów, wybranej kategorii, konkretnego etapu albo konkretnego okresu.
-
-Najpierw ustalić i zapisać konkretną przyczynę. Nie maskować problemu samym podniesieniem progu ani listą kilku zakazanych fraz.
-
-## Functional requirements
-
-### 1. Semantic relevance gate
-
-Kandydat musi pasować do głównego tematu artykułu, nie tylko do pojedynczego słowa.
-
-Ocena powinna wykorzystywać dostępne dane:
-
-- temat i tytuł;
-- kategorię;
-- encje główne;
-- obiekt, gatunek, proces, instytucję lub zjawisko opisane w researchu;
-- opis, tytuł, tagi i kategorię assetu;
-- pozytywne oraz negatywne sygnały kontekstowe.
-
-Legalność assetu nie oznacza automatycznie przydatności redakcyjnej.
-
-### 2. Negative-context rejection
-
-Odrzucać albo bardzo mocno obniżać ranking kandydatów, których metadata wskazują na kontekst sprzeczny z artykułem, między innymi:
-
-- politykę lub konkretną osobę publiczną, gdy artykuł jej nie dotyczy;
-- satyrę polityczną;
-- zombie, gore, makabrę, przemoc lub obraz szokujący;
-- mem, karykaturę albo parodię;
-- sensacyjny kontekst nieobecny w artykule;
-- reklamę albo branding niezwiązany z tematem.
-
-Nie implementować wyłącznie jednorazowego filtra na nazwisko lub dokładny tytuł wadliwego obrazu. Przypadek DonkeyHotey ma być fixture'em regresyjnym, a nie całą logiką.
-
-### 3. Minimum relevance threshold
-
-Jeżeli żaden legalny kandydat nie osiąga minimalnej trafności, system ma użyć neutralnego fallbacku.
-
-Lepszy poprawnie opisany placeholder niż mylący obraz.
-
-Próg musi być:
-
-- deterministyczny;
-- testowalny;
-- udokumentowany;
-- oparty na istniejących sygnałach;
-- wystarczająco łagodny, aby nie zamienić większości artykułów w fallback.
-
-### 4. Correct fallback metadata
-
-Neutralna ilustracja zastępcza musi otrzymać własne metadata.
-
-Nie wolno kopiować z odrzuconego albo niedostępnego kandydata:
-
-- captionu;
-- altu;
-- autora;
-- credit line;
-- source page;
-- direct file URL;
-- licencji;
-- opisu konkretnego obiektu lub wydarzenia.
-
-Dopuszczalny fallback:
-
-- caption: `Neutralna ilustracja redakcyjna.`
-- alt: krótki neutralny opis grafiki zastępczej;
-- brak zewnętrznego creditu;
-- jawny status/typ fallbacku w danych diagnostycznych.
-
-### 5. Asset/metadata consistency
-
-Przed zapisem i renderowaniem zagwarantować, że:
-
-- finalny plik istnieje i jest czytelny;
-- caption i alt należą do tego samego finalnego assetu;
-- creator, credit i source URL należą do tego samego finalnego assetu;
-- rekord fallbacku nie dziedziczy pól kandydata;
-- nieudany download lub processing nie pozostawia częściowo zapisanych metadanych;
-- podmiana obrazu i jego metadanych jest atomowa albo bezpiecznie odzyskiwalna.
-
-### 6. Diagnostics
-
-Diagnostyka ma pozwalać ustalić:
-
-- utworzone zapytania;
-- liczbę kandydatów per provider;
-- wynik trafności każdego rozważanego kandydata;
-- najważniejsze sygnały dodatnie i ujemne;
-- powód odrzucenia;
-- powód użycia fallbacku;
-- identity/fingerprint finalnego assetu;
-- czy finalny plik został pobrany i przetworzony;
-- czy artykuł wymaga ponownego renderu.
-
-Nie logować kluczy API, sekretów ani pełnych prywatnych promptów.
-
-## Repair of already affected articles
-
-Po wdrożeniu poprawionej logiki należy przepuścić wadliwe artykuły przez nowy pipeline obrazów.
-
-### 1. Safe audit command
-
-Dodać albo rozszerzyć narzędzie CLI tak, aby najpierw wykonywało dry-run i wykrywało podejrzane artykuły.
-
-Preferowana forma:
-
-```powershell
-php scripts/refill-article-images.php --dry-run --all-detected
-```
-
-Dopuszczalne jest utworzenie osobnego, lepiej nazwanego skryptu, jeżeli zachowanie istniejącego narzędzia pozostałoby kompatybilne.
-
-Dry-run ma wypisać dla każdego kandydata:
-
-- post ID;
-- tytuł;
-- `editorial_status`;
-- datę utworzenia/publikacji;
-- aktualną rolę obrazu;
-- aktualny plik;
-- aktualny caption/alt/credit;
-- kod wykrytej wady;
-- planowaną akcję;
-- informację, czy artykuł jest publiczny.
-
-### 2. Detection criteria
-
-Wykrywać co najmniej:
-
-- placeholder z captionem/alt opisującym konkretny temat;
-- placeholder z zewnętrznym creatorem, creditem lub source URL;
-- brak finalnego pliku przy istniejących metadanych zdjęcia;
-- metadata wskazujące inny asset niż finalny plik;
-- znany fixture `"Big Orange Zombie Eating Brains"`;
-- kandydat odrzucony przez nową walidację semantyczną;
-- rekord niekompletny lub częściowo zapisany po nieudanym downloadzie;
-- artykuł oznaczony ręcznie do ponownego doboru obrazu;
-- opcjonalnie artykuły z okresu regresji ustalonego na podstawie git history i lokalnych dat.
-
-Nie uznawać każdego poprawnego fallbacku za błąd. Fallback jest wadliwy tylko wtedy, gdy jego metadata są nieprawdziwe albo powinien zostać zastąpiony po ponownym wyszukaniu.
-
-### 3. Explicit selection options
-
-Narzędzie naprawcze powinno obsłużyć bezpieczne, jednoznaczne selektory, np.:
+## ACTIVE
 
 ```text
---post-id=<id>
---title=<exact-title>
---since=YYYY-MM-DD
---all-detected
---include-published
---dry-run
---apply
+MAMONA-23-P0 â€” INITIAL INDEXED MAP
 ```
 
-Nie polegać wyłącznie na dokładnym tytule.
+Wykonaj tylko aktywnÄ… fazÄ™. Nie przechodÅº automatycznie do nastÄ™pnej.
 
-### 4. Backup before apply
+## GÅ‚Ã³wny cel
 
-Przed masową operacją `--apply`:
+NaprawiÄ‡ automatyczny dobÃ³r oraz renderowanie obrazÃ³w w artykuÅ‚ach.
 
-1. Zatrzymać workery zapisujące do bazy.
-2. Utworzyć timestampowaną kopię:
-   - `data/cms.sqlite`
-   - istniejących rekordów/manifestów obrazów objętych naprawą;
-   - podmienianych plików z `images/posts/`;
-   - publicznych stron z `pages/`, jeśli będą odświeżane.
-3. Zapisać raport repair runu i listę postów.
-4. Przerwać operację, jeżeli backup się nie powiedzie.
+Po ostatniej aktualizacji wystÄ™pujÄ… dwie klasy regresji:
 
-Backupów roboczych nie dodawać do Git.
+1. Neutralny fallback wyÅ›wietla caption lub alt opisujÄ…cy konkretny obraz, ktÃ³rego finalnie nie ma.
+2. Legalny, ale semantycznie albo redakcyjnie niepasujÄ…cy obraz moÅ¼e wygraÄ‡ przez przypadkowe dopasowanie pojedynczego sÅ‚owa.
 
-### 5. Apply behavior
+Do zakoÅ„czenia zadania nie publikowaÄ‡ automatycznie kolejnych materiaÅ‚Ã³w z niesprawdzonymi obrazami.
 
-Dla każdego wykrytego artykułu:
+## PrzykÅ‚ady referencyjne
 
-1. Zachować stary rekord i plik do audytu/rollbacku.
-2. Uruchomić poprawiony pipeline obrazów.
-3. Zapisać tylko kompletny, zwalidowany finalny wynik.
-4. Gdy nie ma trafnego zdjęcia, zapisać poprawny neutralny fallback.
-5. Nie zmieniać treści ani statusu artykułu.
-6. Kontynuować po błędzie pojedynczego artykułu.
-7. Raportować `repaired`, `fallback`, `skipped`, `failed`.
-8. Zapewnić idempotencję — ponowne uruchomienie nie może tworzyć duplikatów ani pogarszać poprawnego obrazu.
+### R1 â€” faÅ‚szywy caption fallbacku
 
-### 6. Published articles
+ArtykuÅ‚ o pingwinie AdÃ©lie pokazuje neutralnÄ… grafikÄ™ geometrycznÄ…, ale caption twierdzi, Å¼e przedstawia pingwina w naturalnym Å›rodowisku.
 
-Wadliwe artykuły opublikowane również mają zostać naprawione, ale wyłącznie przez jawną ścieżkę `--include-published`.
+Oczekiwane: fallback ma wÅ‚asny neutralny caption, alt i brak zewnÄ™trznego creditu.
 
-Dla artykułu opublikowanego:
+### R2 â€” legalny, ale niedopuszczalny obraz
 
-- zachować `editorial_status=published`;
-- zachować slug, URL, daty i treść;
-- nie tworzyć nowej publikacji;
-- atomowo odświeżyć wyłącznie stronę artykułu i wymagane pochodne wykorzystujące ten obraz;
-- nie wywoływać ponownie pełnego procesu research/draft/QC;
-- nie publikować żadnego szkicu;
-- nie dodawać artykułu ponownie do RSS;
-- nie zmieniać kolejności ani dat wpisów w feedzie;
-- w razie błędu zachować działającą poprzednią stronę.
+ArtykuÅ‚ o neuroplastycznoÅ›ci otrzymuje satyryczny obraz polityka-zombie jedzÄ…cego mÃ³zg, poniewaÅ¼ metadane zawierajÄ… token `brain`.
 
-### 7. Required execution after implementation
+Oczekiwane: legalnoÅ›Ä‡ przechodzi osobnÄ… walidacjÄ™, ale kandydat odpada na bramce semantycznej/redakcyjnej.
 
-Po przejściu testów:
+## Zasady wykonania
 
-1. Uruchomić dry-run na lokalnej bazie.
-2. Zapisać raport kandydatów.
-3. Zweryfikować, że wykryto oba zgłoszone przypadki.
-4. Wykonać backup.
-5. Uruchomić naprawę wszystkich wykrytych wadliwych artykułów, w tym opublikowanych, z jawną flagą.
-6. Ponownie wykonać dry-run.
-7. Potwierdzić, że naprawione rekordy nie są już wykrywane.
-8. Otworzyć lokalnie naprawione strony i wykonać kontrolę wizualną.
-9. Zapisać listę artykułów, wyniki i ewentualne błędy w tej dokumentacji.
+- UÅ¼ywaj semantycznego indeksu przed rÄ™cznym otwieraniem plikÃ³w.
+- Maksymalnie 12 plikÃ³w na jeden subtask eksploracyjny.
+- Nie czytaj ponownie pliku bez nazwania konkretnego brakujÄ…cego pytania.
+- BrakujÄ…cego pliku nie otwieraj drugi raz.
+- Nie implementuj przed zapisaniem root cause i zaakceptowaniem specyfikacji.
+- Nie uruchamiaj realnych providerÃ³w, pÅ‚atnych API ani publikacji.
+- Nie osÅ‚abiaj walidacji praw i licencji.
+- Nie opieraj filtra wyÅ‚Ä…cznie na liÅ›cie nazwisk albo pojedynczych sÅ‚owach.
+- Po kaÅ¼dej fazie zatrzymaj siÄ™ na checkpoint.
 
-To jest jawnie zatwierdzona operacja naprawcza dotycząca obrazów. Nie jest zgodą na automatyczną publikację nowych artykułów ani na zmianę ich treści.
+# Kolejka faz
 
-## Required regression tests
+## MAMONA-23-P0 â€” INITIAL INDEXED MAP â€” ACTIVE
 
-Dodać albo rozszerzyć deterministyczne testy obejmujące co najmniej:
+**Agent nadrzÄ™dny:** `mamona-orchestrator`  
+**Subagenci:** 2 Ã— `repo-scout`  
+**Modele:** scout `qwen3.5:9b/fast`, synteza `qwen3.6:27b/deep`  
+**Edycja kodu:** zabroniona
 
-### Relevance
+### Cel
 
-1. Artykuł o pingwinie:
-   - trafny obraz pingwina wygrywa z ogólnym obrazem natury;
-   - poprawny fallback nie twierdzi, że przedstawia pingwina.
+ZbudowaÄ‡ potwierdzonÄ… mapÄ™ istniejÄ…cego przepÅ‚ywu obrazÃ³w przy minimalnym odczycie plikÃ³w.
 
-2. Artykuł o neuroplastyczności:
-   - neutralna fotografia/ilustracja naukowa mózgu może zostać zaakceptowana;
-   - satyryczny polityk-zombie zostaje odrzucony;
-   - sam token `brain` nie wystarcza do zaakceptowania kandydata.
+### Zadania rÃ³wnolegÅ‚e
 
-3. Legalny, ale niepasujący asset:
-   - przechodzi walidację praw;
-   - nie przechodzi walidacji redakcyjnej;
-   - nie trafia do artykułu.
+#### P0-A â€” selection pipeline
 
-4. Legalny i pasujący asset:
-   - zostaje wybrany;
-   - caption, alt, creator, credit i source są zachowane.
+ZnajdÅº:
 
-### Fallback and consistency
+1. dane artykuÅ‚u/researchu/kategorii uÅ¼ywane do zapytaÅ„;
+2. generowanie query;
+3. providerÃ³w i pobieranie kandydatÃ³w;
+4. prawa/licencje;
+5. ranking semantyczny i redakcyjny;
+6. wybÃ³r zwyciÄ™zcy.
 
-5. Brak trafnego kandydata:
-   - powstaje neutralny fallback;
-   - nie dziedziczy captionu ani creditu od odrzuconego assetu.
+#### P0-B â€” metadata and rendering pipeline
 
-6. Niedostępny finalny plik:
-   - renderer nie pokazuje podpisu do nieistniejącego zdjęcia;
-   - pipeline kończy z bezpiecznym fallbackiem albo prawidłowym stanem błędu.
+ZnajdÅº:
 
-7. Nieudany processing:
-   - nie pozostawia hybrydowego rekordu z plikiem fallbacku i metadanymi zdjęcia.
+1. finalny plik i identyfikator assetu;
+2. source page i direct file;
+3. creator i credit;
+4. caption i alt;
+5. rights manifest;
+6. flagÄ™/typ fallbacku;
+7. fallback creation;
+8. publiczny renderer HTML;
+9. zachowanie przy niedostÄ™pnym pliku.
 
-### Repair workflow
+### Wyniki
 
-8. Dry-run:
-   - nie zmienia bazy ani plików;
-   - wykrywa wadliwe fixture'y;
-   - nie oznacza poprawnego fallbacku jako błędu.
+- uzupeÅ‚nione `docs/ARCHITECTURE.md`;
+- uzupeÅ‚nione `docs/IMAGE_PIPELINE_MAP.md`;
+- lista maksymalnie 16 najwaÅ¼niejszych plikÃ³w Å‚Ä…cznie;
+- lista luk, ktÃ³rych indeks/kod nie rozstrzyga.
 
-9. Apply:
-   - naprawia tylko wskazane rekordy;
-   - zachowuje treść i status artykułu;
-   - jest idempotentne;
-   - kontynuuje po błędzie jednego artykułu.
+### Kryterium zakoÅ„czenia
 
-10. Published repair:
-   - wymaga jawnej flagi;
-   - nie zmienia daty i statusu publikacji;
-   - nie tworzy duplikatu w RSS/sitemap;
-   - atomowo odświeża stronę.
+Mapa zawiera potwierdzonÄ… kolejnoÅ›Ä‡ funkcji i pola przenoszone miÄ™dzy etapami. Brak implementacji i testÃ³w.
 
-## Relevant existing tests
+---
 
-Sprawdzić i odpowiednio rozszerzyć:
+## MAMONA-23-P1 â€” ROOT CAUSE AND SPEC â€” BLOCKED BY P0
+
+**Agent:** `mamona-architect`  
+**Model:** `qwen3.6:27b/deep`  
+**Edycja:** tylko `docs/`
+
+### Cel
+
+UstaliÄ‡ konkretnÄ… przyczynÄ™ obu regresji i zapisaÄ‡ specyfikacjÄ™:
+
+```text
+docs/specs/TASK-23-image-selection-rendering-regression.md
+```
+
+### ObowiÄ…zkowe ustalenia
+
+- gdzie finalny asset moÅ¼e rozminÄ…Ä‡ siÄ™ z captionem/alt/credit/source;
+- czy fallback dziedziczy metadane kandydata;
+- co dzieje siÄ™, gdy plik nie istnieje albo processing koÅ„czy siÄ™ bÅ‚Ä™dem;
+- jak powstaje relevance score;
+- czy pojedynczy token moÅ¼e zdominowaÄ‡ ranking;
+- gdzie legalnoÅ›Ä‡ jest mylona z uÅ¼ytecznoÅ›ciÄ… redakcyjnÄ…;
+- jakie negatywne sygnaÅ‚y sÄ… dostÄ™pne w metadanych;
+- czy naprawa wymaga migracji istniejÄ…cych rekordÃ³w.
+
+### Checkpoint
+
+Po specyfikacji zatrzymaj siÄ™ i poproÅ› o akceptacjÄ™. Nie implementuj.
+
+---
+
+## MAMONA-23-P2 â€” FINAL ASSET AND FALLBACK CONSISTENCY â€” BLOCKED BY APPROVAL
+
+**Agent:** `mamona-coder`  
+**Model:** `qwen3.6:27b/balanced`
+
+### Cel
+
+ZapewniÄ‡, Å¼e finalnie wyÅ›wietlany plik, caption, alt, credit, source i rights manifest naleÅ¼Ä… do jednego finalnego assetu.
+
+### Wymagania
+
+- fallback ma wÅ‚asne neutralne metadane;
+- fallback nie dziedziczy danych odrzuconego lub niedostÄ™pnego kandydata;
+- niedostÄ™pny finalny plik nie renderuje podpisu/creditu ÅºrÃ³dÅ‚a;
+- renderer uÅ¼ywa wyÅ‚Ä…cznie zweryfikowanego finalnego rekordu;
+- istniejÄ…ce poprawne assety zachowujÄ… dotychczasowe dane.
+
+### Minimalna walidacja
+
+- test pingwina/fallbacku;
+- test niedostÄ™pnego pliku;
+- test poprawnego legalnego obrazu.
+
+---
+
+## MAMONA-23-P3 â€” SEMANTIC AND EDITORIAL RELEVANCE GATE â€” BLOCKED BY P2
+
+**Agent:** `mamona-coder`  
+**Model:** `qwen3.6:27b/deep` dla projektu reguÅ‚, potem `balanced` dla implementacji
+
+### Cel
+
+OddzieliÄ‡:
+
+```text
+rights validation
+```
+
+od:
+
+```text
+semantic and editorial suitability
+```
+
+### SygnaÅ‚y pozytywne
+
+- gÅ‚Ã³wny temat;
+- tytuÅ‚;
+- kategoria;
+- kluczowe encje;
+- gatunki, obiekty, procesy i instytucje z researchu;
+- title, description i tags assetu.
+
+### SygnaÅ‚y negatywne
+
+- inny gÅ‚Ã³wny kontekst niÅ¼ artykuÅ‚;
+- osoby publiczne niebÄ™dÄ…ce tematem;
+- polityczna satyra;
+- zombie, gore, makabra, przemoc;
+- memy i karykatury;
+- szokujÄ…cy albo sensacyjny przekaz nieobecny w artykule.
+
+RozwiÄ…zanie musi byÄ‡ ogÃ³lne i oparte na dostÄ™pnych metadanych. Nie moÅ¼e bazowaÄ‡ wyÅ‚Ä…cznie na jednej liÅ›cie nazwisk lub sÅ‚Ã³w.
+
+JeÅ¼eli Å¼aden kandydat nie speÅ‚nia minimum, wybierz neutralny fallback.
+
+---
+
+## MAMONA-23-P4 â€” DIAGNOSTICS â€” BLOCKED BY P3
+
+**Agent:** `mamona-coder`  
+**Model:** `qwen3.6:27b/balanced`
+
+Zapisuj bez sekretÃ³w:
+
+- query dla kaÅ¼dego providera;
+- liczbÄ™ kandydatÃ³w;
+- przyczynÄ™ odrzucenia;
+- relevance score;
+- najwaÅ¼niejsze sygnaÅ‚y pozytywne i negatywne;
+- przyczynÄ™ fallbacku;
+- identyfikator finalnego assetu.
+
+Diagnostyka ma byÄ‡ wystarczajÄ…ca do odtworzenia decyzji, ale nie moÅ¼e logowaÄ‡ kluczy API ani peÅ‚nych sekretÃ³w.
+
+---
+
+## MAMONA-23-P5 â€” REGRESSION TESTS AND VALIDATION â€” BLOCKED BY P2â€“P4
+
+**Agent:** `mamona-tester`  
+**Model:** `qwen3.6:27b/balanced`  
+**Review:** `mamona-reviewer/deep`
+
+### Test matrix
+
+1. Pingwin:
+   - trafny obraz pingwina wygrywa z ogÃ³lnÄ… naturÄ…;
+   - fallback nie twierdzi, Å¼e przedstawia pingwina.
+
+2. NeuroplastycznoÅ›Ä‡:
+   - naukowy obraz mÃ³zgu moÅ¼e przejÅ›Ä‡;
+   - polityk-zombie odpada;
+   - sam token `brain` nie wystarcza.
+
+3. Brak odpowiedniego obrazu:
+   - fallback;
+   - brak starego captionu;
+   - brak faÅ‚szywego creditu i ÅºrÃ³dÅ‚a.
+
+4. NiedostÄ™pny plik:
+   - brak podpisu do nieistniejÄ…cego zdjÄ™cia;
+   - bezpieczny fallback albo pominiÄ™cie figury zgodnie z architekturÄ….
+
+5. Legalny, ale niepasujÄ…cy:
+   - prawa przechodzÄ…;
+   - redakcja odrzuca;
+   - kandydat nie trafia do artykuÅ‚u.
+
+6. PasujÄ…cy i legalny:
+   - nadal wygrywa;
+   - caption, alt, credit i source pozostajÄ… spÃ³jne.
+
+### IstniejÄ…ce testy do sprawdzenia
 
 - `tests/article-image-pipeline-smoke.php`
 - `tests/image-rights-providers-smoke.php`
+- `tests/full-auto-selector-smoke.php`
 - `tests/post-renderer-smoke.php`
 - `tests/generate-all-regression.php`
-- `tests/generation-batch-smoke.php`
 - `tests/editorial-pipeline-e2e.php`
 
-Uruchomić również inne testy znalezione podczas śledzenia faktycznie zmienionych modułów.
+Nie usuwaj istniejÄ…cych testÃ³w i nie osÅ‚abiaj walidacji licencji.
 
-Nie usuwać istniejących testów i nie osłabiać walidacji licencyjnej.
-
-## Validation commands
-
-Najpierw przeczytać początek każdego testu i ustawić wyłącznie udokumentowane flagi `CMS_ALLOW_*`.
-
-Sprawdzić składnię zmienionych plików PHP:
+### Minimalne komendy walidacyjne
 
 ```powershell
-git diff --name-only --diff-filter=ACM |
-    Where-Object { $_ -like "*.php" } |
-    ForEach-Object { C:\xampp\php\php.exe -l $_ }
-```
-
-Uruchomić co najmniej testy najbliższe zmienianemu kodowi oraz:
-
-```powershell
+C:\xampp\php\php.exe tests\article-image-pipeline-smoke.php
+C:\xampp\php\php.exe tests\image-rights-providers-smoke.php
+C:\xampp\php\php.exe tests\full-auto-selector-smoke.php
+C:\xampp\php\php.exe tests\post-renderer-smoke.php
 C:\xampp\php\php.exe tests\generate-all-regression.php
 ```
 
-Pełny E2E uruchomić po przejściu testów celowanych, zgodnie z `OPERATIONS.md`, bez równoległego panelu, schedulera ani workera.
+PeÅ‚ny `editorial-pipeline-e2e.php` uruchom dopiero po sprawdzeniu wymaganych flag i tylko wtedy, gdy zakres faktycznie dotyka peÅ‚nego pipeline'u.
 
-## Acceptance criteria
+# Stan wykonania
 
-Zadanie jest ukończone, gdy:
+## ZakoÅ„czone
 
-- [ ] Ustalono konkretną przyczynę regresji.
-- [ ] Udział fallbacków nie rośnie przez błąd techniczny w pipeline.
-- [ ] Kandydat nie jest wybierany wyłącznie na podstawie przypadkowego słowa.
-- [ ] Obraz polityka-zombie nie może ilustrować artykułu o neuroplastyczności.
-- [ ] Obrazy osób publicznych są odrzucane, gdy osoba nie jest rzeczywistym tematem artykułu.
-- [ ] Brak trafnego obrazu prowadzi do prawidłowego neutralnego fallbacku.
-- [ ] Fallback ma wyłącznie własny neutralny caption i alt.
-- [ ] Caption, alt, creator, credit, source i plik zawsze opisują ten sam asset.
-- [ ] Nieudany download/processing nie pozostawia częściowo zapisanych metadanych.
-- [ ] Walidacja praw i licencji nie została osłabiona.
-- [ ] Istnieje deterministyczny dry-run wykrywający wadliwe artykuły.
-- [ ] Istnieje kontrolowana, idempotentna operacja naprawcza.
-- [ ] Wszystkie wykryte wadliwe artykuły zostały ponownie przepuszczone przez poprawiony pipeline.
-- [ ] Naprawiono także wadliwe artykuły opublikowane bez zmiany ich treści, statusu, sluga i dat.
-- [ ] Po naprawie ponowny audyt nie wykrywa tych samych usterek.
-- [ ] Nowe przypadki mają testy regresji.
-- [ ] Istniejące testy pipeline'u nadal przechodzą.
-- [ ] Diagnostyka pokazuje powody wyboru, odrzucenia i naprawy.
-- [ ] Nie wykonano niezwiązanej refaktoryzacji.
+- [ ] P0 â€” initial indexed map
+- [ ] P1 â€” root cause and spec
+- [ ] P2 â€” final asset/fallback consistency
+- [ ] P3 â€” semantic/editorial gate
+- [ ] P4 â€” diagnostics
+- [ ] P5 â€” tests, validation and review
 
-## Non-goals
+## Sprawdzone pliki
 
-Nie należy:
+UzupeÅ‚niaj listÄ™ zamiast otwieraÄ‡ pliki ponownie bez powodu:
 
-- regenerować treści artykułów;
-- ponawiać researchu, draftu ani QC;
-- zmieniać statusów redakcyjnych;
-- automatycznie publikować nowych materiałów;
-- wymieniać całego systemu providerów bez udowodnionej potrzeby;
-- dodawać płatnego API bez zgody;
-- usuwać manifestów praw;
-- obniżać wymagań licencyjnych;
-- nadpisywać poprawnych ręcznie dodanych obrazów;
-- wykonywać masowej operacji bez dry-runu i backupu;
-- dodawać lokalnej bazy, backupów ani pobranych mediów do Git.
+```text
+â€” brak; P0 jeszcze nie wykonano
+```
 
-## Current state
+## Decyzje i pytania
 
-- Repozytorium Mamona jest dostępne lokalnie i zsynchronizowane z GitHubem.
-- PHP z XAMPP jest dostępne jako `C:\xampp\php\php.exe`.
-- Roo Code jest zainstalowany.
-- Konfiguracja agentów i Vast.ai została dodana do repozytorium.
-- Problem potwierdzono wizualnie na co najmniej dwóch artykułach.
-- Istnieje skrypt `scripts/refill-article-images.php`, ale jego aktualny zakres jest zbyt wąski dla wymaganej operacji naprawczej.
-- Implementacja naprawy nie została rozpoczęta.
+```text
+â€” brak; P0 jeszcze nie wykonano
+```
 
-## First actions for the agent
+## Validation log
 
-1. Przeczytaj `AGENTS.md`.
-2. Przeczytaj relevant sections of:
-   - `docs/PROJECT_CONTEXT.md`
-   - `OPERATIONS.md`
-   - `GEMINI-IMAGES.md`
-   - `IMAGE-CREDITS.md`
-3. Sprawdź `git status` i ostatnie commity, zwłaszcza zmiany poprzedzające wzrost liczby fallbacków.
-4. Znajdź implementację `fulfill_article_source_images(...)`.
-5. Prześledź pełny zapis i renderowanie `article_images`.
-6. Odtwórz oba zgłoszone przypadki jako deterministyczne fixture'y.
-7. Przed większą zmianą przedstaw krótką diagnozę root cause.
-8. Napraw przyczynę najmniejszą spójną zmianą.
-9. Dodaj bezpieczny dry-run i workflow naprawczy.
-10. Uruchom testy.
-11. Wykonaj dry-run, backup i zatwierdzoną naprawę wykrytych artykułów.
-12. Przeprowadź ponowny audyt i kontrolę wizualną.
-13. Zaktualizuj ten plik przed zakończeniem sesji.
+| Data | Faza | Komenda/test | Wynik | Uwagi |
+|---|---|---|---|---|
+| â€” | â€” | â€” | â€” | â€” |
 
-## Completed
+## Format raportu po fazie
 
-- [x] Przygotowano pliki kontekstu dla agentów.
-- [x] Dodano skrypty konfiguracji Vast.ai.
-- [x] Zapisano konfigurację agentów w GitHubie.
-- [x] Określono pierwsze zadanie programistyczne.
-- [x] Zgłoszono dwa konkretne przypadki regresji obrazów.
-- [x] Zatwierdzono naprawę już wadliwych artykułów po wdrożeniu poprawki.
-- [ ] Ustalono root cause.
-- [ ] Dodano testy regresji.
-- [ ] Naprawiono pipeline.
-- [ ] Dodano bezpieczny audyt i repair workflow.
-- [ ] Wykonano dry-run i backup.
-- [ ] Przepuszczono wadliwe artykuły przez poprawiony pipeline.
-- [ ] Zweryfikowano strony po naprawie.
+1. ZakoÅ„czona faza.
+2. Potwierdzone ustalenia.
+3. Zmienione pliki.
+4. Walidacja.
+5. Ryzyka.
+6. Jedna nastÄ™pna faza.
+7. Czy wymagana jest akceptacja uÅ¼ytkownika.
 
-## Blockers and uncertainties
 
-- Dokładny commit albo zakres dat regresji trzeba ustalić z lokalnej historii Git i dat rekordów.
-- Nie wiadomo jeszcze, czy problem powstaje podczas rankingu, fallbacku, pobierania, zapisu czy renderowania.
-- Nie wiadomo jeszcze, które artykuły mają obrazy dodane ręcznie; takich obrazów nie wolno nadpisywać automatycznie.
-
-## Validation status
-
-Nie rozpoczęto implementacji.
-
-## Session handoff
-
-Na końcu sesji zapisać:
-
-- root cause;
-- zmienione pliki;
-- dodane testy;
-- dokładne komendy i wyniki testów;
-- raport dry-run;
-- lokalizację backupu;
-- listę naprawionych post ID i tytułów;
-- status każdego rekordu: `repaired`, `fallback`, `skipped` albo `failed`;
-- wyniki ponownego audytu;
-- informacje o artykułach wymagających ręcznej decyzji;
-- pojedynczą najlepszą następną akcję.
