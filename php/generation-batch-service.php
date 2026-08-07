@@ -1186,7 +1186,8 @@ function generation_batch_reconcile_autonomous_items(?array $itemIds = null): ar
             generation_batch_refresh_status((int) $item['batch_id']);
             continue;
         }
-        $decision = quality_check_auto_repair_decision($check);
+        $convergenceActive1 = (int) ($item['convergence_active'] ?? 0) === 1;
+        $decision = quality_check_auto_repair_decision($check, $convergenceActive1);
         if (($decision['repairable'] ?? false) !== true || ($decision['target_stage'] ?? 'draft') !== 'draft') {
             generation_batch_update_item((int) $item['id'], ['status' => 'auto_repair', 'stage' => 'quality_check', 'outcome' => 'safe_composer_queued',
                 'wait_reason' => 'Router usuwa niewspierane elementy przez safe composer.', 'available_at' => gmdate('Y-m-d H:i:s'), 'completed_at' => null]);
@@ -1196,7 +1197,12 @@ function generation_batch_reconcile_autonomous_items(?array $itemIds = null): ar
             continue;
         }
         $attempt = $performed + 1;
-        $strategy = $attempt === 1 ? 'targeted_repair' : 'fresh_conservative_rewrite';
+        /* In convergence mode, always use targeted_repair; never full rewrite. */
+        if ($convergenceActive1) {
+            $strategy = 'targeted_repair';
+        } else {
+            $strategy = $attempt === 1 ? 'targeted_repair' : 'fresh_conservative_rewrite';
+        }
         $operationId = prepare_article_qc_repair_operation((int) $draft['id'], $check, $decision, $attempt);
         $repairDraft = find_article_draft_by_operation($operationId);
         if (!is_array($repairDraft)) throw new RuntimeException('Reconcile nie utworzył wersji korekty.');
@@ -1433,6 +1439,31 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
             generation_batch_update_item($itemId, ['status' => $isAutoRepair ? 'auto_repair' : 'draft', 'progress_percent' => $isAutoRepair ? 58 : 45]);
             $operationId = (int) ($item['draft_operation_id'] ?? 0);
             if ($operationId <= 0) {
+                // Generate NarrativePlan
+                $existingPlan = find_narrative_plan_for_topic((int) $item['topic_id']);
+                if ($existingPlan === null) {
+                    $planResult = generate_narrative_plan((int) $item['topic_id'], [], $transport);
+                    $planId = (int) ($planResult['plan_id'] ?? 0);
+                    if ($planId > 0) {
+                        accept_narrative_plan($planId);
+                    }
+                    // Budget increment for narrative plan call
+                    $articleId2 = (int) ($item['post_id'] ?? 0);
+                    if ($articleId2 > 0) {
+                        try {
+                            gemini_article_budget_increment(bueno_database(), $articleId2, 'narrative_plan', 'narrative_plan', 1, 'success');
+                            $budgetState2 = gemini_article_budget_state($articleId2);
+                            if ((int)($budgetState2['convergence_active'] ?? 0) === 1) {
+                                generation_batch_update_item($itemId, ['convergence_active' => 1]);
+                            }
+                        } catch (GeminiArticleBudgetException $budgetEx) {
+                            throw $budgetEx;
+                        }
+                    }
+                } else {
+                    accept_narrative_plan((int) $existingPlan['id']);
+                }
+
                 $operationId = prepare_article_draft_operation((int) $item['research_package_id'], 'informational');
                 $draft = find_article_draft_by_operation($operationId);
                 generation_batch_update_item($itemId, [
@@ -1522,7 +1553,7 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
                 $convergenceActive = (int)($item['convergence_active'] ?? 0) === 1;
                 $routerAssessment = repair_router_assess(is_array($check) ? $check : [], $convergenceActive);
                 $decision = is_array($check)
-                    ? quality_check_auto_repair_decision($check)
+                    ? quality_check_auto_repair_decision($check, $convergenceActive)
                     : ['repairable' => false, 'human_required' => true, 'reasons' => ['Brak kompletnego wyniku QC.']];
                 $repairAttempt = (int) ($item['auto_repair_count'] ?? 0) + 1;
                 if (($decision['repairable'] ?? false) === true && ($decision['target_stage'] ?? 'draft') === 'research'
@@ -1541,7 +1572,12 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
                         repair_report_append($itemId, 'factual_source', 'safe_composer', ['reason' => $reason, 'research_budget_exhausted' => true]);
                     }
                 } elseif (($decision['repairable'] ?? false) === true && $repairAttempt <= 2 && generation_batch_is_autonomous($item)) {
-                    $strategy = $repairAttempt === 1 ? 'targeted_repair' : 'fresh_conservative_rewrite';
+                    /* In convergence mode, always use targeted_repair; never full rewrite. */
+                    if ($convergenceActive) {
+                        $strategy = 'targeted_repair';
+                    } else {
+                        $strategy = $repairAttempt === 1 ? 'targeted_repair' : 'fresh_conservative_rewrite';
+                    }
                     $repairOperationId = prepare_article_qc_repair_operation(
                         (int) $item['draft_version_id'],
                         $check,
@@ -1600,6 +1636,11 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
                     }
                 }
             } else {
+                /* Freeze accepted artifacts after successful QC iteration. */
+                qc_freeze_accepted_artifacts(
+                    (int) $item['draft_version_id'],
+                    (int) ($item['convergence_active'] ?? 0) === 1
+                );
                 $qualityOnly = (string) ($item['requested_stage'] ?? '') === 'quality';
                 generation_batch_update_item($itemId, $qualityOnly ? [
                     'status' => 'completed', 'stage' => 'quality_check', 'progress_percent' => 100,
@@ -1671,13 +1712,25 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
         $message = mb_substr($exception->getMessage(), 0, 2000);
         $classification = generation_error_classification($exception);
         if ($exception instanceof GeminiArticleBudgetException && generation_batch_is_autonomous($item)) {
+            $budgetDiagnostics = gemini_budget_exhaustion_diagnostics((int) $item['post_id']);
             generation_batch_update_item($itemId, [
-                'status'=>'manual_review','stage'=>'quality_check','outcome'=>'budget_exhausted','progress_percent'=>90,
+                'status'=>'manual_review','stage'=>$stage,'outcome'=>'budget_exhausted','progress_percent'=>90,
                 'wait_reason'=>'Budzet 20 wywołań Gemini wyczerpany; artykuł wymaga przeglądu redakcyjnego.',
                 'available_at'=>gmdate('Y-m-d H:i:s'),'next_retry_at'=>null,'quota_dimension'=>'','quota_model'=>'','completed_at'=>null,
             ]);
-            repair_report_append($itemId, 'final_package', 'manual_review', ['live_requests_used'=>$exception->usedCalls,'request_cap'=>20,'publication_recommended'=>false]);
-            generation_batch_audit((int)$item['batch_id'],$itemId,'gemini_article_budget_exhausted','worker',['live_requests_used'=>$exception->usedCalls,'request_cap'=>20,'next'=>'manual_review']);
+            repair_report_append($itemId, 'final_package', 'manual_review', [
+                'live_requests_used'=>$exception->usedCalls,'request_cap'=>20,'publication_recommended'=>false,
+                'stage_at_exhaustion'=>$stage,'convergence_active'=>(bool)($item['convergence_active']??false),
+                'budget'=>$budgetDiagnostics['budget'],
+                'artifacts'=>$budgetDiagnostics['artifacts'],
+                'images'=>$budgetDiagnostics['images'],
+            ]);
+            generation_batch_audit((int)$item['batch_id'],$itemId,'gemini_article_budget_exhausted','worker',[
+                'live_requests_used'=>$exception->usedCalls,'request_cap'=>20,'next'=>'manual_review',
+                'stage_at_exhaustion'=>$stage,
+                'convergence_active'=>(bool)($item['convergence_active']??false),
+                'diagnostics'=>$budgetDiagnostics,
+            ]);
             return;
         }
         if ($exception instanceof GeminiQuotaWaitException) {

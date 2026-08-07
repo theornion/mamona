@@ -43,6 +43,7 @@ const IMAGE_INTEGRITY_MIGRATION = '20260801_038_image_integrity';
 const GEMINI_LEDGER_EXTENSION_MIGRATION = '20260801_039_gemini_ledger_extension';
 const AUTOMATIC_DISPATCH_PAUSE_MIGRATION = '20260801_040_automatic_dispatch_pause';
 const ARTICLE_GENERATION_BUDGET_MIGRATION = '20260807_041_article_generation_budget';
+const NARRATIVE_PLANS_MIGRATION = '20260807_042_narrative_plans';
 
 function database_table_columns(PDO $database, string $table): array
 {
@@ -1598,6 +1599,34 @@ function run_schema_migrations(PDO $database): void
             $database->prepare(
                 'UPDATE article_images SET is_fallback = 1 WHERE local_path LIKE "%editorial-fallback/%" OR search_audit_json LIKE "%local_fallback%"'
             )->execute();
+        }
+    );
+    apply_schema_migration(
+        $database,
+        NARRATIVE_PLANS_MIGRATION,
+        static function (PDO $database): void {
+            $database->exec(
+                'CREATE TABLE IF NOT EXISTS narrative_plans (' .
+                    'id INTEGER PRIMARY KEY AUTOINCREMENT,' .
+                    'article_id INTEGER NOT NULL,' .
+                    'promise_to_reader TEXT NOT NULL DEFAULT "",' .
+                    'main_thesis TEXT NOT NULL DEFAULT "",' .
+                    'narrative_arc TEXT NOT NULL DEFAULT "",' .
+                    'arc_justification TEXT NOT NULL DEFAULT "",' .
+                    'sections_json TEXT NOT NULL DEFAULT "[]",' .
+                    'transitions_json TEXT NOT NULL DEFAULT "[]",' .
+                    'rhythm_notes TEXT NOT NULL DEFAULT "",' .
+                    'visual_slots_planned INTEGER NOT NULL DEFAULT 1,' .
+                    'hero_topic_ref TEXT NOT NULL DEFAULT "A",' .
+                    'ending_type TEXT NOT NULL DEFAULT "",' .
+                    'supplemental_topics_json TEXT NOT NULL DEFAULT "[]",' .
+                    'target_length INTEGER NOT NULL DEFAULT 4000,' .
+                    'status TEXT NOT NULL DEFAULT "planned",' .
+                    'batch_stage_ref TEXT,' .
+                    'created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,' .
+                    'updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP' .
+                ')'
+            );
         }
     );
 }

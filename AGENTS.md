@@ -2,193 +2,207 @@
 
 ## 1. Cel
 
-Mamona jest produkcyjnym systemem CMS i automatyzacji redakcyjnej zbudowanym w PHP 8.1+ i SQLite. Publiczna strona, panel administratora, research, generowanie tekstów, QC, obrazy, publikacja, RSS, sitemap i wygenerowane strony tworzą jeden audytowalny przepływ.
+Mamona jest produkcyjnym systemem CMS i automatyzacji redakcyjnej w PHP 8.1+ i SQLite. Publiczna strona, panel administratora, research, generowanie tekstów, QC, obrazy, publikacja, RSS, sitemap i wygenerowane strony tworzą jeden audytowalny przepływ.
 
 Preferuj małe, sprawdzalne zmiany. Nie zmieniaj zachowania poza aktywnym zakresem.
 
 ## 2. Źródła prawdy
 
 Kolejność:
-
 1. Aktualne polecenie użytkownika.
-2. Aktywny task oraz zaakceptowany checkpoint.
+2. Aktywny task oraz zaakceptowany checkpoint/handoff.
 3. `docs/CURRENT_WORK.md`.
 4. Aktualny kod, schemat bazy, konfiguracja i testy.
 5. `docs/ARCHITECTURE.md`, `docs/IMAGE_PIPELINE_MAP.md`, `docs/DECISIONS.md`, `docs/CONTEXT_INDEX.md`.
 6. README i dokumentacja operacyjna.
 
-Stare taski, archiwa, wcześniejsze raporty i wynik indeksu są wskazówkami. Trwałe ustalenie wymaga potwierdzenia w aktualnym kodzie, schemacie, konfiguracji albo teście.
+Stare taski, archiwa i wcześniejsze raporty są wskazówkami. Trwałe ustalenie wymaga potwierdzenia w aktualnym kodzie, schemacie, konfiguracji albo teście.
 
 ## 3. Protokół startu
 
-1. Przeczytaj aktywny task i właściwą część `docs/CURRENT_WORK.md`.
-2. Sprawdź `git status --short` i `git log --oneline -5`.
-3. Ustal aktualny root repozytorium albo worktree.
+1. Przeczytaj aktywny task, aktualny checkpoint/handoff i właściwą część `docs/CURRENT_WORK.md`.
+2. Sprawdź `git status --short`.
+3. Domyślnie użyj `git diff --stat`, nie pełnego `git diff`.
 4. Nie nadpisuj niezacommitowanych zmian użytkownika.
-5. Najpierw użyj indeksu, `grep`, `glob` i wyszukiwania symboli.
-6. Przed `read` potwierdź ścieżkę przez `glob`, `git ls-files` albo aktualny kod.
-7. Używaj ścieżek względnych wobec bieżącego worktree.
-8. Nie skanuj całego repo bez konkretnego celu.
-9. Nie czytaj ponownie tego samego zakresu bez nazwania nierozstrzygniętego pytania.
+5. Nie skanuj całego repo bez konkretnego pytania.
+6. Nie czytaj ponownie tego samego zakresu bez nowej hipotezy.
 
-## 4. Modele i ich przeznaczenie
+## 4. Modele i role
 
 ### `ollama/qwen3.6:27b`
-
-Główny model do:
-
-- orkiestracji;
-- architektury;
-- root cause;
-- implementacji;
-- trudnych testów;
-- review.
+Używaj do orkiestracji, architektury, implementacji, trudnych testów, review i root cause.
 
 Warianty:
-
-- `balanced` — orkiestracja, implementacja, testy i kontrolowane rozpoznanie;
-- `deep` — architektura, trudne decyzje, krytyczne review.
-
-Nie używaj `deep` do mechanicznego przepisywania dokumentów.
-
-### `ollama/qwen3.6-no-think`
-
-Alias tego samego fizycznego modelu `qwen3.6:27b`, ale z wyłączonym reasoningiem.
-
-Używaj wyłącznie do:
-
-- mechanicznego zapisu gotowych ustaleń;
-- aktualizacji pojedynczych dokumentów;
-- formatowania;
-- markerów sukcesu;
-- generowania końcowego checkpointu na podstawie gotowych danych;
-- prostego handoffu.
-
-Nie używaj do:
-
-- root cause;
-- projektowania architektury;
-- podejmowania decyzji;
-- implementacji;
-- debugowania;
-- review;
-- uzupełniania braków.
+- `balanced` — orkiestracja, implementacja i testy;
+- `deep` — architektura, trudne decyzje i krytyczne review.
 
 ### `ollama/qwen3.5:9b`
+Używaj do:
+- `quick-maintainer`;
+- `checkpoint-writer`;
+- krótkich handoffów;
+- prostych, niekrytycznych operacji mechanicznych.
 
-Model szybki do krótkich, niekrytycznych zadań. Krytyczny tool calling wymaga wcześniejszego potwierdzenia stabilności.
+Dla mechaniki używaj wariantu `no-think`.
+
+### `ollama/qwen3.5-no-think`
+Dedykowany alias do automatycznego Context Condensing Kilo.
 
 ## 5. Role
 
-- `mamona-orchestrator` — fazy, delegacja, checkpointy i walidacja wyników.
-- `repo-scout` — potwierdzone rozpoznanie repozytorium, tylko odczyt.
-- `mamona-architect` — root cause, kontrakty, migracja i test matrix.
-- `mamona-coder` — implementacja zaakceptowanego zakresu.
-- `mamona-tester` — testy, reprodukcja i diagnostyka.
+- `mamona-orchestrator` — delegacja, checkpointy, kontrola kolejności i kontekstu.
+- `repo-scout` — read-only rozpoznanie.
+- `mamona-architect` — kontrakty, root cause, migracje i plan.
+- `mamona-coder` — małe atomy implementacji.
+- `mamona-tester` — testy, regresje i diagnostyka.
 - `mamona-reviewer` — niezależne review.
-- `quick-maintainer` — mechaniczna aktualizacja dokumentów na `qwen3.6-no-think`.
-- `checkpoint-writer` — końcowy checkpoint na `qwen3.6-no-think`.
+- `quick-maintainer` — mechaniczny zapis dokumentacji 9B/no-think.
+- `checkpoint-writer` — checkpoint/handoff 9B/no-think.
 
-Dla złożonego zadania:
+## 6. Atomowe subtaski
 
-```text
-repo-scout → architect → checkpoint → coder → tester → reviewer
-```
+Domyślny subtask implementacyjny:
+- 1–2 pliki produkcyjne;
+- jedna logiczna zmiana albo jeden integration point;
+- około 100–150 nowych/zmienionych linii;
+- maksymalnie jeden nowy duży komponent.
 
-Każdy task wskazuje: agenta, model, wariant, zakres, uprawnienia, limit i warunek zakończenia.
+Jeżeli nowy komponent przekroczy około 200 linii, oddziel:
+1. schema/kontrakt;
+2. implementację komponentu;
+3. integrację;
+4. test.
 
-## 6. Kontrakt subagentów
+Nie zlecaj jednemu coderowi jednocześnie: migracji + dużego serwisu + integracji + dużych testów + dokumentacji.
 
-Pełny protokół:
+## 7. DIRECT_TARGET_MODE
 
-```text
-docs/AGENT_EXECUTION_PROTOCOL.md
-```
+Jeżeli rodzic podał dokładny plik i symbol/funkcję:
+1. nie czytaj całego taska ani całej specyfikacji;
+2. nie wykonuj broad grep/glob;
+3. nie wykonuj `git log`;
+4. przeczytaj wskazany symbol i najwyżej jego bezpośrednie zależności;
+5. cel: maks. 8–12 operacji rozpoznawczych przed pierwszą edycją;
+6. po potwierdzeniu kontraktu przejdź do edycji;
+7. po edycji uruchom najmniejszy wystarczający test.
 
-Minimum:
+## 8. Statusy subtasków
 
-- pierwszą czynnością subagenta jest tool call, nie opis planu;
-- subtask eksploracyjny otwiera domyślnie maksymalnie 12 nowych plików;
-- wynik `semantic_search` jest śladem, nie dowodem;
-- każdy subagent kończy `SUBTASK_RESULT`;
-- brak raportu oznacza niekompletny subtask;
-- orkiestrator nie zastępuje brakującego raportu własną analizą;
-- najpierw kontynuacja istniejącego kontekstu, potem najwyżej jeden celowany recovery subtask;
-- po drugim niepowodzeniu status `BLOCKED`;
-- przy `OLLAMA_NUM_PARALLEL=1` subagenci działają sekwencyjnie;
-- subagent nie uruchamia dalszych subagentów.
+- `COMPLETE` — cały atom zakończony i zweryfikowany.
+- `PARTIAL_COMPLETE` — bezpieczna, użyteczna część zapisana, ale pozostał jawny zakres.
+- `BLOCKED` — brak bezpiecznej możliwości kontynuacji.
 
-## 7. Budżet odpowiedzi
+`PARTIAL_COMPLETE` musi podać:
+- Completed;
+- Remaining;
+- Safe continuation point;
+- Changed files;
+- Tests.
 
-Domyślnie:
+Brak raportu nie oznacza sukcesu.
 
-```text
-70–80% budżetu: narzędzia i analiza
-20–30% budżetu: raport, zapis albo checkpoint
-```
+## 9. Orchestrator — minimalny rodzic
 
-Przy zbliżaniu się do limitu:
+Orchestrator:
+- nie implementuje kodu produkcyjnego;
+- nie wykonuje `edit` zamiast codera;
+- po `COMPLETE` nie czyta ponownie całego diffu;
+- po `COMPLETE` przechodzi do wymaganej walidacji/testera;
+- po `PARTIAL_COMPLETE` uruchamia jeden continuation task tylko dla `Remaining`;
+- po pustym wyniku sprawdza wyłącznie `git diff --stat` i diff zmienionych plików;
+- nie wykonuje własnego reverse engineeringu zamiast brakującego raportu;
+- po drugim nieudanym continuation zwraca `BLOCKED`.
 
-1. zatrzymaj nowe odczyty;
-2. nie zaczynaj dużego pliku;
-3. zapisz stan;
-4. oznacz braki;
-5. zwróć wynik użytkowy.
+## 10. Tester
 
-Nie zużywaj całego outputu na reasoning.
+Tester:
+- najpierw uruchamia istniejące testy;
+- nowy test tworzy tylko dla brakującego coverage;
+- preferuje krótki test tabelaryczny;
+- nie buduje nowego mini-frameworka, gdy prostsza fixture wystarczy;
+- nie wykonuje realnych płatnych API ani produkcyjnych mutacji;
+- dla regresji semantycznych pozostaje na `qwen3.6:27b/balanced`.
 
-## 8. Mechanical finalization
+## 11. Mechanical finalization
 
-Po zakończeniu pracy merytorycznej utwórz osobną fazę:
+`quick-maintainer` i `checkpoint-writer` używają `qwen3.5:9b/no-think`.
 
-```text
-MECHANICAL_FINALIZATION
-```
+Po udanym `write`/`edit`:
+- nie zapisuj tego samego pliku drugi raz;
+- nie czytaj ponownie pliku bez błędu narzędzia;
+- zwróć wymagany marker sukcesu.
+
+Orchestrator po markerze sukcesu nie weryfikuje mechanicznego zapisu przez 27B, chyba że narzędzie zgłosi błąd.
+
+
+## 11A. Natywny zapis plików i trwały wynik subagenta
+
+Kilo ma trzy natywne narzędzia modyfikacji plików: `edit`, `write`, `apply_patch`.
+
+Reguła nadrzędna:
+- jeżeli agent ma uprawnienie do ścieżki, używa natywnego file tool;
+- brak file tool NIE jest zgodą na zapis przez bash/PowerShell/php/echo/redirection;
+- shell nie jest mechanizmem tworzenia kodu, testów ani dokumentacji.
+
+Macierz zapisu:
+- `mamona-coder`: kod/testy zgodnie z taskiem + `.kilo/results/**`;
+- `mamona-tester`: tylko `tests/**` + `.kilo/results/**`;
+- `mamona-architect`: tylko `docs/**` + `.kilo/results/**`;
+- `mamona-reviewer`: tylko `.kilo/results/**`;
+- `repo-scout`: tylko `.kilo/results/**`;
+- `quick-maintainer`: Markdown/docs + `.kilo/results/**`;
+- `checkpoint-writer`: Markdown/docs + `.kilo/results/**`;
+- `mamona-orchestrator`: tylko docs + `.kilo/results/**`, nigdy kod produkcyjny.
+
+Każdy reasoning subagent dostaje od rodzica jawny:
+`Result file: .kilo/results/<SUBTASK-ID>.json`
+
+Przed finalną odpowiedzią zapisuje mały, maszynowo czytelny wynik. Dzięki temu pusty/ucięty tekst child session nie zmusza Orchestratora do ponownego reverse engineeringu.
+
+`.kilo/results/*.json` są plikami runtime i nie trafiają do Git.
+
+## 12. Auto-compaction i kontrola kontekstu
+
+Kilo automatycznie kondensuje historię przy **65% kontekstu**.
+
+Konfiguracja:
+- `compaction.auto = true`;
+- `compaction.threshold_percent = 65`;
+- `compaction.prune = true`;
+- `compaction.tail_turns = 2`;
+- `compaction.preserve_recent_tokens = 8000`;
+- `compaction.reserved = 20000`;
+- model summary: `ollama/qwen3.5-no-think`.
 
 Zasady:
+- NIE rób handoffu do nowego Orchestratora tylko dlatego, że kontekst osiągnął 65%;
+- pozwól Kilo wykonać automatyczny Context Condensing i kontynuuj w tej samej sesji;
+- nie przerywaj aktywnego child tasku z powodu progu kontekstu;
+- po compaction sprawdź tylko, czy zachowane są: aktywna faza, wykonany zakres, blockery i dokładny następny krok;
+- nie odtwarzaj całej starej historii, jeżeli summary zawiera potrzebny stan;
+- formalny handoff do pliku nadal wykonuj na checkpointach między dużymi fazami;
+- awaryjny handoff wykonaj tylko, gdy auto-compaction nie zadziała, summary utraci krytyczny stan albo sesja pozostanie blisko limitu mimo compaction.
 
-1. Użyj `quick-maintainer` na `ollama/qwen3.6-no-think`.
-2. Jeden subtask aktualizuje jeden plik albo mały atomowy pakiet.
-3. Przekaż gotową treść, raport albo jednoznaczny zakres.
-4. Zabroń nowego researchu, grep, glob, task i szerokiej diagnostyki.
-5. Po każdym zapisie wymagaj krótkiego markera sukcesu.
-6. Checkpoint twórz dopiero po zapisaniu dokumentów.
-7. Do checkpointu użyj `checkpoint-writer` na `ollama/qwen3.6-no-think`.
-8. Nie łącz ciężkiej analizy, wielu edycji i checkpointu w jednej odpowiedzi.
-9. Model no-think nie może podejmować nowych decyzji. Brak danych oznacza blocker i powrót do właściwego agenta reasoningowego.
+Awaryjny handoff:
+- `quick-maintainer` na `qwen3.5:9b/no-think`;
+- około 800–1600 słów;
+- tylko potwierdzony stan;
+- completed, changed files, tests, open issues, exact next step;
+- bez ponownego researchu.
 
-## 9. Ochrona przed zapętleniem
+## 13. Równoległość
 
-- Maksymalnie dwie równoważne próby dla jednego problemu.
-- Identyczna nieudana komenda może być ponowiona najwyżej dwa razy.
-- Po drugim niepowodzeniu zgłoś blocker.
-- Brakującego pliku nie odczytuj ponownie bez nowej, potwierdzonej ścieżki.
-- Gdy kolejny krok powtarza poprzedni bez nowej hipotezy, zatrzymaj się.
-- Nie obchodź `doom_loop: ask`.
-- Przy 70% limitu kroków nie rozpoczynaj nowej dużej jednostki.
-- Ucięcie odpowiedzi nie jest zgodą na pominięcie checkpointu.
+Przy `OLLAMA_NUM_PARALLEL=1` subagenci działają sekwencyjnie.
 
-## 10. Checkpointy
+## 14. Ochrona przed zapętlaniem
 
-- Eksploracja nie przechodzi automatycznie do architektury.
-- Architektura nie przechodzi automatycznie do implementacji.
-- Implementacja nie uruchamia realnych providerów, publikacji ani mutacji bez osobnej zgody.
-- Każdy wymagany checkpoint jest twardym stopem.
-- Faza nie jest kompletna bez wymaganych raportów.
+- Nie powtarzaj identycznej nieudanej komendy więcej niż raz.
+- Nie czytaj ponownie tego samego zakresu bez nowej hipotezy.
+- Nie uruchamiaj trzeciego pełnego recovery.
+- Przy wzroście zakresu zakończ `PARTIAL_COMPLETE`.
+- Nie zużywaj końca odpowiedzi na reasoning kosztem raportu.
 
-Checkpoint zawiera:
-
-1. status;
-2. agentów, modele i warianty;
-3. potwierdzone fakty;
-4. zmienione pliki;
-5. testy;
-6. luki;
-7. ryzyka;
-8. następną fazę;
-9. dokładny tekst wymaganej akceptacji.
-
-## 11. Reguły produktu
+## 15. Reguły produktu
 
 1. `editorial_status` jest źródłem prawdy widoczności.
 2. Publiczny może być wyłącznie nieusunięty artykuł ze statusem `published`.
@@ -201,20 +215,19 @@ Checkpoint zawiera:
 9. Nie uruchamiaj płatnych API, publikacji ani mutujących testów bez zgody.
 10. Nie commituj i nie pushuj bez prośby użytkownika.
 
-## 12. Kodowanie
+## 16. Kodowanie
 
-- Zmieniane pliki tekstowe zapisuj jako UTF-8.
-- Kod źródłowy zapisuj bez BOM, chyba że format wymaga inaczej.
+- UTF-8.
+- Kod bez BOM, jeśli format nie wymaga inaczej.
 - Zachowuj polskie znaki.
-- Nie konwertuj przez Windows-1250 ani Windows-1252.
+- Nie konwertuj przez Windows-1250/1252.
 - Przed checkpointem sprawdź `�`, `Ã`, `Â`, `Ä`, `Å`, `â€`.
 
-## 13. Zakończenie etapu
+## 17. Zakończenie etapu
 
-1. Przejrzyj `git diff`.
-2. Uruchom najmniejszy wystarczający zestaw testów.
-3. Sprawdź sekrety, logi, bazę i artefakty.
-4. Zaktualizuj `docs/CURRENT_WORK.md`.
-5. Zapisz tylko potwierdzoną wiedzę.
-6. Sprawdź UTF-8.
-7. Zwróć krótki raport.
+1. Przejrzyj `git diff --stat`.
+2. Pełny diff czytaj tylko dla plików wymaganych do decyzji.
+3. Uruchom najmniejszy wystarczający zestaw testów.
+4. Zaktualizuj dokumentację przez 9B/no-think.
+5. Sprawdź UTF-8.
+6. Zwróć krótki raport.

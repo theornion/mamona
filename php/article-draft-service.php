@@ -13,7 +13,7 @@ final class ArticleTitleRepairException extends InvalidArgumentException
 const ARTICLE_COMPOSITION_MODES = ['informational', 'problem_discovery_return'];
 const ARTICLE_MAIN_CONTENT_MIN_LENGTH = 3000;
 const ARTICLE_COMPLEX_MAIN_CONTENT_MIN_LENGTH = 4000;
-const ARTICLE_MAIN_CONTENT_MAX_LENGTH = 5000;
+const ARTICLE_MAIN_CONTENT_MAX_LENGTH = 7000;
 
 function article_draft_length_policy(string $compositionMode): array
 {

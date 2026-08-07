@@ -21,6 +21,7 @@ require_once __DIR__ . '/generation-service.php';
 require_once __DIR__ . '/article-image-service.php';
 require_once __DIR__ . '/advertising.php';
 require_once __DIR__ . '/research-package-service.php';
+require_once __DIR__ . '/narrative-plan-service.php';
 require_once __DIR__ . '/article-draft-service.php';
 require_once __DIR__ . '/quality-check-service.php';
 require_once __DIR__ . '/proposal-review-service.php';

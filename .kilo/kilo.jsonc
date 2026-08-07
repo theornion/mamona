@@ -16,7 +16,8 @@
       "whitelist": [
         "qwen3.6:27b",
         "qwen3.6-no-think",
-        "qwen3.5:9b"
+        "qwen3.5:9b",
+        "qwen3.5-no-think"
       ],
       "models": {
         "qwen3.6:27b": {
@@ -100,6 +101,29 @@
               "reasoning_effort": "high"
             }
           }
+        },
+        "qwen3.5-no-think": {
+          "id": "qwen3.5:9b",
+          "name": "Qwen 3.5 9B — Mamona Compaction No-Think 128K",
+          "tool_call": true,
+          "reasoning": false,
+          "temperature": true,
+          "attachment": false,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "options": {
+            "reasoning_effort": "none"
+          },
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
         }
       }
     }
@@ -133,8 +157,17 @@
     "scannerMaxBatchRetries": 3
   },
   "compaction": {
-    "auto": false,
-    "prune": true
+    "auto": true,
+    "threshold_percent": 65,
+    "prune": true,
+    "tail_turns": 2,
+    "preserve_recent_tokens": 8000,
+    "reserved": 20000
+  },
+  "agent": {
+    "compaction": {
+      "model": "ollama/qwen3.5-no-think"
+    }
   },
   "permission": {
     "external_directory": "deny",
@@ -146,6 +179,8 @@
     "task": "ask",
     "webfetch": "deny",
     "websearch": "deny",
-    "doom_loop": "ask"
+    "doom_loop": "ask",
+    "write": "ask",
+    "apply_patch": "ask"
   }
 }

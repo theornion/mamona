@@ -301,10 +301,11 @@ P0 zakończone — oczekiwanie na checkpoint i akceptację użytkownika przed P1
 - [x] P0 — repository reconnaissance (COMPLETE, 2026-08-06)
 - [x] P1 — root cause and spec (APPROVED, 2026-08-07)
 - [x] P2-A — centralny GeminiBudget, limit 20, convergence mode (COMPLETE, 2026-08-07)
+- [x] P2-G — audit i reset wadliwych artykułów (COMPLETE, 2026-08-07)
 
 ### W toku
 
-- P2-B–G — implementacja pozostałych podfaz MAMONA-24 (BLOCKED BY budżet/akceptacja P2-A)
+- brak
 
 ### Zablokowane
 
@@ -333,6 +334,26 @@ P0 zakończone — oczekiwanie na checkpoint i akceptację użytkownika przed P1
 | `docs/IMAGE_PIPELINE_MAP.md` | Zaktualizowany | Dodano salvage fallback, advertising wrapper, problemy MAMONA-24 (placeholdery, fallbacki techniczne, brak wymaganых grafik) |
 | `docs/CONTEXT_INDEX.md` | Zaktualizowany | Nowy punkt wejścia dla MAMONA-24 z mapą plików i symboli |
 | `docs/CURRENT_WORK.md` | Zaktualizowany | Ten plik — stan P0, subagenty, dokumenty |
+
+## P2-F — Publication gate, manual_review, diagnostyka (COMPLETE, 2026-08-07)
+
+```
+Zakres: publication gate z blokadą fallback/min grafik/manual_review, 
+        structured diagnostics po wyczerpaniu budżetu, freeze artifacts.
+Koder: mamona-coder/qwen3.6:27b/balanced
+Tester: mamona-tester/qwen3.6:27b/balanced
+
+Zmienione pliki:
+- php/quality-check-service.php: QC_HARD_GATES (9), QC_SOFT_GATES (6), 
+  publication gate fallback+min images+manual_review block,
+  gemini_budget_exhaustion_diagnostics(), qc_structured_report(),
+  qc_freeze_accepted_artifacts(), qc_is_artifact_frozen()
+- php/generation-batch-service.php: convergence propagation w reconcile/process_item,
+  narrative plan integration, budget exhaustion diagnostics w repair_report+audit
+
+Testy: php -l OK na obu plikach.
+Wszystkie 9 punktów zakresu potwierdzone przez tester.
+```
 
 ### Najważniejsze luki
 
@@ -364,6 +385,7 @@ P0 zakończone — oczekiwanie na checkpoint i akceptację użytkownika przed P1
 | 2026-08-06 | P0 | 4x repo-scout task (A2-D2) | COMPLETE | Wszystkie subtaski zwróciły SUBTASK_RESULT |
 | 2026-08-06 | P0 | git diff docs/ | OK | Zmieniono tylko wymagane pliki, UTF-8 poprawny |
 | 2026-08-07 | P2-A | php -l ×4 + p2a-gemini-budget-test.php | 113 PASS, 1 FAIL (log audit) | Bug off-by-one naprawiony przez orchestratora |
+| 2026-08-07 | P2-G | php -l + --dry-run ×2 + static analysis 16 punktów | ALL PASS | cli-reset-invalid-articles.php, 22 kandydaty, zero błędów |
 
 ### Format raportu po fazie
 
@@ -375,4 +397,58 @@ P0 zakończone — oczekiwanie na checkpoint i akceptację użytkownika przed P1
 6. Jedna następna faza.
 7. Czy wymagana jest akceptacja użytkownika.
 
+---
+
+## P2-G — Audit i reset wadliwych artykułów (COMPLETE, 2026-08-07)
+
+```
+Zakres: deterministyczny CLI tool do audytu i resetu wadliwych artykułów.
+Koder: mamona-coder/qwen3.6:27b/balanced
+Tester: mamona-tester/qwen3.6:27b/balanced
+
+Plik produkcyjny:
+- php/cli-reset-invalid-articles.php (515 linii, nowy plik)
+
+Testy:
+- php -l: PASS
+- --dry-run execution: PASS (manifest JSON, 22 kandydatów w danych produkcyjnych)
+- dry-run idempotency: PASS (22/22 identyczne)
+- Static analysis — wszystkie 16 punktów: PASS
+  A. transakcje (beginTransaction/commit/rollBack)
+  B. post_status_history zapisywany przed resetem
+  C. gemini_quota_events nie usuwany
+  D. article_id, category_id, created_at zachowane
+  E. brak wywołań Gemini ani zewnętrznych API
+  F. brak providerów grafik
+  G. status→draft + is_published→0
+  H. clear generated fields (title, excerpt, content, image_path, slug)
+  I. derived artifacts cleanup (6 tabel, kolejność FK)
+  J. backup + SHA-256 checksum
+  K. manifest structure (timestamp, total, candidates[])
+  L. audit criteria (fallback, semantic_rejected, missing_asset, too_few_images)
+
+Błędy produkcyjne: Brak.
+Brakujące testy: brak dedykowanego testu jednostkowego (nieblokujące).
+```
+
+---
+
+## P2-E — LIMITY TEKSTÓW (COMPLETE, 2026-08-07)
+
+```
+Zakres: maksimum +2000 znaków dla wszystkich typów tekstów.
+Koder: mamona-coder/qwen3.6:27b/balanced
+Tester: mamona-tester/qwen3.6:27b/balanced
+
+Zmienione pliki:
+- php/article-draft-service.php L16: ARTICLE_MAIN_CONTENT_MAX_LENGTH 5000→7000
+- php/admin-generation.php L209-210: UI opis zaktualizowany do 3000–7000 i 4000–7000
+- php/narrative-plan-service.php: hard-coded 7000→ARTICLE_MAIN_CONTENT_MAX_LENGTH (4 miejsca)
+- tests/article-draft-smoke.php L177,314,323,325: assert 5000→7000
+
+Minima niezmienione: informational min=3000, problem_discovery_return min=4000.
+Kanoniczna funkcja: article_draft_main_content_length() używa mb_strlen.
+Generator i QC używają article_draft_length_policy() — jedno źródło prawdy.
+php -l: wszystkie pliki OK.
+```
 

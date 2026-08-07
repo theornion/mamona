@@ -5,6 +5,29 @@ declare(strict_types=1);
 const QUALITY_PASS_SCORE = 75;
 const QUALITY_SCORE_TOTAL = 100;
 
+/** Hard gates block every further step. */
+const QC_HARD_GATES = [
+    'char_count_range',
+    'gemini_budget_limit',
+    'max_5_images',
+    'required_slots_filled',
+    'assets_exist',
+    'rights_license_ok',
+    'metadata_consistent',
+    'publication_safe',
+    'no_fallback_images',
+];
+
+/** Soft gates generate feedback only. */
+const QC_SOFT_GATES = [
+    'narrative_coherence',
+    'transitions_smooth',
+    'no_redundancy',
+    'rhythm_varied',
+    'engagement_level',
+    'not_monotonic_matrix',
+];
+
 function quality_score_rubric(): array
 {
     $rubric = [
@@ -653,7 +676,7 @@ function review_quality_risk(int $checkId, string $decision, string $reason): vo
 }
 
 /** Routes QC failures to a bounded automatic repair stage without weakening any hard block. */
-function quality_check_auto_repair_decision(array $check): array
+function quality_check_auto_repair_decision(array $check, bool $convergenceActive = false): array
 {
     $model = json_decode((string) ($check['model_result_json'] ?? '{}'), true) ?: [];
     $deterministic = json_decode((string) ($check['deterministic_json'] ?? '{}'), true) ?: [];
@@ -725,6 +748,13 @@ function quality_check_auto_repair_decision(array $check): array
         $append('completeness', 'Zastosuj uzasadnienie QC i popraw ocenione elementy bez dodawania nowych faktów: ' . trim((string) ($model['justification'] ?? 'wynik poniżej progu')));
     }
 
+    /** In convergence mode: never lower thresholds; force targeted_repair strategy. */
+    $strategy = 'targeted_repair';
+    if (!$convergenceActive) {
+        /* Outside convergence, allow the router to pick a broader strategy if needed. */
+        $strategy = 'auto';
+    }
+
     return [
         'repairable' => true,
         'human_required' => false,
@@ -732,6 +762,8 @@ function quality_check_auto_repair_decision(array $check): array
         'categories' => array_keys($categories),
         'feedback' => array_values(array_unique(array_filter($feedback))),
         'reasons' => [],
+        'convergence_active' => $convergenceActive,
+        'repair_strategy' => $strategy,
     ];
 }
 
@@ -757,6 +789,48 @@ function assert_post_quality_allows_publication(int $postId): void
     if (!is_array($check)) {
         throw new RuntimeException('Najnowsza wersja szkicu nie ma ukończonej kontroli jakości.');
     }
+    /* P2-D: block publication if any fallback image exists. */
+    $fallbackStmt = bueno_database()->prepare(
+        'SELECT COUNT(*) AS cnt FROM article_images WHERE post_id = :post_id AND is_fallback = 1'
+    );
+    $fallbackStmt->execute([':post_id' => $postId]);
+    $fallbackCount = (int) $fallbackStmt->fetchColumn();
+    if ($fallbackCount > 0) {
+        throw new RuntimeException('Publikacja zablokowana: artykuł zawiera ' . $fallbackCount . ' grafikę/fallback, która nie może być publikowana.');
+    }
+
+    /* P2-D: enforce minimum valid image count against planned visual slots. */
+    $plan = find_narrative_plan_for_topic($postId);
+    if (is_array($plan)) {
+        $requiredSlots = max(1, min(5, (int) ($plan['visual_slots_planned'] ?? 1)));
+    } else {
+        /* Fallback: at least hero is required for any completed article. */
+        $requiredSlots = 1;
+    }
+    $validStmt = bueno_database()->prepare(
+        'SELECT COUNT(*) AS cnt FROM article_images' .
+        ' WHERE post_id = :post_id AND status = "downloaded" AND is_fallback = 0 AND editorial_rejected = 0'
+    );
+    $validStmt->execute([':post_id' => $postId]);
+    $validCount = (int) $validStmt->fetchColumn();
+    if ($validCount < $requiredSlots) {
+        throw new RuntimeException(
+            'Publikacja zablokowana: artykuł wymaga ' . $requiredSlots . ' prawidłowych grafik, znaleziono ' . $validCount . '.'
+        );
+    }
+
+    /* P2-F: block publication if the batch item is in manual_review state. */
+    $batchStmt = bueno_database()->prepare(
+        'SELECT status FROM generation_batch_items WHERE post_id = :post_id ORDER BY id DESC LIMIT 1'
+    );
+    $batchStmt->execute([':post_id' => $postId]);
+    $batchItem = $batchStmt->fetch();
+    if (is_array($batchItem) && (string) $batchItem['status'] === 'manual_review') {
+        throw new RuntimeException(
+            'Publikacja zablokowana: artykuł wymaga przeglądu redakcyjnego (budżet Gemini wyczerpany).'
+        );
+    }
+
     $blocks = quality_active_hard_blocks($check);
     if ($blocks !== []) {
         throw new RuntimeException('Publikację blokuje kontrola jakości: ' . (string) $blocks[0]['message']);
@@ -764,6 +838,252 @@ function assert_post_quality_allows_publication(int $postId): void
     if ((int) $check['passed'] !== 1 || (int) $check['final_score'] < QUALITY_PASS_SCORE) {
         throw new RuntimeException('Szkic nie osiągnął progu jakości ' . QUALITY_PASS_SCORE . '/100.');
     }
+}
+
+/** Collect structured diagnostics for a budget-exhausted article. No secrets are included. */
+function gemini_budget_exhaustion_diagnostics(int $postId): array
+{
+    $diagnostics = [
+        'article_id' => $postId,
+        'timestamp' => gmdate(DATE_ATOM),
+        'block_reason' => 'gemini_article_budget_exhausted',
+        'budget' => [],
+        'artifacts' => [],
+        'images' => [],
+        'qc' => [],
+    ];
+
+    /* Budget state */
+    $budget = gemini_article_budget_state($postId);
+    $diagnostics['budget'] = [
+        'used_calls' => (int) ($budget['used_calls'] ?? 0),
+        'max_calls' => (int) ($budget['max_calls'] ?? 20),
+        'convergence_active' => (bool) ($budget['convergence_active'] ?? false),
+        'is_exhausted' => (bool) ($budget['is_exhausted'] ?? false),
+    ];
+
+    /* Draft state */
+    $draftStmt = bueno_database()->prepare(
+        'SELECT id, status, version_number, composition_mode FROM article_draft_versions
+         WHERE post_id = :post_id AND status IN ("completed", "frozen")
+         ORDER BY is_active DESC, id DESC LIMIT 1'
+    );
+    $draftStmt->execute([':post_id' => $postId]);
+    $draft = $draftStmt->fetch();
+    if (is_array($draft)) {
+        $diagnostics['artifacts']['draft_version_id'] = (int) $draft['id'];
+        $diagnostics['artifacts']['draft_status'] = (string) $draft['status'];
+        $diagnostics['artifacts']['version_number'] = (int) $draft['version_number'];
+    }
+
+    /* QC state */
+    if (isset($diagnostics['artifacts']['draft_version_id'])) {
+        $qcStmt = bueno_database()->prepare(
+            'SELECT id, status, final_score, passed FROM quality_check_runs
+             WHERE draft_version_id = :draft_id AND status = "completed"
+             ORDER BY id DESC LIMIT 1'
+        );
+        $qcStmt->execute([':draft_id' => $diagnostics['artifacts']['draft_version_id']]);
+        $qc = $qcStmt->fetch();
+        if (is_array($qc)) {
+            $diagnostics['qc'] = [
+                'check_id' => (int) $qc['id'],
+                'final_score' => (int) ($qc['final_score'] ?? 0),
+                'passed' => (bool) ($qc['passed'] ?? false),
+            ];
+        }
+    }
+
+    /* Image state */
+    $imgStmt = bueno_database()->prepare(
+        'SELECT COUNT(*) AS total,
+                SUM(CASE WHEN status="downloaded" AND is_fallback=0 AND editorial_rejected=0 THEN 1 ELSE 0 END) AS valid,
+                SUM(CASE WHEN is_fallback=1 THEN 1 ELSE 0 END) AS fallbacks,
+                SUM(CASE WHEN status IN ("missing","manual_review","planned") THEN 1 ELSE 0 END) AS pending
+         FROM article_images WHERE post_id = :post_id'
+    );
+    $imgStmt->execute([':post_id' => $postId]);
+    $imgRow = $imgStmt->fetch();
+    if (is_array($imgRow)) {
+        $diagnostics['images'] = [
+            'total' => (int) ($imgRow['total'] ?? 0),
+            'valid' => (int) ($imgRow['valid'] ?? 0),
+            'fallbacks' => (int) ($imgRow['fallbacks'] ?? 0),
+            'pending' => (int) ($imgRow['pending'] ?? 0),
+        ];
+    }
+
+    /* Narrative plan */
+    $plan = find_narrative_plan_for_topic($postId);
+    if (is_array($plan)) {
+        $diagnostics['artifacts']['narrative_plan_status'] = (string) ($plan['status'] ?? '');
+        $diagnostics['artifacts']['visual_slots_planned'] = (int) ($plan['visual_slots_planned'] ?? 0);
+    }
+
+    return $diagnostics;
+}
+
+/** Classify a QC block code as hard or soft gate. */
+function qc_gate_type(string $code): string
+{
+    if (in_array($code, QC_HARD_GATES, true)) {
+        return 'hard';
+    }
+    if (in_array($code, QC_SOFT_GATES, true)) {
+        return 'soft';
+    }
+    /* Unknown codes default to hard for safety. */
+    return 'hard';
+}
+
+/** Build structured QcReport with hard_gates and soft_gates arrays. */
+function qc_structured_report(array $check, array $validation): array
+{
+    $deterministic = (array) ($validation['deterministic'] ?? []);
+    $blocks = (array) ($validation['hard_blocks'] ?? []);
+    $model = json_decode((string) ($check['model_result_json'] ?? '{}'), true) ?: [];
+
+    $hardGates = [];
+    foreach (QC_HARD_GATES as $gateName) {
+        $passed = true;
+        $detail = '';
+        /* Map deterministic block codes to hard gates. */
+        foreach ($blocks as $block) {
+            $code = (string) ($block['code'] ?? '');
+            if ($code === $gateName || qc_gate_type($code) === 'hard') {
+                if ($gateName === 'char_count_range' && $code === 'invalid_content_length') {
+                    $passed = false;
+                    $detail = (string) ($block['message'] ?? $code);
+                } elseif ($gateName === 'publication_safe' && in_array($code, ['false_quote', 'unsupported_test_claim', 'high_similarity'], true)) {
+                    $passed = false;
+                    $detail = (string) ($block['message'] ?? $code);
+                } elseif ($gateName === 'metadata_consistent' && $code === 'missing_sources') {
+                    $passed = false;
+                    $detail = (string) ($block['message'] ?? $code);
+                } elseif ($gateName === 'publication_safe' && $code === 'unsupported_title_fact') {
+                    $passed = false;
+                    $detail = (string) ($block['message'] ?? $code);
+                } elseif ($gateName === 'publication_safe' && $code === 'high_risk_without_human_approval') {
+                    $passed = false;
+                    $detail = (string) ($block['message'] ?? $code);
+                }
+            }
+        }
+        /* Score-based hard gate. */
+        if ($gateName === 'publication_safe' && (int) ($check['final_score'] ?? 0) < QUALITY_PASS_SCORE) {
+            $passed = false;
+            $detail = sprintf('Wynik QC %d poniżej progu %d.', (int) ($check['final_score'] ?? 0), QUALITY_PASS_SCORE);
+        }
+        $hardGates[] = [
+            'gate_name' => $gateName,
+            'passed' => $passed,
+            'detail' => $detail,
+            'severity' => 'blocker',
+        ];
+    }
+
+    $softGates = [];
+    foreach (QC_SOFT_GATES as $gateName) {
+        $score = 100;
+        $detail = '';
+        $suggestedFixScope = '';
+        /* Derive soft-gate signals from model feedback. */
+        if ($gateName === 'narrative_coherence') {
+            foreach ((array) ($model['missing_elements'] ?? []) as $issue) {
+                $score = max(0, $score - 15);
+                $detail .= (string) $issue . '; ';
+                $suggestedFixScope = 'draft_section';
+            }
+        } elseif ($gateName === 'transitions_smooth') {
+            foreach ((array) ($model['language_issues'] ?? []) as $issue) {
+                if (str_contains(mb_strtolower((string) $issue), 'przejście') || str_contains(mb_strtolower((string) $issue), 'spójność')) {
+                    $score = max(0, $score - 10);
+                    $detail .= (string) $issue . '; ';
+                    $suggestedFixScope = 'transition';
+                }
+            }
+        } elseif ($gateName === 'no_redundancy') {
+            foreach ((array) ($model['language_issues'] ?? []) as $issue) {
+                if (str_contains(mb_strtolower((string) $issue), 'powtó') || str_contains(mb_strtolower((string) $issue), 'redundan')) {
+                    $score = max(0, $score - 15);
+                    $detail .= (string) $issue . '; ';
+                    $suggestedFixScope = 'draft_section';
+                }
+            }
+        } elseif ($gateName === 'rhythm_varied') {
+            foreach ((array) ($model['language_issues'] ?? []) as $issue) {
+                if (str_contains(mb_strtolower((string) $issue), 'rytm') || str_contains(mb_strtolower((string) $issue), 'monoton')) {
+                    $score = max(0, $score - 10);
+                    $detail .= (string) $issue . '; ';
+                    $suggestedFixScope = 'draft_section';
+                }
+            }
+        } elseif ($gateName === 'engagement_level') {
+            foreach ((array) ($model['clickbait_phrases'] ?? []) as $issue) {
+                $score = max(0, $score - 10);
+                $detail .= (string) $issue . '; ';
+                $suggestedFixScope = 'title';
+            }
+        } elseif ($gateName === 'not_monotonic_matrix') {
+            foreach ((array) ($model['language_issues'] ?? []) as $issue) {
+                if (str_contains(mb_strtolower((string) $issue), 'matryca') || str_contains(mb_strtolower((string) $issue), 'schemat')) {
+                    $score = max(0, $score - 15);
+                    $detail .= (string) $issue . '; ';
+                    $suggestedFixScope = 'narrative_plan';
+                }
+            }
+        }
+        $softGates[] = [
+            'gate_name' => $gateName,
+            'score' => $score,
+            'detail' => rtrim($detail, '; '),
+            'suggested_fix_scope' => $suggestedFixScope,
+        ];
+    }
+
+    return [
+        'qc_id' => (int) ($check['id'] ?? 0),
+        'article_id' => (int) ($check['post_id'] ?? 0),
+        'iteration' => (int) ($check['check_number'] ?? 1),
+        'hard_gates' => $hardGates,
+        'soft_gates' => $softGates,
+        'model_score' => (int) ($validation['model_score'] ?? 0),
+        'final_score' => (int) ($validation['final_score'] ?? 0),
+        'passed' => (bool) ($validation['passed'] ?? false),
+        'convergence_check' => (bool) ($check['convergence_active'] ?? false),
+    ];
+}
+
+/** Freeze accepted artifacts after a successful QC iteration. */
+function qc_freeze_accepted_artifacts(int $draftVersionId, bool $convergenceActive = false): void
+{
+    $database = bueno_database();
+    /* In convergence mode, all 'accepted' become 'frozen'. */
+    if ($convergenceActive) {
+        $database->prepare(
+            'UPDATE article_draft_versions SET status = "frozen", updated_at = CURRENT_TIMESTAMP
+             WHERE post_id = (SELECT post_id FROM article_draft_versions WHERE id = :draft_id)
+             AND status = "accepted"'
+        )->execute([':draft_id' => $draftVersionId]);
+    } else {
+        /* Normal mode: only the current draft version becomes frozen after passing QC. */
+        $database->prepare(
+            'UPDATE article_draft_versions SET status = "frozen", updated_at = CURRENT_TIMESTAMP
+             WHERE id = :draft_id AND status IN ("accepted", "completed")'
+        )->execute([':draft_id' => $draftVersionId]);
+    }
+}
+
+/** Check whether an artifact is frozen and must not be modified. */
+function qc_is_artifact_frozen(int $draftVersionId): bool
+{
+    $statement = bueno_database()->prepare(
+        'SELECT status FROM article_draft_versions WHERE id = :id'
+    );
+    $statement->execute([':id' => $draftVersionId]);
+    $row = $statement->fetch();
+
+    return is_array($row) && (string) ($row['status'] ?? '') === 'frozen';
 }
 
 function quality_check_mock_generation_value(): array

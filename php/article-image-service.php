@@ -777,6 +777,84 @@ function search_source_images(string $query, ?string $provider = null, ?callable
     });
 }
 
+/**
+ * P2-D: Semantic gate score for an image candidate against a planned image.
+ *
+ * Returns 0–100. Scores below 60 are rejected.
+ * Negative signals (wrong context, satire, zombie/gore, memes, unrelated public figures)
+ * reduce the score aggressively.
+ */
+function article_image_semantic_gate_score(array $candidate, array $plannedImage): int
+{
+    $title = mb_strtolower((string) ($candidate['title'] ?? ''));
+    $sourcePath = mb_strtolower(rawurldecode((string) ($candidate['source_page_url'] ?? '')));
+    $combined = $title . ' ' . $sourcePath;
+
+    /* Negative signals — hard penalties. */
+    $negativePatterns = [
+        '/(?:satir|parody|meme|shitpost|deepfake|ai[- ]?generated)/i',
+        '/(?:zombie|gore|blood|corpse|dead.*brain|eating.*brain|brain.*eat)/i',
+        '/(?:trump|biden|putin|politician).*?(?:zombie|gore|satir|meme|parody)/i',
+    ];
+    foreach ($negativePatterns as $pattern) {
+        if (preg_match($pattern, $combined)) {
+            return 0;
+        }
+    }
+
+    /* Token-based relevance: compare candidate tokens against planned visual_intent + expected_content. */
+    $plannedTokens = article_image_semantic_gate_tokenize(
+        (string) ($plannedImage['visual_intent'] ?? '') . ' ' . (string) ($plannedImage['expected_content'] ?? '')
+    );
+    $candidateTokens = article_image_semantic_gate_tokenize($combined);
+
+    if ($plannedTokens === []) {
+        return 50; /* No plan to compare against — neutral. */
+    }
+
+    $hits = 0;
+    foreach ($plannedTokens as $token) {
+        if (in_array($token, $candidateTokens, true)) {
+            $hits++;
+        }
+    }
+
+    $score = $plannedTokens !== [] ? (int) round(($hits / count($plannedTokens)) * 100) : 50;
+
+    /* Bonus: if the candidate title contains at least 2 planned tokens, boost. */
+    if ($hits >= 2) {
+        $score = min(100, $score + 15);
+    }
+
+    return $score;
+}
+
+/** Tokenize a string into distinctive keywords for semantic gate comparison. */
+function article_image_semantic_gate_tokenize(string $text): array
+{
+    $lower = mb_strtolower($text);
+    $ascii = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $lower);
+    $parts = preg_split(
+        '/[^a-z0-9]+/',
+        strtolower(is_string($ascii) ? $ascii : $lower),
+        -1,
+        PREG_SPLIT_NO_EMPTY
+    ) ?: [];
+    $stop = [
+        'the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'by',
+        'from', 'and', 'or', 'is', 'it', 'as', 'that', 'this', 'image', 'photo',
+        'picture', 'file', 'view', 'illustration', 'commons', 'wikimedia',
+    ];
+    $result = [];
+    foreach ($parts as $part) {
+        if (strlen($part) < 4 || in_array($part, $stop, true)) {
+            continue;
+        }
+        $result[] = $part;
+    }
+    return array_values(array_unique($result));
+}
+
 function select_source_image_from_results(array $plannedImage, array $results, string $providerId): array
 {
     validate_planned_article_image(
@@ -794,6 +872,14 @@ function select_source_image_from_results(array $plannedImage, array $results, s
                 ($plannedImage['role'] ?? '') === 'hero'
                     ? 'Wybrany obraz nie spełnia wymagań atrakcyjnej grafiki głównej.'
                     : 'Wybrany obraz nie pasuje do roli ilustracji.'
+            );
+        }
+
+        /* P2-D: semantic gate — reject images that don't match the planned topic. */
+        $semanticScore = article_image_semantic_gate_score($candidate, $plannedImage);
+        if ($semanticScore < 60) {
+            throw new InvalidArgumentException(
+                'Obraz odrzucony przez bramkę semantyczną (score=' . $semanticScore . '/100): nie pasuje do planowanego tematu.'
             );
         }
 
@@ -1106,13 +1192,13 @@ function persist_article_image(int $postId, array $image, string $query = ''): i
             source_page_url, source_file_url, local_path, author, license,
             license_url, attribution, alt, caption, layout, status,
             width, height, downloaded_at, relationship, search_audit_json, rights_manifest_json,
-            has_transparency, watermark_status
+            has_transparency, watermark_status, is_fallback
          ) VALUES (
             :post_id, :role, :section_id, :visual_intent, :expected_content, :search_queries_json,
             :source_page_url, :source_file_url, :local_path, :author, :license,
             :license_url, :attribution, :alt, :caption, :layout, :status,
             :width, :height, :downloaded_at, :relationship, :search_audit_json, :rights_manifest_json,
-            :has_transparency, :watermark_status
+            :has_transparency, :watermark_status, :is_fallback
          )
          ON CONFLICT(post_id, role, section_id) DO UPDATE SET
             visual_intent = excluded.visual_intent,
@@ -1137,6 +1223,7 @@ function persist_article_image(int $postId, array $image, string $query = ''): i
             rights_manifest_json = excluded.rights_manifest_json,
             has_transparency = excluded.has_transparency,
             watermark_status = excluded.watermark_status,
+            is_fallback = excluded.is_fallback,
             updated_at = CURRENT_TIMESTAMP'
     );
     $queries = (array) ($image['search_queries'] ?? []);
@@ -1170,6 +1257,7 @@ function persist_article_image(int $postId, array $image, string $query = ''): i
         ':rights_manifest_json' => generation_json((array) ($image['rights_manifest'] ?? [])),
         ':has_transparency' => !empty($image['has_transparency']) ? 1 : 0,
         ':watermark_status' => (string) ($image['watermark_status'] ?? ''),
+        ':is_fallback' => !empty($image['is_fallback']) ? 1 : 0,
     ]);
 
     $idStatement = bueno_database()->prepare(
@@ -1464,6 +1552,10 @@ function render_article_image_record(array $image, bool $hero = false): string
             . '<div class="article-image-placeholder" role="img" aria-label="Placeholder ilustracji: ' . $section . '">'
             . '<strong>Ilustracja wymaga uwagi</strong><span>' . htmlspecialchars($message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</span></div>'
             . ($caption !== '' ? '<figcaption>' . $caption . '</figcaption>' : '') . '</figure>';
+    }
+    /* P2-D: never render a fallback as a final asset. */
+    if ((int) ($image['is_fallback'] ?? 0) === 1) {
+        return '';
     }
     $path = ltrim(str_replace('\\', '/', (string) ($image['local_path'] ?? '')), '/');
     if ($path === '' || !is_file(app_path($path))) {

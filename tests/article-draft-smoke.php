@@ -174,7 +174,7 @@ try {
     $manualOperation = find_generation_operation($manualId);
     draft_smoke_assert(
         str_contains((string) $manualOperation['prompt_text'], '"minimum_characters":3000')
-        && str_contains((string) $manualOperation['prompt_text'], '"maximum_characters":5000')
+        && str_contains((string) $manualOperation['prompt_text'], '"maximum_characters":7000')
         && str_contains((string) $manualOperation['prompt_text'], '"code":"pl-PL"')
         && str_contains((string) $manualOperation['prompt_text'], '"target_characters":"3400–3500"')
         && str_contains((string) $manualOperation['prompt_text'], '"required_inline_illustrations":3')
@@ -311,7 +311,7 @@ try {
     try {
         import_manual_generation_response($manualId, generation_json($shortOutput));
     } catch (Throwable $exception) {
-        $shortRejected = str_contains($exception->getMessage(), 'wymagany jest zakres 3000–5000');
+        $shortRejected = str_contains($exception->getMessage(), 'wymagany jest zakres 3000–7000');
     }
     draft_smoke_assert($shortRejected, 'Szkic krótszy niż 3000 znaków nie został odrzucony.');
     $longOutput = $manualOutput;
@@ -320,9 +320,9 @@ try {
     try {
         import_manual_generation_response($manualId, generation_json($longOutput));
     } catch (Throwable $exception) {
-        $longRejected = str_contains($exception->getMessage(), 'wymagany jest zakres 3000–5000');
+        $longRejected = str_contains($exception->getMessage(), 'wymagany jest zakres 3000–7000');
     }
-    draft_smoke_assert($longRejected, 'Szkic dłuższy niż 5000 znaków nie został odrzucony.');
+    draft_smoke_assert($longRejected, 'Szkic dłuższy niż 7000 znaków nie został odrzucony.');
     $repeatedOutput = $manualOutput;
     $repeatedOutput['why_important']['text'] = $repeatedOutput['lead']['text'];
     $repetitionRejected = false;

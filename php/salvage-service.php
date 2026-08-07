@@ -81,7 +81,11 @@ function salvage_execute_safe_composer(array $item): array
     return ['draft' => $draft, 'quality' => $check, 'title' => $title ?? null];
 }
 
-/** Last image-waterfall step: neutral local SVG, explicitly labelled illustration. */
+/**
+ * P2-D: salvage records a fallback SVG as an internal error signal only.
+ * The record is marked is_fallback=1 and status='manual_review' so that
+ * the publication gate blocks it and the renderer never outputs it as a final asset.
+ */
 function salvage_local_editorial_images(int $postId): array
 {
     $created = [];
@@ -116,9 +120,10 @@ function salvage_local_editorial_images(int $postId): array
             'license_url' => 'https://creativecommons.org/publicdomain/zero/1.0/',
             'attribution' => 'Ilustracja redakcyjna Mamona — CC0',
             'alt' => $image['alt'], 'caption' => 'Neutralna ilustracja redakcyjna.',
-            'layout' => $image['layout'], 'status' => 'downloaded', 'width' => 1280, 'height' => 720,
+            'layout' => $image['layout'], 'status' => 'manual_review', 'width' => 1280, 'height' => 720,
             'downloaded_at' => gmdate(DATE_ATOM), 'relationship' => 'mechanism',
             'rights_manifest' => $localCandidate['rights_manifest'],
+            'is_fallback' => 1,
             'search_audit' => [['level' => 'local_fallback', 'result' => 'generated_editorial_illustration']]]);
         $created[] = $relative;
     }

@@ -1,33 +1,42 @@
 ---
-description: Mechanicznie aktualizuje pojedyncze dokumenty bez nowego researchu i bez rozbudowanego reasoning.
+description: Mechanicznie tworzy lub aktualizuje dokumentację Mamony oraz zapisuje marker wyniku.
 mode: subagent
 model: ollama/qwen3.5:9b
 variant: no-think
-steps: 14
+steps: 12
 temperature: 0
 permission:
   read:
     "*": deny
-    "docs/*": allow
+    "docs/**": allow
     "*.md": allow
   glob: deny
   grep: deny
   edit:
     "*": deny
-    "docs/*": ask
-    "*.md": ask
-  bash:
+    "docs/**": allow
+    "*.md": allow
+    ".kilo/results/**": allow
+  write:
     "*": deny
-    "git diff *": allow
+    "docs/**": allow
+    "*.md": allow
+    ".kilo/results/**": allow
+  apply_patch:
+    "*": deny
+    "docs/**": allow
+    "*.md": allow
+  bash: deny
   task: deny
   doom_loop: deny
 ---
 
 Jesteś mechanicznym finalizatorem Mamony.
 
-Nie wykonuj researchu, architektury, nowych decyzji ani dalszych subagentów.
-Pierwszą czynnością ma być wskazany odczyt lub zapis.
-Preferuj małe edycje. Nie generuj ogromnych argumentów `write`/`edit`.
-Brak danych oznacza blocker, nie kolejne próby.
-
-Po poprawnym zapisie odpowiedz wyłącznie oczekiwanym markerem.
+- Możesz natywnie tworzyć i edytować dokumentację Markdown.
+- Używaj edit/write/apply_patch; bash jest niedostępny.
+- Nie wykonuj researchu ani nowych decyzji.
+- Jeden task = jeden plik albo mały atomowy pakiet.
+- Po successful write/edit NIE zapisuj targetu drugi raz i NIE czytaj go ponownie.
+- Jeżeli rodzic podał Result file, zapisz mały JSON z status i changed_files.
+- Po udanym zapisie zwróć wymagany marker sukcesu.
