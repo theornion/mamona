@@ -42,6 +42,7 @@ const GEMINI_GLOBAL_QUOTA_MIGRATION = '20260801_037_gemini_global_quota';
 const IMAGE_INTEGRITY_MIGRATION = '20260801_038_image_integrity';
 const GEMINI_LEDGER_EXTENSION_MIGRATION = '20260801_039_gemini_ledger_extension';
 const AUTOMATIC_DISPATCH_PAUSE_MIGRATION = '20260801_040_automatic_dispatch_pause';
+const ARTICLE_GENERATION_BUDGET_MIGRATION = '20260807_041_article_generation_budget';
 
 function database_table_columns(PDO $database, string $table): array
 {
@@ -1571,6 +1572,32 @@ function run_schema_migrations(PDO $database): void
             database_add_column_if_missing($database, 'generation_batch_items', 'paused_from_status', 'TEXT NOT NULL DEFAULT ""');
             database_add_column_if_missing($database, 'generation_batch_items', 'paused_at', 'TEXT');
             $database->exec('CREATE INDEX IF NOT EXISTS generation_batches_dispatch_mode_idx ON generation_batches(dispatch_mode, status);');
+        }
+    );
+    apply_schema_migration(
+        $database,
+        ARTICLE_GENERATION_BUDGET_MIGRATION,
+        static function (PDO $database): void {
+            $database->exec(
+                'CREATE TABLE IF NOT EXISTS article_generation_budget (' .
+                    'article_id INTEGER PRIMARY KEY,' .
+                    'max_calls INTEGER NOT NULL DEFAULT 20,' .
+                    'used_calls INTEGER NOT NULL DEFAULT 0,' .
+                    'convergence_threshold INTEGER NOT NULL DEFAULT 16,' .
+                    'calls_log_json TEXT DEFAULT "[]",' .
+                    'is_exhausted INTEGER NOT NULL DEFAULT 0,' .
+                    'convergence_active INTEGER NOT NULL DEFAULT 0,' .
+                    'created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,' .
+                    'updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP' .
+                ')'
+            );
+            database_add_column_if_missing($database, 'article_images', 'is_fallback', 'INTEGER NOT NULL DEFAULT 0');
+            database_add_column_if_missing($database, 'article_images', 'semantic_score', 'INTEGER');
+            database_add_column_if_missing($database, 'article_images', 'editorial_rejected', 'INTEGER NOT NULL DEFAULT 0');
+            database_add_column_if_missing($database, 'generation_batch_items', 'convergence_active', 'INTEGER NOT NULL DEFAULT 0');
+            $database->prepare(
+                'UPDATE article_images SET is_fallback = 1 WHERE local_path LIKE "%editorial-fallback/%" OR search_audit_json LIKE "%local_fallback%"'
+            )->execute();
         }
     );
 }

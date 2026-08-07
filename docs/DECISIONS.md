@@ -30,3 +30,11 @@ Zatwierdzone przez użytkownika 2026-08-06; wymagają potwierdzenia w kodzie pod
 | D10 | D4 jest historyczne i zastąpione przez D9 dla finalnego renderu | Zgodność TASK-23 → MAMONA-24 | Fallback może pozostać wyłącznie wewnętrznym sygnałem błędu, ale nie może być renderowany ani publikowany | 2026-08-06 | MAMONA-24 §3 |
 | D11 | Wadliwe istniejące artykuły zostaną wyzerowane bez Gemini po naprawie generatora | Remediacja danych | Użytkownik chce ponownie przetestować pełną generację treści i grafik na tych samych seedach | 2026-08-06 | MAMONA-24 §8 i P5 |
 | D12 | Reset zachowuje seed i historię, czyści artefakty pochodne i nie uruchamia regeneracji | Bezpieczeństwo danych | Pozwala na audyt i ręczny test bez ponoszenia kosztu API podczas samej naprawy | 2026-08-06 | MAMONA-24 §8 i P5 |
+| D13 | Centralny GeminiBudget max 20, convergence mode od call 16 | Budżet Gemini | Jeden limit przebiegu zastępuje tematyczny budżet 15; transport retry nie zużywa budżetu | 2026-08-06 | MAMONA-24 P1-A A1/A2/A10 |
+| D14 | NarrativePlan jako osobny artefakt przed draftem | Struktura narracji | Dynamiczna kolejność sekcji z uzasadnieniem; zastępuje 7 stałych sekcji | 2026-08-06 | MAMONA-24 P1-A A3 |
+| D15 | Twarde vs. miękkie bramki QC | Kontrola jakości | Twarde blokują każdy krok; miękkie generują feedback; convergence nie obniża thresholdów | 2026-08-06 | MAMONA-24 P1-A A4 |
+| D16 | Fallback jako wewnętrzny sygnał błędu, nigdy renderowany | Kontrakt grafik V3 | is_fallback flaga; blokuje publikację i renderowanie; backfill starych fallbacków w transakcji | 2026-08-06 | MAMONA-24 P1-A A5 |
+| D17 | Bramka semantyczna/redakcyjna osobna od rights validation | Trafność obrazów | Threshold 60 (kalibracja P2); odrzuca satyrę, zombie, gore, memy | 2026-08-06 | MAMONA-24 P1-A A6 |
+| D18 | Moduły B/C jako uzupełnienie narracji, max dwa | SupplementalTopic | Po wyczerpaniu → manual_review; nie są fillerem | 2026-08-06 | MAMONA-24 P1-A A7 |
+| D19 | Limity tekstów +2000 znaków | Limity draftu | informational max 7000, problem_discovery_return max 7000 | 2026-08-06 | MAMONA-24 P1-A A9 |
+| D20 | Publication gate rozszerzone o walidację grafik | Ochrona publikacji | Brak fallbacków + minimalna liczba assetów PRZED sprawdzaniem QC score | 2026-08-06 | MAMONA-24 P1-A A12 |

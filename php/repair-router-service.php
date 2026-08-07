@@ -6,7 +6,7 @@ const REPAIR_ROUTER_STAGE_BUDGET = 3;
 const REPAIR_ROUTER_GLOBAL_BUDGET = 9;
 
 /** Converts QC output into stable, machine-readable gates and repair routes. */
-function repair_router_assess(array $check): array
+function repair_router_assess(array $check, bool $convergenceActive = false): array
 {
     $result = json_decode((string) ($check['result_json'] ?? '{}'), true) ?: $check;
     $issues = [];
@@ -28,7 +28,15 @@ function repair_router_assess(array $check): array
     if ($issues === [] && (($result['recommendation'] ?? 'pass') !== 'pass' || (int) ($check['passed'] ?? 1) !== 1)) {
         $add('quality_below_threshold', 'final_package', 'draft', 'targeted_repair', (string) ($result['justification'] ?? 'QC nie zaliczyło pakietu.'));
     }
-    return ['issues' => $issues, 'passed' => $issues === [] && (int) ($check['passed'] ?? 1) === 1];
+    if ($convergenceActive) {
+        foreach ($issues as &$issue) {
+            if (in_array((string)($issue['repair_strategy'] ?? ''), ['fresh_conservative_rewrite', 'safe_composer'], true)) {
+                $issue['repair_strategy'] = 'targeted_repair';
+            }
+        }
+        unset($issue);
+    }
+    return ['issues' => $issues, 'passed' => $issues === [] && (int) ($check['passed'] ?? 1) === 1, 'convergence_mode' => $convergenceActive];
 }
 
 function repair_router_title_ladder(string $eventSummary, array $claims): array

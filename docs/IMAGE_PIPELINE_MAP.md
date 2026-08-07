@@ -63,6 +63,41 @@ WATERFALL FALLBACK (gdy brak trafnych obrazów):
 | Pole | Gdzie powstaje | Gdzie może być zmienione | Finalny konsument | Czy związane z asset ID |
 |---|---|---|---|---|
 | asset id | Provider response → `search_source_images()` (L753) | Niezmieniany | `persist_article_image()`, renderer | Tak |
+
+## P1-C korekty — zatwierdzone 2026-08-07
+
+### Convergence mode od wywołania 16
+```text
+Call 1-15: normalny tryb — pełne rewrite, regeneracje, dowolny zakres napraw.
+Call 16-20: convergence mode — zamrożone artefakty niezmienialne; naprawy tylko w zakresie indicated przez QC jako blocker; progi QC nie obniżane.
+```
+
+### NarrativePlan freeze zaakceptowanych artefaktów
+Statusy: `planned` → `generated` → `accepted` → `frozen`. Po udanej iteracji QC artefakty przechodzą do frozen. W convergence mode wszystkie accepted automatycznie stają się frozen. Frozen artefakt nie jest modyfikowany przez żaden etap repair.
+
+### VisualSlot semantic threshold
+Dodano `semantic_threshold: 60` (domyślny). Kandydat z score < 60 → `editorial_rejected = true`. Bramka semantyczna po rights validation odrzuca satyrę, polityków niezwiązanych z tematem, zombie/gore/memy.
+
+### Publication gate rozszerzona o walidację grafik
+`assert_post_quality_allows_publication()` sprawdza przed QC score:
+1. Brak fallbacków: `SELECT na article_images WHERE post_id=? AND is_fallback=1 → throw`.
+2. Minimalna liczba grafik: liczy status='downloaded', is_fallback=0, editorial_rejected=0 vs wymagane sloty → throw.
+
+### Backfill starych fallbacków
+Kryteria detekcji (co najmniej jeden):
+- `local_path LIKE '%editorial-fallback/%'`
+- `search_audit_json LIKE '%local_fallback%'`
+- provider metadata: 'local-editorial' w rights_manifest
+
+Backfill SQL w tej samej transakcji co ADD COLUMN, dry-run manifest, backup SHA-256.
+
+### Reset wadliwych artykułów CLI
+```bash
+php bin/reset-invalid-article.php --article-id=<id> [--dry-run]
+```
+Pola zachowane: posts (seed title, created_at, updated_at), post_status_history.
+Pola czyszczone: wygenerowany content/images/slug/status, article_draft_versions/qc_runs/ops/images/plans/topics DELETE.
+
 | local_path | `download_source_image()` (L999) — `images/posts/sources/source-{sha256}.{ext}` | `reject_article_source_image()` czyści | `render_article_image_record()` via `is_file()` | Tak |
 | source_page_url | Provider metadata → `persist_article_image()` (L1101) | Niezmieniany po zapisie | Renderer HTML, diagnostyka | Tak |
 | direct_file_url | Provider response → `download_source_image()` | Niezmieniany | Download etapu | Tak |

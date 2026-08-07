@@ -10,8 +10,8 @@
     "ollama": {
       "options": {
         "baseURL": "http://127.0.0.1:11436/v1",
-        "timeout": 1800000,
-        "chunkTimeout": 600000
+        "timeout": false,
+        "chunkTimeout": 1800000
       },
       "whitelist": [
         "qwen3.6:27b",

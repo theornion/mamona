@@ -36,12 +36,19 @@ P0 — Repository Reconnaissance:
 
 ## Najbliższy bezpieczny krok
 
-Po akceptacji P0 uruchomić `mamona-architect` z modelem `qwen3.6:27b/deep` do fazy P1:
-- Root cause monotonnej struktury i niekontrolowanych iteracji
-- Kontrakty NarrativePlan, GenerationState, GeminiBudget, QcReport, VisualSlot, SupplementalTopic
-- Maszyna stanów z warunkami przejścia oraz zakończenia
-- Specyfikacja kryteriów audytu istniejących artykułów i kontrakt resetu
-- Zapis specyfikacji w `docs/specs/MAMONA-24-article-generation-visual-narrative-v2.md`
+P1 zakończone — APPROVED, oczekiwanie na CHECKPOINT_P1 i akceptację użytkownika przed P2.
+
+Po akceptacji uruchomić `mamona-coder` z modelem `qwen3.6:27b/balanced` do fazy P2:
+- Implementacja convergence mode (L15→18 threshold), NarrativePlan, semantic gate
+- Publikacyjne testy T1-T25 i walidacja fallbacków/backfillu
+
+## Open issues P2 — findings MEDIUM przeniesione z P1-C
+
+O1: Mock transport i budżet w testach — flaga `gemini_mock_budget_bypass` omijająca inkrementację. Faza P2-A.
+O2: Dokładna definicja "artefakty pochodne" — konkretny SQL DELETE/UPDATE dla każdej tabeli (article_draft_versions, quality_check_runs, generation_operations, article_images, narrative_plans, supplemental_topics). Faza P2-G.
+O3: NarrativePlan i generation_batch_items.stage — nowy stage vs pod-etap research/draft. Decyzja wpływa na dispatch loop. Faza P2-B.
+O4: Kalibracja thresholdu bramki semantycznej — domyślny 60, walidacja na fixture'ach. Faza P2-D.
+O5: Polityka expiracji gemini_call_cache — cache bez TTL może zwracać przestarzałe odpowiedzi w nowych przebiegach. Faza P2-A.
 
 ## Potwierdzone pliki i symbole — kluczowe
 

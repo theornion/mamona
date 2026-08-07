@@ -1,12 +1,15 @@
 # Current Work — MAMONA-24: Article Generation & Visual Narrative Pipeline V2
 
-## ACTIVE
+## COMPLETED AND APPROVED
 
 ```text
-MAMONA-24-P0 — REPOSITORY RECONNAISSANCE
+MAMONA-24-P1 — ROOT CAUSE AND SPEC (APPROVED, 2026-08-07)
+P1-C korekta zatwierdzona. Findingi CRITICAL i HIGH rozwiązane. Findingi MEDIUM przeniesione do open issues P2.
+
+Oczekiwanie na CHECKPOINT_P1 i akceptację użytkownika przed uruchomieniem P2.
 ```
 
-Wykonaj tylko aktywną fazę. Nie przechodź automatycznie do następnej.
+---
 
 ---
 
@@ -296,10 +299,12 @@ P0 zakończone — oczekiwanie na checkpoint i akceptację użytkownika przed P1
 ### Zakończone
 
 - [x] P0 — repository reconnaissance (COMPLETE, 2026-08-06)
+- [x] P1 — root cause and spec (APPROVED, 2026-08-07)
+- [x] P2-A — centralny GeminiBudget, limit 20, convergence mode (COMPLETE, 2026-08-07)
 
 ### W toku
 
-- Brak
+- P2-B–G — implementacja pozostałych podfaz MAMONA-24 (BLOCKED BY budżet/akceptacja P2-A)
 
 ### Zablokowane
 
@@ -358,6 +363,7 @@ P0 zakończone — oczekiwanie na checkpoint i akceptację użytkownika przed P1
 |---|---|---|---|---|
 | 2026-08-06 | P0 | 4x repo-scout task (A2-D2) | COMPLETE | Wszystkie subtaski zwróciły SUBTASK_RESULT |
 | 2026-08-06 | P0 | git diff docs/ | OK | Zmieniono tylko wymagane pliki, UTF-8 poprawny |
+| 2026-08-07 | P2-A | php -l ×4 + p2a-gemini-budget-test.php | 113 PASS, 1 FAIL (log audit) | Bug off-by-one naprawiony przez orchestratora |
 
 ### Format raportu po fazie
 

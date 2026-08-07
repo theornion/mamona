@@ -3,9 +3,10 @@
 ## Status
 
 ```text
-CONFIRMED — MAMONA-24-P0 completed 2026-08-06
-Previous: MAMONA-23-P0 completed 2026-08-05 (image pipeline only)
-Source: docs/research/MAMONA-24-P0-repository-map.md
+CONFIRMED — MAMONA-24-P1 completed 2026-08-06
+Previous: MAMONA-24-P0 completed 2026-08-06; MAMONA-23-P0 completed 2026-08-05 (image pipeline only)
+Source: docs/research/MAMONA-24-P0-repository-map.md, docs/research/MAMONA-24-P1-approved-handoff.md
+Spec: docs/specs/MAMONA-24-article-generation-visual-narrative-v3.md
 ```
 
 Ten plik przechowuje trwałą, potwierdzoną mapę architektury. Nie zapisuj tutaj hipotez bez oznaczenia.

@@ -22,6 +22,22 @@ final class GeminiTopicBudgetException extends RuntimeException
     }
 }
 
+final class GeminiArticleBudgetException extends RuntimeException
+{
+    public function __construct(
+        public readonly int $articleId,
+        public readonly int $usedCalls,
+        public readonly int $maxCalls = 20
+    ) {
+        parent::__construct(sprintf(
+            'Budzet %d wywołań Gemini dla artykułu %d został wyczerpany (użyto %d); przełączam na manual_review.',
+            $maxCalls,
+            $articleId,
+            $usedCalls
+        ));
+    }
+}
+
 function gemini_configured_models(?string $primary = null): array
 {
     $models = array_merge([$primary ?: (string) app_config('gemini_model')], (array) app_config('gemini_model_fallbacks'));
@@ -128,13 +144,13 @@ function gemini_quota_acquire(PDO $database, string $project, string $model, int
             $count->execute([':topic' => (int) $call['topic_id']]);
             $topicUsed = (int) $count->fetchColumn();
             $operationType = (string) ($call['operation_type'] ?? '');
-            if ($topicUsed >= 15
-                || ($topicUsed === 13 && $operationType !== 'article_draft')
-                || ($topicUsed === 14 && $operationType !== 'quality_check')) {
+            if ($topicUsed >= 20
+                || ($topicUsed === 18 && $operationType !== 'article_draft')
+                || ($topicUsed === 19 && $operationType !== 'quality_check')) {
                 throw new GeminiTopicBudgetException((int) $call['topic_id'], $topicUsed);
             }
-            if ($topicUsed === 13) $reason = 'source_bounded_finalizer';
-            if ($topicUsed === 14) $reason = 'final_quality_check';
+            if ($topicUsed === 18) $reason = 'source_bounded_finalizer';
+            if ($topicUsed === 19) $reason = 'final_quality_check';
         }
         $token = bin2hex(random_bytes(16));
         $insert = $database->prepare('INSERT INTO gemini_quota_events(project_key,model,operation_id,topic_id,batch_id,item_id,stage,attempt,call_reason,fingerprint,estimated_tokens,created_at) VALUES(:project,:model,:operation,:topic,:batch,:item,:stage,:attempt,:reason,:fingerprint,:tokens,:created)');
@@ -210,4 +226,69 @@ function gemini_topic_live_request_count(int $topicId): int
     );
     $statement->execute([':topic' => $topicId]);
     return (int) $statement->fetchColumn();
+}
+
+/** Ensure article_generation_budget row exists for the given post/article. Returns current row. */
+function gemini_article_budget_ensure(PDO $database, int $articleId): array
+{
+    $stmt = $database->prepare('SELECT * FROM article_generation_budget WHERE article_id=:id');
+    $stmt->execute([':id' => $articleId]);
+    $row = $stmt->fetch();
+    if (!is_array($row)) {
+        $database->prepare(
+            'INSERT INTO article_generation_budget (article_id, max_calls, used_calls, convergence_threshold, calls_log_json, is_exhausted, convergence_active, created_at, updated_at)
+             VALUES (:id, 20, 0, 16, "[]", 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
+        )->execute([':id' => $articleId]);
+        $stmt->execute([':id' => $articleId]);
+        $row = $stmt->fetch();
+    }
+    return is_array($row) ? $row : [];
+}
+
+/** Increment used_calls for a Gemini call that returned a response. Logs the call. Throws GeminiArticleBudgetException on exhaustion. */
+function gemini_article_budget_increment(PDO $database, int $articleId, string $operationType, string $stage, int $attempt, string $status): void
+{
+    if ((bool) app_config('gemini_mock_budget_bypass')) {
+        return;
+    }
+    $row = gemini_article_budget_ensure($database, $articleId);
+    $used = (int) ($row['used_calls'] ?? 0);
+    $max = (int) ($row['max_calls'] ?? 20);
+    $threshold = (int) ($row['convergence_threshold'] ?? 16);
+    $log = json_decode((string) ($row['calls_log_json'] ?? '[]'), true) ?: [];
+
+    $used++;
+    $log[] = [
+        'call_number' => $used,
+        'operation_type' => $operationType,
+        'stage' => $stage,
+        'attempt' => $attempt,
+        'status' => $status,
+        'timestamp' => gmdate('Y-m-d H:i:s'),
+    ];
+
+    $convergenceActive = $used >= $threshold ? 1 : 0;
+    $isExhausted = $used >= $max ? 1 : 0;
+
+    $database->prepare(
+        'UPDATE article_generation_budget
+         SET used_calls=:used, calls_log_json=:log, convergence_active=:conv, is_exhausted=:exh, updated_at=CURRENT_TIMESTAMP
+         WHERE article_id=:id'
+    )->execute([
+        ':used' => $used,
+        ':log' => json_encode($log, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+        ':conv' => $convergenceActive,
+        ':exh' => $isExhausted,
+        ':id' => $articleId,
+    ]);
+
+    if ($used > $max) {
+        throw new GeminiArticleBudgetException($articleId, $used, $max);
+    }
+}
+
+/** Return current budget state for an article. */
+function gemini_article_budget_state(int $articleId): array
+{
+    return gemini_article_budget_ensure(bueno_database(), $articleId);
 }
