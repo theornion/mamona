@@ -18,6 +18,9 @@ try {
         }
         if (!$drain || $claims === []) break;
     } while (true);
+} catch (Throwable $exception) {
+    fwrite(STDERR, '[' . gmdate('c') . '] batch worker failed: ' . $exception->getMessage() . PHP_EOL);
+    exit(1);
 } finally {
     if ($guardToken !== '') bueno_database()->prepare('DELETE FROM generation_worker_guard WHERE guard_key=1 AND lease_token=:token')->execute([':token'=>$guardToken]);
 }

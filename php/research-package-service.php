@@ -30,6 +30,37 @@ function research_package_schema(array $sourceIds): array
     ];
     $evidenceListSchema = ['type' => 'array', 'items' => research_evidence_schema($sourceIds)];
     $requiresMultipleSources = count(array_unique($sourceIds)) >= 2;
+    $storySchema = [
+        'type' => 'object',
+        'properties' => [
+            'id' => ['type' => 'string', 'minLength' => 1],
+            'title' => ['type' => 'string', 'minLength' => 5],
+            'main_question' => ['type' => 'string', 'minLength' => 10],
+            'why_now' => ['type' => 'string', 'minLength' => 10],
+            'reader_value' => ['type' => 'string', 'minLength' => 10],
+            'claim_ids' => ['type' => 'array', 'items' => ['type' => 'string'], 'minItems' => 1],
+            'visual_directions' => ['type' => 'array', 'items' => ['type' => 'string'], 'minItems' => 1],
+        ],
+        'required' => ['id', 'title', 'main_question', 'why_now', 'reader_value', 'claim_ids', 'visual_directions'],
+        'additionalProperties' => false,
+    ];
+    $topicSchema = static function (string $hookField): array {
+        return [
+            'type' => 'object',
+            'properties' => [
+                'id' => ['type' => 'string', 'minLength' => 1],
+                'title' => ['type' => 'string', 'minLength' => 5],
+                'connection_to_primary' => ['type' => 'string', 'minLength' => 10],
+                $hookField => ['type' => 'string', 'minLength' => 10],
+                'editorial_value' => ['type' => 'string', 'minLength' => 10],
+                'claim_ids' => ['type' => 'array', 'items' => ['type' => 'string'], 'minItems' => 1],
+                'visual_potential' => ['type' => 'string', 'minLength' => 5],
+                'suggested_visual_queries' => ['type' => 'array', 'items' => ['type' => 'string'], 'minItems' => 1],
+            ],
+            'required' => ['id', 'title', 'connection_to_primary', $hookField, 'editorial_value', 'claim_ids', 'visual_potential', 'suggested_visual_queries'],
+            'additionalProperties' => false,
+        ];
+    };
 
     return [
         'type' => 'object',
@@ -57,6 +88,23 @@ function research_package_schema(array $sourceIds): array
                     'required' => ['claim_id', 'claim', 'source_ids', 'evidence', 'confidence'],
                     'additionalProperties' => false,
                 ],
+            ],
+            'primary_story' => $storySchema,
+            'context_topics' => ['type' => 'array', 'items' => $topicSchema('reader_question_answered'), 'maxItems' => 6],
+            'curiosity_topics' => ['type' => 'array', 'items' => $topicSchema('curiosity_hook'), 'maxItems' => 6],
+            'source_claims' => ['type' => 'array', 'items' => ['type' => 'string'], 'minItems' => 1],
+            'source_map' => [
+                'type' => 'array',
+                'items' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'claim_id' => ['type' => 'string'],
+                        'source_ids' => $sourceIdSchema,
+                    ],
+                    'required' => ['claim_id', 'source_ids'],
+                    'additionalProperties' => false,
+                ],
+                'minItems' => 1,
             ],
             'shared_facts' => [
                 'type' => 'array',
@@ -141,6 +189,11 @@ function research_package_schema(array $sourceIds): array
         'required' => [
             'event_summary',
             'claims',
+            'primary_story',
+            'context_topics',
+            'curiosity_topics',
+            'source_claims',
+            'source_map',
             'shared_facts',
             'contradictions',
             'unknowns',
@@ -219,6 +272,7 @@ function prepare_research_package_operation(int $topicId): int
         'topic_score' => $topic['score'] !== null ? (int) $topic['score'] : null,
         'numbered_sources' => $sources,
         'research_policy' => $policy,
+        'workflow_version' => 2,
         'instructions' => [
             'Używaj wyłącznie tytułów i materiałów przekazanych w numbered_sources.',
             'Każde twierdzenie musi wskazywać source_ids i zawierać krótki, dosłowny excerpt z odpowiedniego materiału.',
@@ -229,6 +283,9 @@ function prepare_research_package_operation(int $topicId): int
             'Sprzeczności pozostaw jako unresolved lub partially_resolved; nie przedstawiaj ich jako pewników.',
             'Jeżeli materiał nie wystarcza do rzetelnego artykułu, ustaw recommendation.decision na reject.',
             'Polski kontekst i porównania dodawaj tylko wtedy, gdy mają podstawę w przekazanych źródłach; w przeciwnym razie zwróć puste tablice.',
+            'Odkryj primary_story A oraz kandydatów context_topics B i curiosity_topics C. B/C nie są fillerem: muszą zwiększać wartość artykułu, być powiązane z A i wskazywać claim_ids z claims.',
+            'source_claims zawiera identyfikatory wszystkich claims użytych przez A/B/C, a source_map jest listą rekordów {claim_id, source_ids[]} pokrywającą każdy z tych claims.',
+            'Kandydat B/C bez source-backed claim_ids może zostać pominięty; nie wolno przedstawiać wiedzy spoza numbered_sources.',
             ...(($policy['material_scope'] ?? '') === 'feed_excerpt_only' ? [
                 'Materiał ma zakres feed_excerpt_only: wolno używać wyłącznie dosłownego tytułu i opisu z feedu. Nie zakładaj treści pełnej strony.',
                 'Pewność claims opartych wyłącznie na feedzie nie może przekroczyć medium; brakujące szczegóły zapisz w unknowns.',
@@ -365,6 +422,44 @@ function validate_research_package(array $package, array $input): array
             $citedSources[$sourceId] = true;
         }
     }
+    $assertTopicClaims = static function (array $topic, string $path) use (&$claimIds): void {
+        $ids = array_values(array_unique(array_map('strval', (array) ($topic['claim_ids'] ?? []))));
+        if ($ids === [] || array_diff($ids, array_keys($claimIds)) !== []) {
+            throw new InvalidArgumentException("{$path}.claim_ids muszą wskazywać zatwierdzone claims.");
+        }
+    };
+    $assertTopicClaims((array) ($package['primary_story'] ?? []), '$.primary_story');
+    foreach (['context_topics', 'curiosity_topics'] as $topicType) {
+        $topicIds = [];
+        foreach ((array) ($package[$topicType] ?? []) as $index => $topic) {
+            $topicId = trim((string) ($topic['id'] ?? ''));
+            if ($topicId === '' || isset($topicIds[$topicId])) throw new InvalidArgumentException("$.{$topicType}[{$index}].id musi być unikalne.");
+            $topicIds[$topicId] = true;
+            $assertTopicClaims((array) $topic, "$.{$topicType}[{$index}]");
+        }
+    }
+    $sourceClaims = array_values(array_unique(array_map('strval', (array) ($package['source_claims'] ?? []))));
+    if ($sourceClaims === [] || array_diff($sourceClaims, array_keys($claimIds)) !== []) {
+        throw new InvalidArgumentException('$.source_claims musi wskazywać zatwierdzone claims.');
+    }
+    $sourceMap = [];
+    foreach ((array) ($package['source_map'] ?? []) as $entry) {
+        if (!is_array($entry)) continue;
+        if (array_key_exists('claim_id', $entry)) {
+            $claimId = trim((string) ($entry['claim_id'] ?? ''));
+            if ($claimId === '' || isset($sourceMap[$claimId])) {
+                throw new InvalidArgumentException('$.source_map zawiera pusty lub zduplikowany claim_id.');
+            }
+            $sourceMap[$claimId] = (array) ($entry['source_ids'] ?? []);
+            continue;
+        }
+        foreach ($entry as $claimId => $sourceIds) $sourceMap[(string) $claimId] = (array) $sourceIds;
+    }
+    foreach ($sourceClaims as $claimId) {
+        if (!isset($sourceMap[$claimId]) || array_diff((array) $sourceMap[$claimId], array_keys($knownSources)) !== []) {
+            throw new InvalidArgumentException('$.source_map nie pokrywa claim ' . $claimId . '.');
+        }
+    }
     foreach ((array) ($package['shared_facts'] ?? []) as $index => $fact) {
         if (trim((string) ($fact['fact'] ?? '')) === '') {
             throw new InvalidArgumentException("$.shared_facts[{$index}].fact nie może być pusty.");
@@ -451,6 +546,33 @@ function validate_research_operation_output(array $operation, array $output): ar
     return validate_research_package($output, $input);
 }
 
+/** Canonical provider-safe source map; safely derivable from already returned claims. */
+function research_normalize_source_map(array &$output): ?array
+{
+    $original = $output['source_map'] ?? null;
+    $normalized = [];
+    foreach ((array) $original as $key => $entry) {
+        if (is_array($entry) && array_key_exists('claim_id', $entry)) {
+            $claimId = trim((string) ($entry['claim_id'] ?? ''));
+            $sourceIds = array_values(array_unique(array_filter(array_map('strval', (array) ($entry['source_ids'] ?? [])))));
+        } else {
+            $claimId = is_string($key) ? trim($key) : '';
+            $sourceIds = array_values(array_unique(array_filter(array_map('strval', (array) $entry))));
+        }
+        if ($claimId !== '' && $sourceIds !== []) $normalized[$claimId] = ['claim_id'=>$claimId, 'source_ids'=>$sourceIds];
+    }
+    foreach ((array) ($output['claims'] ?? []) as $claim) {
+        $claimId = trim((string) ($claim['claim_id'] ?? ''));
+        $sourceIds = array_values(array_unique(array_filter(array_map('strval', (array) ($claim['source_ids'] ?? [])))));
+        if ($claimId !== '' && $sourceIds !== [] && !isset($normalized[$claimId])) {
+            $normalized[$claimId] = ['claim_id'=>$claimId, 'source_ids'=>$sourceIds];
+        }
+    }
+    $value = array_values($normalized);
+    $output['source_map'] = $value;
+    return $original === $value ? null : ['field'=>'source_map', 'strategy'=>'derived_from_claim_source_ids'];
+}
+
 function research_mock_generation_value(array $operation): array
 {
     $input = json_decode((string) $operation['input_json'], true, 128, JSON_THROW_ON_ERROR);
@@ -479,6 +601,11 @@ function research_mock_generation_value(array $operation): array
             ]],
             'confidence' => ($input['research_policy']['confidence_cap'] ?? '') === 'medium' ? 'medium' : 'high',
         ]],
+        'primary_story' => ['id'=>'A','title'=>$sourceTitle,'main_question'=>'Co dokładnie wydarzyło się w opisanym materiale?','why_now'=>'Materiał źródłowy opisuje aktualne wydarzenie.','reader_value'=>'Czytelnik otrzymuje wyjaśnienie znaczenia wydarzenia.','claim_ids'=>['C1'],'visual_directions'=>['bezpośrednia fotografia głównego tematu']],
+        'context_topics' => [],
+        'curiosity_topics' => [],
+        'source_claims' => ['C1'],
+        'source_map' => [['claim_id'=>'C1','source_ids'=>[$sourceId]]],
         'shared_facts' => [],
         'contradictions' => [],
         'unknowns' => ['Atrapa nie ocenia prawdziwości ani kompletności materiału.'],

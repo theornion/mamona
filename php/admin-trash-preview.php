@@ -43,9 +43,6 @@ if ($type === 'post') {
         $title = (string) $record['name'];
         $body = '<p class="admin-kicker">Niepubliczne zdjęcie galerii</p><h1>' . escape_html($record['name']) . '</h1><img class="admin-trash-preview-image" src="' . escape_html(admin_asset_url($record['image_path'])) . '" alt=""><p>' . escape_html($record['description']) . '</p>';
     }
-} elseif ($type === 'cat') {
-    $record = $id > 0 ? find_cat($id, true) : null;
-    if (is_array($record)) $body = '<p class="admin-kicker">Niepubliczny element galerii Nasze koty</p><h1>' . escape_html($record['name']) . '</h1><img class="admin-trash-preview-image" src="' . escape_html(admin_asset_url($record['image_path'])) . '" alt=""><p>' . escape_html($record['description']) . '</p>';
 } elseif ($type === 'message') {
     $record = $id > 0 ? find_message($id) : null;
     if (is_array($record)) $body = '<p class="admin-kicker">Wiadomość w koszu</p><h1>' . escape_html($record['subject'] !== '' ? $record['subject'] : $record['name']) . '</h1><p>' . escape_html($record['message']) . '</p>';

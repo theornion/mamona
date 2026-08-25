@@ -1,0 +1,7 @@
+{
+  "version": "4.6.3",
+  "name": "Tri-Tier Parallel — Delegation Ceiling",
+  "base": "4.6.2",
+  "key_fix": "Coordinator edit/write/bash permissions are capability ceiling only so child writers/executors are not blocked by Kilo parent-permission inheritance; coordinator remains zero-direct-write by contract.",
+  "models": ["mamona-coder30-128k", "mamona-qwen14-64k", "mamona-qwen9-64k"]
+}

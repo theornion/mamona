@@ -1,0 +1,15 @@
+MAMONA V4.6.1 — KILO SCHEMA HOTFIX
+
+Fixes a V4.6 config schema error detected by:
+  kilo.cmd config check
+
+Correct Kilo permission shapes:
+  "todowrite": "allow"
+  "webfetch": "deny"
+  "websearch": "deny"
+
+These are scalar PermissionActionConfig values in the installed Kilo build,
+not wildcard pattern maps.
+
+V4.6 routing, agents, model aliases, parallel policy and server script are unchanged.
+Verifier now runs the real Kilo schema validator.

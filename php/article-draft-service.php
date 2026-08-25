@@ -2,6 +2,9 @@
 
 declare(strict_types=1);
 
+const ARTICLE_DRAFT_VISUAL_PLAN_CONTRACT_VERSION = 3;
+const ARTICLE_DRAFT_QC_REPAIR_CONTRACT_VERSION = 3;
+
 final class ArticleTitleRepairException extends InvalidArgumentException
 {
     public function __construct(public readonly array $diagnostics)
@@ -11,9 +14,9 @@ final class ArticleTitleRepairException extends InvalidArgumentException
 }
 
 const ARTICLE_COMPOSITION_MODES = ['informational', 'problem_discovery_return'];
-const ARTICLE_MAIN_CONTENT_MIN_LENGTH = 3000;
-const ARTICLE_COMPLEX_MAIN_CONTENT_MIN_LENGTH = 4000;
-const ARTICLE_MAIN_CONTENT_MAX_LENGTH = 7000;
+const ARTICLE_MAIN_CONTENT_MIN_LENGTH = 5000;
+const ARTICLE_COMPLEX_MAIN_CONTENT_MIN_LENGTH = 5000;
+const ARTICLE_MAIN_CONTENT_MAX_LENGTH = 10000;
 
 function article_draft_length_policy(string $compositionMode): array
 {
@@ -32,6 +35,24 @@ function article_draft_length_policy(string $compositionMode): array
     ];
 }
 
+/**
+ * Length contract shared by initial drafts and QC repairs.  The aggregate is
+ * deliberately repeated in the repair input: Gemini otherwise sees only the
+ * field-level QC feedback and can make a valid section-level edit that pushes
+ * the assembled article past the deterministic hard limit.
+ */
+function article_draft_repair_length_requirements(string $compositionMode): array
+{
+    $policy = article_draft_length_policy($compositionMode);
+
+    return [
+        ...$policy,
+        'target_characters' => '6000–8500',
+        'measurement' => 'Liczba znaków tekstu głównego: lead, znaczenie, fakty, kontekst porównawczy, niewiadome, wniosek praktyczny i — jeśli używana — narracja. Bez tytułu, briefu, SEO, kategorii, altu i metadanych.',
+        'final_check' => 'Przed zwróceniem JSON zsumuj długości wszystkich pól tekstu głównego. Wynik musi mieścić się w zakresie minimum_characters–maximum_characters; skróć merytorycznie nadmiar albo rozwiń zbyt krótkie sekcje. Nie zwracaj szkicu poza tym zakresem.',
+    ];
+}
+
 function article_draft_main_content_texts(array $draft): array
 {
     $texts = [];
@@ -41,6 +62,10 @@ function article_draft_main_content_texts(array $draft): array
             $texts[] = $text;
         }
     };
+    if (isset($draft['sections']) && is_array($draft['sections'])) {
+        foreach ($draft['sections'] as $section) $append($section['body'] ?? '');
+        return $texts;
+    }
     $append($draft['lead']['text'] ?? '');
     $append($draft['why_important']['text'] ?? '');
     foreach ((array) ($draft['key_facts'] ?? []) as $fact) {
@@ -58,6 +83,63 @@ function article_draft_main_content_texts(array $draft): array
     return $texts;
 }
 
+function article_draft_v2_schema(array $sourceIds, array $claimIds, string $compositionMode, array $plannedSections): array
+{
+    $sectionIds = array_values(array_filter(array_map(static fn (array $section): string => (string) ($section['section_id'] ?? ''), $plannedSections)));
+    $section = [
+        'type' => 'object',
+        'properties' => [
+            'section_id' => ['type'=>'string', 'minLength'=>2, 'maxLength'=>81, ...($sectionIds === [] ? [] : ['enum'=>$sectionIds])],
+            'topic_role' => ['type'=>'string','enum'=>['A','B','C']],
+            'content_type' => ['type'=>'string','enum'=>['prose','explainer','curiosity','history','comparison','short_callout','unknowns','takeaway']],
+            'heading' => ['type'=>'string','maxLength'=>180],
+            'body' => ['type'=>'string','minLength'=>1,'maxLength'=>4000],
+            'visual_slot_id' => ['type'=>'string','maxLength'=>100],
+            'claim_ids' => ['type'=>'array','items'=>['type'=>'string','enum'=>$claimIds],'minItems'=>1],
+            'source_ids' => ['type'=>'array','items'=>['type'=>'string','enum'=>$sourceIds],'minItems'=>1],
+        ],
+        'required' => ['section_id','topic_role','content_type','heading','body','claim_ids','source_ids'],
+        'additionalProperties' => false,
+    ];
+    $legacy = article_draft_schema($sourceIds, $claimIds, $compositionMode);
+    foreach (['lead','why_important','key_facts','comparison_context','unknowns','practical_takeaway','narrative'] as $field) unset($legacy['properties'][$field]);
+    $legacy['properties']['sections'] = ['type'=>'array','items'=>$section,'minItems'=>3,'maxItems'=>12];
+    $legacy['required'] = array_values(array_diff($legacy['required'], ['lead','why_important','key_facts','comparison_context','unknowns','practical_takeaway','narrative']));
+    $legacy['required'][] = 'sections';
+    return $legacy;
+}
+
+/** Normalize the non-editorial SEO metadata before the provider-output schema gate. */
+function article_draft_normalize_seo_description(array &$draft): ?array
+{
+    $seo = trim((string) ($draft['seo_description'] ?? ''));
+    if ($seo === '') {
+        return null;
+    }
+    $length = mb_strlen($seo);
+    if ($length > 200) {
+        $draft['seo_description'] = rtrim(mb_substr($seo, 0, 200));
+        return ['code' => 'seo_description_shortened', 'original_length' => $length, 'final_length' => mb_strlen($draft['seo_description'])];
+    }
+    if ($length < 70) {
+        $draft['seo_description'] = $seo;
+        return ['code' => 'seo_description_short', 'length' => $length];
+    }
+    $draft['seo_description'] = $seo;
+    return null;
+}
+
+/** Upgrade only the SEO field of persisted article-draft operation schemas. */
+function article_draft_apply_seo_description_schema(array &$schema): void
+{
+    $seo =& $schema['properties']['seo_description'];
+    if (!is_array($seo)) {
+        return;
+    }
+    $seo['minLength'] = 1;
+    $seo['maxLength'] = 200;
+}
+
 function article_draft_main_content_length(array $draft): int
 {
     return mb_strlen(implode("\n\n", article_draft_main_content_texts($draft)));
@@ -70,6 +152,10 @@ function article_draft_claim_grounded_text(array $draft, array $knownClaims): st
         $ids = array_values((array)($section['claim_ids'] ?? []));
         if ($ids !== [] && array_diff($ids, array_keys($knownClaims)) === []) $texts[] = (string)($section['text'] ?? '');
     };
+    if (isset($draft['sections']) && is_array($draft['sections'])) {
+        foreach ($draft['sections'] as $section) $collect(['text'=>$section['body'] ?? '', 'claim_ids'=>$section['claim_ids'] ?? []]);
+        return implode(' ', $texts);
+    }
     foreach (['lead','why_important','comparison_context','practical_takeaway'] as $field) $collect((array)($draft[$field] ?? []));
     foreach ((array)($draft['key_facts'] ?? []) as $section) $collect((array)$section);
     foreach ((array)($draft['narrative'] ?? []) as $section) $collect((array)$section);
@@ -305,7 +391,11 @@ function validate_article_title_strategy(array $draft, array $knownClaims): arra
             ]);
         }
     }
-    $leadTokens = article_title_normalized_tokens((string) (($draft['lead'] ?? [])['text'] ?? ''));
+    $leadText = (string) (($draft['lead'] ?? [])['text'] ?? '');
+    if ($leadText === '' && isset($draft['sections'][0]) && is_array($draft['sections'][0])) {
+        $leadText = (string) ($draft['sections'][0]['body'] ?? '');
+    }
+    $leadTokens = article_title_normalized_tokens($leadText);
     if (array_intersect($titleTokens, $leadTokens) === []) {
         throw new InvalidArgumentException('Lead nie wspiera głównej obietnicy wybranego tytułu.');
     }
@@ -330,18 +420,6 @@ function validate_article_title_strategy(array $draft, array $knownClaims): arra
             }
         }
     }
-    $hero = (array) ($draft['illustration_plan']['hero'] ?? []);
-    $heroText = implode(' ', [
-        (string) ($hero['visual_intent'] ?? ''),
-        (string) ($hero['expected_content'] ?? ''),
-        implode(' ', (array) ($hero['search_queries'] ?? [])),
-        (string) ($hero['alt'] ?? ''),
-        (string) ($hero['caption'] ?? ''),
-    ]);
-    if (array_intersect($titleTokens, article_title_normalized_tokens($heroText)) === []) {
-        throw new InvalidArgumentException('Plan hero nie wspiera głównej obietnicy wybranego tytułu.');
-    }
-
     return [
         'variant_count' => count($variants),
         'selected_score' => $selected[0]['score'],
@@ -562,7 +640,7 @@ function article_draft_schema(array $sourceIds, array $claimIds, string $composi
                 ],
             ],
             'practical_takeaway' => $requiredSection,
-            'seo_description' => ['type' => 'string', 'minLength' => 70, 'maxLength' => 160],
+            'seo_description' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 200],
             'category' => ['type' => 'string', 'minLength' => 2, 'maxLength' => 80],
             'image_alt' => ['type' => 'string', 'minLength' => 10, 'maxLength' => 250],
             'illustration_plan' => article_illustration_plan_schema(
@@ -605,6 +683,57 @@ function article_draft_schema(array $sourceIds, array $claimIds, string $composi
         ],
         'additionalProperties' => false,
     ];
+}
+
+/**
+ * The NarrativePlan is the source of truth for image acquisition.  Keep the
+ * provider response schema as strict as the later projection assertion, so a
+ * draft that changes an image brief is rejected before it can consume a
+ * transport response or reach the local persistence path.
+ */
+function article_draft_schema_lock_narrative_visual_projection(array $schema, array $narrativePlan): array
+{
+    $contract = narrative_plan_draft_illustration_contract($narrativePlan);
+    $expectedPlan = (array) ($contract['illustration_plan'] ?? []);
+    $hero = (array) ($expectedPlan['hero'] ?? []);
+    $inline = array_values((array) ($expectedPlan['inline'] ?? []));
+    $properties =& $schema['properties']['illustration_plan']['properties'];
+
+    $lockSlot = static function (array &$slotSchema, array $expectedSlots, bool $required): void {
+        if ($expectedSlots === []) {
+            if ($required) {
+                throw new RuntimeException('VisualPlan nie zawiera wymaganego slotu do zablokowania w schemacie szkicu.');
+            }
+            return;
+        }
+        foreach ([
+            'role', 'section_id', 'visual_intent', 'expected_content', 'alt', 'caption', 'layout', 'status',
+        ] as $field) {
+            $values = array_values(array_unique(array_map(
+                static fn (array $slot): string => (string) ($slot[$field] ?? ''),
+                $expectedSlots
+            )));
+            $slotSchema['properties'][$field]['enum'] = $values;
+        }
+        $queries = [];
+        foreach ($expectedSlots as $expectedSlot) {
+            foreach ((array) ($expectedSlot['search_queries'] ?? []) as $query) {
+                $query = (string) $query;
+                if ($query !== '') {
+                    $queries[$query] = true;
+                }
+            }
+        }
+        if ($queries === []) {
+            throw new RuntimeException('VisualPlan slot nie zawiera zapytań do zablokowania w schemacie szkicu.');
+        }
+        $slotSchema['properties']['search_queries']['items']['enum'] = array_keys($queries);
+    };
+
+    $lockSlot($properties['hero'], [$hero], true);
+    $lockSlot($properties['inline']['items'], $inline, false);
+
+    return $schema;
 }
 
 function find_research_package(int $packageId): ?array
@@ -677,7 +806,7 @@ function resolve_article_composition_mode(array $research, string $requestedMode
     return $requestedMode;
 }
 
-function prepare_article_draft_operation(int $researchPackageId, string $compositionMode): int
+function prepare_article_draft_operation(int $researchPackageId, string $compositionMode, ?array $narrativePlan = null): int
 {
     $package = find_research_package($researchPackageId);
     if ($package === null || $package['status'] !== 'approved') {
@@ -690,12 +819,18 @@ function prepare_article_draft_operation(int $researchPackageId, string $composi
     }
     $compositionMode = resolve_article_composition_mode($research, $compositionMode);
     $lengthPolicy = article_draft_length_policy($compositionMode);
-    $requiredInlineIllustrations = $compositionMode === 'problem_discovery_return' ? 4 : 3;
-    $requiredInlineSectionIds = array_slice(
-        ['lead', 'why-important', 'fact-1', 'takeaway'],
-        0,
-        $requiredInlineIllustrations
-    );
+    $planPayload = $narrativePlan !== null ? narrative_plan_editorial_payload($narrativePlan) : [];
+    $planTargetLength = (int) ($planPayload['target_length'] ?? 6500);
+    $visualPlan = $narrativePlan !== null
+        ? (json_decode((string) ($narrativePlan['visual_plan_json'] ?? '{}'), true) ?: [])
+        : [];
+    $planInlineSlots = array_values((array) ($visualPlan['inline_slots'] ?? []));
+    $requiredInlineIllustrations = $narrativePlan !== null
+        ? count($planInlineSlots)
+        : ($planTargetLength <= 7000 ? 2 : 3);
+    $requiredInlineSectionIds = $narrativePlan !== null
+        ? array_values(array_map(static fn (array $slot): string => (string) ($slot['section_anchor'] ?? ''), $planInlineSlots))
+        : array_slice(['lead', 'why-important', 'fact-1'], 0, $requiredInlineIllustrations);
     $sourceIds = array_values(array_map(
         static fn (array $source): string => (string) $source['source_id'],
         (array) ($researchInput['numbered_sources'] ?? [])
@@ -707,8 +842,16 @@ function prepare_article_draft_operation(int $researchPackageId, string $composi
     if ($sourceIds === [] || $claimIds === []) {
         throw new RuntimeException('Zatwierdzony research nie zawiera źródeł i twierdzeń potrzebnych do szkicu.');
     }
+    $unknownIds = array_keys(array_values((array) ($research['unknowns'] ?? [])));
+    // A persisted NarrativePlan is a hard pre-transport contract for visual slots.
+    $schema = article_draft_schema($sourceIds, $claimIds, $compositionMode, $unknownIds);
+    if ($narrativePlan !== null) {
+        $schema = article_draft_schema_from_plan($narrativePlan, $sourceIds, $claimIds, $compositionMode, $unknownIds);
+        $schema = article_draft_schema_lock_narrative_visual_projection($schema, $narrativePlan);
+    }
     $input = [
         'research_package_id' => $researchPackageId,
+        'workflow_version' => 2,
         'composition_mode' => $compositionMode,
         'output_language' => [
             'code' => 'pl-PL',
@@ -724,24 +867,24 @@ function prepare_article_draft_operation(int $researchPackageId, string $composi
         ),
         'length_requirements' => [
             ...$lengthPolicy,
-            'target_characters' => $lengthPolicy['complex'] ? '4200–4400' : '3400–3500',
+            'target_characters' => '6000–8500',
             'section_character_budget' => $lengthPolicy['complex']
                 ? [
-                    'lead' => '500–650',
-                    'why_important' => '500–650',
-                    'key_facts' => 'dokładnie 3 fakty po 450–600 znaków każdy',
-                    'comparison_context' => '350–500 lub pusty wyłącznie wtedy, gdy research nie daje podstawy',
-                    'unknowns_total' => '250–400',
-                    'practical_takeaway' => '400–550',
-                    'narrative_total' => '700–1000 rozłożone pomiędzy siedem pól',
+                    'lead' => '600–850',
+                    'why_important' => '700–1000',
+                    'key_facts' => 'dokładnie 3 fakty po 550–850 znaków każdy',
+                    'comparison_context' => '500–900 lub pusty wyłącznie wtedy, gdy research nie daje podstawy',
+                    'unknowns_total' => '300–600',
+                    'practical_takeaway' => '500–800',
+                    'narrative_total' => '1200–2200 rozłożone pomiędzy siedem pól',
                 ]
                 : [
-                    'lead' => '500–550',
-                    'why_important' => '500–550',
-                    'key_facts' => 'dokładnie 3 fakty po 400–450 znaków każdy',
-                    'comparison_context' => '300–350 lub pusty wyłącznie wtedy, gdy research nie daje podstawy',
-                    'unknowns_total' => '250–300',
-                    'practical_takeaway' => '400–450',
+                    'lead' => '600–800',
+                    'why_important' => '700–900',
+                    'key_facts' => 'dokładnie 3 fakty po 550–750 znaków każdy',
+                    'comparison_context' => '500–800 lub pusty wyłącznie wtedy, gdy research nie daje podstawy',
+                    'unknowns_total' => '300–500',
+                    'practical_takeaway' => '500–700',
                     'narrative_total' => '0; wszystkie pola narrative pozostają puste',
                 ],
             'required_inline_illustrations' => $requiredInlineIllustrations,
@@ -750,7 +893,7 @@ function prepare_article_draft_operation(int $researchPackageId, string $composi
             'quality' => 'Osiągnij zakres konkretnym, logicznie uporządkowanym wyjaśnieniem. Nie używaj powtórzeń, lania wody ani sztucznego wydłużania.',
             'final_check' => 'Minimum jest twardym warunkiem walidacji. Przed zwróceniem JSON zsumuj orientacyjnie długości wszystkich pól tekstu głównego i rozwiń merytorycznie zbyt krótkie sekcje. Nie zwracaj szkicu poniżej minimum.',
             'complex_guidance' => $lengthPolicy['complex']
-                ? '4000 znaków to wyłącznie dolna granica. Gdy research dostarcza wartościowego materiału, wyjaśnij temat szerzej i naturalnie przekrocz minimum; nie skracaj mechanicznie do 4000 znaków.'
+                ? '5000 znaków to wyłącznie dolna granica. Preferuj 6000–8500 znaków, gdy research A+B+C dostarcza wartościowego materiału; nie dodawaj filleru.'
                 : 'Nie rozciągaj prostego tematu ponad ilość wartościowego materiału, ale przedstaw go kompletnie w wymaganym zakresie.',
         ],
         'editorial_requirements' => [
@@ -765,7 +908,7 @@ function prepare_article_draft_operation(int $researchPackageId, string $composi
             'Pytanie w tytule jest dopuszczalne tylko wtedy, gdy tekst udziela na nie konkretnej odpowiedzi.',
             'Lead od razu odpowiada, co się wydarzyło; nie ukrywaj podstawowej informacji dla napięcia.',
             'Lead i hero mają wspierać obietnicę wybranego tytułu oraz pokazywać ten sam główny temat, ale nie mogą mechanicznie powtarzać całego tytułu.',
-            'Brief to jedno naturalne zdanie pod tytułem, od 80 do 220 znaków. Ma zaciekawić i ustawić temat, ale nie może być pierwszym zdaniem leadu, streszczeniem całego artykułu ani zdradzać wszystkich wniosków.',
+            'Brief to jedno lub dwa naturalne, zakończone zdania pod tytułem, od 80 do 220 znaków. Ma zaciekawić i ustawić temat, ale nie może być pierwszym zdaniem leadu, streszczeniem całego artykułu ani zdradzać wszystkich wniosków.',
             'Brief nie może powtarzać tytułu ani żadnego zdania z treści głównej.',
             'Nie używaj sensacyjnych obietnic nieobecnych w paczce.',
             'Każda sekcja faktograficzna wskazuje claim_ids i source_ids z paczki.',
@@ -790,13 +933,32 @@ function prepare_article_draft_operation(int $researchPackageId, string $composi
                 'Wypełnij siedem pól narrative w kolejności: pytanie, dążenie, temat B, ślepa uliczka, powrót do A, domknięcie B, odpowiedź i puenta.',
                 'Pytanie, temat B oraz puenta muszą wynikać z przypisanych twierdzeń i źródeł.',
                 'Temat B ma pomagać zrozumieć A, nie dominować tekstu i zostać domknięty.',
-                'Rozwiń wszystkie wartościowe zależności obecne w researchu; minimum 4000 znaków nie jest docelową długością ani powodem do skracania pełnego wyjaśnienia.',
+            'Rozwiń source-backed A+B+C jako jeden spójny artykuł; minimum 5000 znaków nie jest docelową długością ani powodem do skracania pełnego wyjaśnienia.',
             ]
             : [
                 'Przekaż najważniejszą odpowiedź od razu, a dalszą treść uporządkuj bez powtórzeń i pustych zdań.',
                 'Wszystkie pola narrative pozostaw puste: text jako pusty string, claim_ids i source_ids jako puste tablice.',
             ],
     ];
+    // Add narrative plan to input if provided
+    if ($narrativePlan !== null) {
+        $input['narrative_plan'] = $narrativePlan;
+        $input['editorial_plan'] = $planPayload;
+        $input['dynamic_sections_contract'] = [
+            'output' => 'Write sections[] in exactly the NarrativePlan order. Do not emit legacy lead/why_important/key_facts/comparison_context/unknowns/practical_takeaway/narrative fields.',
+            'fields' => ['section_id','topic_role','content_type','heading','body','visual_slot_id','claim_ids','source_ids'],
+            'content_types' => ['prose','explainer','curiosity','history','comparison','short_callout','unknowns','takeaway'],
+            'rules' => [
+                'A remains the primary thread; B explains or contextualizes it; C is a distinct source-backed curiosity/history angle when selected.',
+                'Preserve the planned section order and IDs. Use normal headings for prose, explainer, history, and comparison where useful.',
+                'Do not turn every section into a callout. prose/explainer/history are normal article flow; short_callout stays short.',
+            ],
+        ];
+        // This belongs to the persisted operation identity, not only to the
+        // response schema: a failed draft prepared before a stricter
+        // VisualPlan contract must not be selected as an equivalent retry.
+        $input['draft_visual_plan_contract_version'] = ARTICLE_DRAFT_VISUAL_PLAN_CONTRACT_VERSION;
+    }
     $database = bueno_database();
     $database->beginTransaction();
     try {
@@ -809,12 +971,7 @@ function prepare_article_draft_operation(int $researchPackageId, string $composi
         $operationId = prepare_generation_operation(
             'article_draft',
             $input,
-            article_draft_schema(
-                $sourceIds,
-                $claimIds,
-                $compositionMode,
-                array_keys(array_values((array) ($research['unknowns'] ?? [])))
-            ),
+            $schema,
             (int) $package['post_id'],
             (int) $package['topic_id']
         );
@@ -851,6 +1008,9 @@ function prepare_article_qc_repair_operation(int $sourceDraftId, array $qualityC
 {
     if ($attempt < 1 || $attempt > 2) throw new InvalidArgumentException('Automatyczna korekta QC ma limit dwóch prób.');
     $source = find_article_draft_by_id($sourceDraftId);
+    if (is_array($source) && (string) $source['status'] === 'frozen') {
+        throw new RuntimeException('Core text jest locked; pełny rewrite i fresh conservative rewrite są zabronione.');
+    }
     if (!is_array($source) || (string) $source['status'] !== 'completed') {
         throw new RuntimeException('Korekta QC wymaga kompletnej wersji źródłowej.');
     }
@@ -858,6 +1018,13 @@ function prepare_article_qc_repair_operation(int $sourceDraftId, array $qualityC
     if ($sourceJson === [] || article_draft_main_content_length($sourceJson) <= 0) {
         throw new RuntimeException('Korekta QC nie może bazować na pustej wersji.');
     }
+    $sourceOperation = find_generation_operation((int) ($source['generation_operation_id'] ?? 0));
+    $sourceOperationInput = is_array($sourceOperation)
+        ? (json_decode((string) ($sourceOperation['input_json'] ?? '{}'), true) ?: [])
+        : [];
+    $narrativePlan = is_array($sourceOperationInput['narrative_plan'] ?? null)
+        ? $sourceOperationInput['narrative_plan']
+        : null;
     $package = find_research_package((int) $source['research_package_id']);
     if (!is_array($package) || (string) $package['status'] !== 'approved') {
         throw new RuntimeException('Korekta QC wymaga nadal zatwierdzonego researchu.');
@@ -890,7 +1057,8 @@ function prepare_article_qc_repair_operation(int $sourceDraftId, array $qualityC
         $candidateInput = json_decode((string) $candidate['input_json'], true) ?: [];
         if ((int) ($candidateInput['qc_auto_repair']['quality_check_id'] ?? 0) === $checkId
             && (int) ($candidateInput['qc_auto_repair']['attempt'] ?? 0) === $attempt
-            && (string) ($candidateInput['qc_auto_repair']['strategy'] ?? 'targeted_repair') === $strategy) {
+            && (string) ($candidateInput['qc_auto_repair']['strategy'] ?? 'targeted_repair') === $strategy
+            && (int) ($candidateInput['qc_repair_contract_version'] ?? 0) === ARTICLE_DRAFT_QC_REPAIR_CONTRACT_VERSION) {
             return (int) $candidate['generation_operation_id'];
         }
     }
@@ -908,7 +1076,14 @@ function prepare_article_qc_repair_operation(int $sourceDraftId, array $qualityC
         array_values((array) ($research['unknowns'] ?? [])),
         array_keys(array_values((array) ($research['unknowns'] ?? [])))
     );
+    $repairLengthRequirements = article_draft_repair_length_requirements($compositionMode);
+    $schema = article_draft_schema($sourceIds, $claimIds, $compositionMode, array_column($allowedUnknowns, 'id'));
+    if ($narrativePlan !== null) {
+        $schema = article_draft_schema_from_plan($narrativePlan, $sourceIds, $claimIds, $compositionMode, array_column($allowedUnknowns, 'id'));
+        $schema = article_draft_schema_lock_narrative_visual_projection($schema, $narrativePlan);
+    }
     $input = [
+        'qc_repair_contract_version' => ARTICLE_DRAFT_QC_REPAIR_CONTRACT_VERSION,
         'revision_of_draft_version_id' => $sourceDraftId,
         'composition_mode' => $compositionMode,
         'output_language' => [
@@ -918,6 +1093,7 @@ function prepare_article_qc_repair_operation(int $sourceDraftId, array $qualityC
         'research_package' => $research,
         'numbered_sources' => $researchInput['numbered_sources'] ?? [],
         'allowed_research_unknowns' => $allowedUnknowns,
+        'length_requirements' => $repairLengthRequirements,
         'qc_auto_repair' => [
             'quality_check_id' => $checkId,
             'attempt' => $attempt,
@@ -932,9 +1108,13 @@ function prepare_article_qc_repair_operation(int $sourceDraftId, array $qualityC
             'Zwróć kompletny szkic; nie pozostawiaj pustych pól wymaganych przez schemat.',
         ],
         'revision_instruction' => $strategy === 'targeted_repair'
-            ? 'Precyzyjnie popraw istniejącą wersję według pełnej listy uwag QC, zachowaj poprawne części i zwróć cały szkic do ponownej pełnej walidacji.'
+            ? 'Precyzyjnie popraw istniejącą wersję według pełnej listy uwag QC. Zachowaj wszystkie niezwiązane z uwagami, poprawne części core article; nie dopisuj pełnego rewrite. Zwróć cały szkic do ponownej pełnej walidacji i przed odpowiedzią sprawdź łączną długość main_content według length_requirements.'
             : 'Napisz od zera nowy, prostszy i konserwatywny szkic informational. Nie kopiuj struktury ani sformułowań poprzedniej wersji. Używaj wyłącznie twierdzeń confidence=high. Nie używaj cytatów dosłownych ani cudzysłowów; bezpiecznie parafrazuj fakty. Pomiń opcjonalne, słabo wsparte twierdzenia, porównania i niewiadome. Utrzymaj tekst możliwie blisko twardego minimum długości, ale spełnij pełny schemat i walidację.',
     ];
+    if ($narrativePlan !== null) {
+        $input['narrative_plan'] = $narrativePlan;
+        $input['draft_visual_plan_contract_version'] = ARTICLE_DRAFT_VISUAL_PLAN_CONTRACT_VERSION;
+    }
     if ($strategy === 'targeted_repair') {
         $input['current_version'] = $sourceJson;
         $categories = array_values((array) ($repairDecision['categories'] ?? []));
@@ -952,7 +1132,7 @@ function prepare_article_qc_repair_operation(int $sourceDraftId, array $qualityC
             'allowed_confidence' => ['high'],
             'direct_quotes_allowed' => false,
             'optional_weak_claims_allowed' => false,
-            'target_main_content_characters' => '3000-3300',
+            'target_main_content_characters' => '6000-7000',
         ];
     }
     $database = bueno_database();
@@ -963,7 +1143,7 @@ function prepare_article_qc_repair_operation(int $sourceDraftId, array $qualityC
         $operationId = prepare_generation_operation(
             'article_draft',
             $input,
-            article_draft_schema($sourceIds, $claimIds, $compositionMode, array_column($allowedUnknowns, 'id')),
+            $schema,
             (int) $source['post_id'],
             (int) $source['topic_id']
         );
@@ -1000,8 +1180,12 @@ function activate_completed_article_qc_repair(int $draftVersionId): void
     $draft = find_article_draft_by_id($draftVersionId);
     $json = is_array($draft) ? (json_decode((string) $draft['draft_json'], true) ?: []) : [];
     $validation = is_array($draft) ? (json_decode((string) $draft['validation_json'], true) ?: []) : [];
+    $mode = is_array($draft) ? (string) ($draft['composition_mode'] ?? '') : '';
+    $length = article_draft_main_content_length($json);
+    $policy = in_array($mode, ARTICLE_COMPOSITION_MODES, true) ? article_draft_length_policy($mode) : null;
     if (!is_array($draft) || (string) $draft['status'] !== 'completed' || ($validation['valid'] ?? false) !== true
-        || $json === [] || article_draft_main_content_length($json) <= 0) {
+        || $json === [] || $length <= 0 || $policy === null
+        || $length < $policy['minimum_characters'] || $length > $policy['maximum_characters']) {
         throw new RuntimeException('Nie można aktywować pustej lub niezwalidowanej korekty QC.');
     }
     $database = bueno_database();
@@ -1080,9 +1264,240 @@ function article_draft_assert_not_copied(string $text, array $knownSources, stri
     }
 }
 
-function validate_article_draft_output(array $operation, array $draft): array
+/** P02 keeps text in the legacy draft contract while making every planned image immutable. */
+function article_draft_assert_narrative_visual_projection(array $operation, array $draft): void
+{
+    $input = json_decode((string) ($operation['input_json'] ?? '{}'), true);
+    $narrativePlan = (array) ($input['narrative_plan'] ?? []);
+    if ($narrativePlan === []) {
+        return;
+    }
+    $contract = narrative_plan_draft_illustration_contract($narrativePlan);
+    $expected = (array) ($contract['illustration_plan'] ?? []);
+    $actual = (array) ($draft['illustration_plan'] ?? []);
+    foreach (['hero', 'inline'] as $kind) {
+        $expectedSlots = $kind === 'hero' ? [(array) ($expected['hero'] ?? [])] : (array) ($expected['inline'] ?? []);
+        $actualSlots = $kind === 'hero' ? [(array) ($actual['hero'] ?? [])] : (array) ($actual['inline'] ?? []);
+        if (count($expectedSlots) !== count($actualSlots)) {
+            throw new InvalidArgumentException('Plan ilustracji szkicu nie zachowuje liczby slotów VisualPlan.');
+        }
+        foreach ($expectedSlots as $index => $expectedSlot) {
+            $actualSlot = (array) ($actualSlots[$index] ?? []);
+            foreach (['role', 'section_id', 'visual_intent', 'search_queries', 'expected_content', 'alt', 'caption', 'layout', 'status', 'slot_id', 'must_be_direct', 'acceptable_related', 'search_queries_related'] as $field) {
+                if (($actualSlot[$field] ?? null) !== ($expectedSlot[$field] ?? null)) {
+                    throw new InvalidArgumentException('Plan ilustracji szkicu odbiega od utrwalonego VisualPlan: ' . $kind . '[' . $index . '].' . $field . '.');
+                }
+            }
+        }
+    }
+}
+
+/** Return canonical NarrativePlan sections from the persisted runtime operation shape. */
+function article_draft_narrative_sections(array $operation): array
+{
+    try {
+        $input = json_decode((string) ($operation['input_json'] ?? '{}'), true, 128, JSON_THROW_ON_ERROR);
+    } catch (JsonException $exception) {
+        throw new InvalidArgumentException('narrative_sections_contract_error: input_json nie jest poprawnym JSON-em.', 0, $exception);
+    }
+    if (!is_array($input)) {
+        throw new InvalidArgumentException('narrative_sections_contract_error: input_json ma nieprawidłowy typ.');
+    }
+
+    if (array_key_exists('sections_json', (array) ($input['narrative_plan'] ?? []))) {
+        $stored = $input['narrative_plan']['sections_json'];
+        if (is_string($stored)) {
+            try {
+                $stored = json_decode($stored, true, 128, JSON_THROW_ON_ERROR);
+            } catch (JsonException $exception) {
+                throw new InvalidArgumentException('narrative_sections_contract_error: narrative_plan.sections_json nie jest poprawnym JSON-em.', 0, $exception);
+            }
+        }
+        if (!is_array($stored) || $stored === [] || !array_is_list($stored)) {
+            throw new InvalidArgumentException('narrative_sections_contract_error: narrative_plan.sections_json ma nieprawidłowy typ lub jest puste.');
+        }
+        foreach ($stored as $index => $section) {
+            if (!is_array($section)) {
+                throw new InvalidArgumentException("narrative_sections_contract_error: narrative_plan.sections_json[{$index}] ma nieprawidłowy typ.");
+            }
+        }
+        return array_values($stored);
+    }
+
+    $legacy = ($input['editorial_plan'] ?? [])['sections'] ?? null;
+    if (is_array($legacy) && $legacy !== [] && array_is_list($legacy)) {
+        return array_values($legacy);
+    }
+    throw new InvalidArgumentException('narrative_sections_contract_error: brak sekcji NarrativePlan.');
+}
+
+/** NarrativePlan owns V2 section identity/order/role; draft owns heading/body. */
+function article_draft_normalize_narrative_sections(array $operation, array &$draft): array
+{
+    if (!isset($draft['sections']) || !is_array($draft['sections'])) return [];
+    $planned = article_draft_narrative_sections($operation);
+    $actual =& $draft['sections'];
+    if (count($actual) !== count($planned)) {
+        throw new InvalidArgumentException('narrative_section_contract_conflict: liczba sekcji nie odpowiada NarrativePlan.');
+    }
+    $plannedIds = [];
+    foreach ($planned as $index => $section) {
+        $id = trim((string)($section['section_id'] ?? ''));
+        if ($id === '' || isset($plannedIds[$id])) {
+            throw new InvalidArgumentException('narrative_section_contract_conflict: NarrativePlan ma niejednoznaczną strukturę sekcji.');
+        }
+        $plannedIds[$id] = $index;
+    }
+    $explicitIds = [];
+    $normalized = [];
+    foreach ($actual as $index => &$section) {
+        if (!is_array($section)) throw new InvalidArgumentException("narrative_section_contract_conflict: $.sections[{$index}] ma nieprawidłowy typ.");
+        $canonical = (array)$planned[$index];
+        $canonicalId = (string)$canonical['section_id'];
+        $actualId = trim((string)($section['section_id'] ?? ''));
+        if ($actualId !== '') {
+            if (isset($explicitIds[$actualId])) throw new InvalidArgumentException('narrative_section_contract_conflict: duplicate section_id ' . $actualId . '.');
+            $explicitIds[$actualId] = true;
+            if (!isset($plannedIds[$actualId]) || $actualId !== $canonicalId) {
+                throw new InvalidArgumentException("narrative_section_contract_conflict: $.sections[{$index}].section_id zmienia kolejność NarrativePlan.");
+            }
+        } else {
+            $section['section_id'] = $canonicalId;
+            $normalized[] = "sections[{$index}].section_id";
+        }
+        foreach (['topic_role','content_type'] as $field) {
+            $expected = (string)($canonical[$field] ?? '');
+            $actualValue = trim((string)($section[$field] ?? ''));
+            if ($actualValue === '') {
+                $section[$field] = $expected;
+                $normalized[] = "sections[{$index}].{$field}";
+            } elseif ($actualValue !== $expected) {
+                throw new InvalidArgumentException("narrative_section_contract_conflict: $.sections[{$index}].{$field} zmienia NarrativePlan.");
+            }
+        }
+    }
+    unset($section);
+    return $normalized;
+}
+
+function article_draft_assert_narrative_sections(array $operation, array $sections): void
+{
+    $plannedSections = article_draft_narrative_sections($operation);
+    $plannedById = [];
+    foreach ($plannedSections as $planned) $plannedById[(string) ($planned['section_id'] ?? '')] = $planned;
+    $seenSections = [];
+    foreach ($sections as $index => $section) {
+        $id = (string) ($section['section_id'] ?? '');
+        if ($id === '' || isset($seenSections[$id]) || !isset($plannedById[$id])) {
+            throw new InvalidArgumentException("$.sections[{$index}] nie odpowiada NarrativePlan.");
+        }
+        $seenSections[$id] = true;
+        foreach (['topic_role', 'content_type'] as $field) {
+            if (($section[$field] ?? null) !== ($plannedById[$id][$field] ?? null)) {
+                throw new InvalidArgumentException("$.sections[{$index}].{$field} zmienia NarrativePlan.");
+            }
+        }
+    }
+    $actualOrder = array_keys($seenSections);
+    $plannedOrder = array_values(array_map(static fn (array $section): string => (string) ($section['section_id'] ?? ''), $plannedSections));
+    if ($actualOrder !== $plannedOrder) {
+        throw new InvalidArgumentException('Szkic nie zachował kolejności sekcji NarrativePlan.');
+    }
+}
+
+/** Restore omitted legacy slot identity/policy only from one persisted P02 slot. */
+function article_draft_normalize_narrative_visual_slot_identity(array $narrativePlan, array &$draft): void
+{
+    $contract = narrative_plan_draft_illustration_contract($narrativePlan);
+    $expected = (array) ($contract['illustration_plan'] ?? []);
+    $actualPlan =& $draft['illustration_plan'];
+    if (!is_array($actualPlan)) {
+        throw new InvalidArgumentException('Szkic nie zawiera planu ilustracji do normalizacji VisualPlan.');
+    }
+
+    $normalize = static function (array &$actual, array $candidates, string $kind): void {
+        $slotId = trim((string) ($actual['slot_id'] ?? ''));
+        $matches = $slotId !== ''
+            ? array_values(array_filter($candidates, static fn (array $candidate): bool => (string) ($candidate['slot_id'] ?? '') === $slotId))
+            : array_values(array_filter($candidates, static function (array $candidate) use ($actual): bool {
+                return (string) ($candidate['role'] ?? '') === (string) ($actual['role'] ?? '')
+                    && (string) ($candidate['section_id'] ?? '') === (string) ($actual['section_id'] ?? '');
+            }));
+        if (count($matches) !== 1 || trim((string) ($matches[0]['slot_id'] ?? '')) === '') {
+            throw new InvalidArgumentException('visual_plan_slot_mapping_ambiguous: ' . $kind);
+        }
+        $canonical = $matches[0];
+        foreach (['slot_id', 'role', 'section_id', 'must_be_direct', 'acceptable_related', 'search_queries', 'search_queries_related'] as $field) {
+            $missing = !array_key_exists($field, $actual) || $actual[$field] === null
+                || (is_string($actual[$field]) && trim($actual[$field]) === '');
+            if ($missing) {
+                $actual[$field] = $canonical[$field];
+                continue;
+            }
+            if (in_array($field, ['search_queries', 'search_queries_related'], true)
+                && is_array($actual[$field]) && is_array($canonical[$field])) {
+                $actualQueries = array_values(array_unique(array_map('strval', $actual[$field])));
+                $canonicalQueries = array_values(array_unique(array_map('strval', $canonical[$field])));
+                if ($actualQueries !== [] && array_diff($actualQueries, $canonicalQueries) === []) {
+                    $actual[$field] = $canonical[$field];
+                    continue;
+                }
+            }
+            if ($actual[$field] !== $canonical[$field]) {
+                throw new InvalidArgumentException('visual_plan_policy_conflict: ' . $kind . '.' . $field);
+            }
+        }
+        $actual['layout'] = $canonical['layout'];
+    };
+
+    $hero =& $actualPlan['hero'];
+    if (!is_array($hero)) {
+        throw new InvalidArgumentException('Szkic nie zawiera hero do normalizacji VisualPlan.');
+    }
+    $normalize($hero, [(array) ($expected['hero'] ?? [])], 'hero');
+
+    $inline =& $actualPlan['inline'];
+    if (!is_array($inline)) {
+        throw new InvalidArgumentException('Szkic nie zawiera tablicy inline do normalizacji VisualPlan.');
+    }
+    $candidates = array_values((array) ($expected['inline'] ?? []));
+    foreach ($inline as $index => &$slot) {
+        if (!is_array($slot)) {
+            throw new InvalidArgumentException('Szkic zawiera nieprawidłowy slot inline do normalizacji VisualPlan.');
+        }
+        $normalize($slot, $candidates, 'inline[' . $index . ']');
+    }
+    unset($slot);
+    $bySlotId = [];
+    foreach ($inline as $slot) $bySlotId[(string) ($slot['slot_id'] ?? '')] = $slot;
+    $ordered = [];
+    foreach ($candidates as $candidate) {
+        $slotId = (string) ($candidate['slot_id'] ?? '');
+        if (!isset($bySlotId[$slotId])) throw new InvalidArgumentException('visual_plan_slot_mapping_ambiguous: inline-order');
+        $ordered[] = $bySlotId[$slotId];
+    }
+    $inline = $ordered;
+    unset($hero, $inline);
+}
+
+function article_draft_assert_brief_contract(string $value): string
+{
+    $brief = trim(preg_replace('/\s+/u', ' ', strip_tags($value)) ?? '');
+    if (mb_strlen($brief) < 80 || mb_strlen($brief) > 220) {
+        throw new InvalidArgumentException('Brief musi mieć od 80 do 220 znaków.');
+    }
+    $briefSentences = preg_split('/(?<=[.!?])\s+/u', $brief, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+    if (count($briefSentences) < 1 || count($briefSentences) > 2 || preg_match('/[.!?]$/u', $brief) !== 1) {
+        throw new InvalidArgumentException('Brief musi zawierać od jednego do dwóch zakończonych zdań.');
+    }
+
+    return $brief;
+}
+
+function validate_article_draft_output(array $operation, array &$draft): array
 {
     $input = json_decode((string) $operation['input_json'], true, 128, JSON_THROW_ON_ERROR);
+    article_draft_normalize_narrative_sections($operation, $draft);
     $research = (array) ($input['research_package'] ?? []);
     $knownClaims = [];
     foreach ((array) ($research['claims'] ?? []) as $claim) {
@@ -1112,24 +1527,67 @@ function validate_article_draft_output(array $operation, array $draft): array
             'Treść główna powtarza to samo zdanie i nie może osiągać wymaganej długości przez duplikowanie treści.'
         );
     }
+    $seoWarning = article_draft_normalize_seo_description($draft);
+    $narrativePlan = is_array($input['narrative_plan'] ?? null) ? $input['narrative_plan'] : null;
+    $visualSlotCount = 1 + count((array) (($draft['illustration_plan'] ?? [])['inline'] ?? []));
+    if ($narrativePlan !== null) {
+        article_draft_normalize_narrative_visual_slot_identity($narrativePlan, $draft);
+    }
+    if ($narrativePlan === null) {
     validate_article_illustration_plan(
-        (array) ($draft['illustration_plan'] ?? []),
-        article_section_blocks($draft),
+            (array) ($draft['illustration_plan'] ?? []),
+            article_section_blocks($draft),
         $contentLength
     );
+    article_draft_assert_narrative_visual_projection($operation, $draft);
+        $narrativePlanEvidence = null;
+    } else {
+        $contract = narrative_plan_draft_illustration_contract($narrativePlan);
+        $expectedPlan = (array) ($contract['illustration_plan'] ?? []);
+        $actualPlan = (array) ($draft['illustration_plan'] ?? []);
+        $operationSchema = json_decode((string) ($operation['output_schema_json'] ?? '{}'), true) ?: [];
+        $illustrationSchema = (array) ($operationSchema['properties']['illustration_plan'] ?? []);
+        if ($illustrationSchema === []) throw new InvalidArgumentException('Operacja szkicu nie zawiera utrwalonego schematu VisualPlan.');
+        validate_generation_value($actualPlan, $illustrationSchema, '$.illustration_plan');
+        $sections = article_section_blocks($draft);
+        $sectionIds = array_column($sections, 'id');
+        validate_planned_article_image((array) ($actualPlan['hero'] ?? []), 'hero', $sectionIds);
+        $actualInline = array_values((array) ($actualPlan['inline'] ?? []));
+        $expectedInline = array_values((array) ($expectedPlan['inline'] ?? []));
+        if (count($actualInline) !== count($expectedInline)) {
+            throw new InvalidArgumentException('Szkic nie zachował wymaganej liczby slotów VisualPlan.');
+        }
+        $visualSlotCount = 1 + count($expectedInline);
+        foreach (['role', 'section_id', 'visual_intent', 'search_queries', 'expected_content', 'alt', 'caption', 'layout', 'status', 'slot_id', 'must_be_direct', 'acceptable_related', 'search_queries_related'] as $field) {
+            if (($actualPlan['hero'][$field] ?? null) !== ($expectedPlan['hero'][$field] ?? null)) {
+                throw new InvalidArgumentException('Szkic zmienił wymagany hero VisualPlan: ' . $field . '.');
+            }
+        }
+        $usedSections = [];
+        foreach ($actualInline as $index => $image) {
+            validate_planned_article_image((array) $image, 'inline', $sectionIds);
+            if (isset($usedSections[(string) ($image['section_id'] ?? '')])) {
+                throw new InvalidArgumentException('Szkic przypisał dwa sloty VisualPlan do tej samej sekcji.');
+            }
+            $usedSections[(string) $image['section_id']] = true;
+            foreach (['role', 'section_id', 'visual_intent', 'search_queries', 'expected_content', 'alt', 'caption', 'layout', 'status', 'slot_id', 'must_be_direct', 'acceptable_related', 'search_queries_related'] as $field) {
+                if (($image[$field] ?? null) !== ($expectedInline[$index][$field] ?? null)) {
+                    throw new InvalidArgumentException('Szkic zmienił wymagany slot VisualPlan: ' . $field . '.');
+                }
+            }
+        }
+        $narrativePlanEvidence = [
+            'plan_id' => (int) ($contract['plan_id'] ?? 0),
+            'slot_count' => $visualSlotCount,
+            'slot_ids' => (array) ($contract['slot_ids'] ?? []),
+        ];
+    }
     foreach (['title', 'brief', 'seo_description', 'category', 'image_alt'] as $field) {
         if (trim((string) ($draft[$field] ?? '')) === '') {
             throw new InvalidArgumentException("Pole {$field} nie może być puste.");
         }
     }
-    $brief = trim(preg_replace('/\s+/u', ' ', strip_tags((string) $draft['brief'])) ?? '');
-    if (mb_strlen($brief) < 80 || mb_strlen($brief) > 220) {
-        throw new InvalidArgumentException('Brief musi mieć od 80 do 220 znaków.');
-    }
-    $briefSentences = preg_split('/(?<=[.!?])\s+/u', $brief, -1, PREG_SPLIT_NO_EMPTY) ?: [];
-    if (count($briefSentences) !== 1 || preg_match('/[.!?]$/u', $brief) !== 1) {
-        throw new InvalidArgumentException('Brief musi być jednym zakończonym zdaniem.');
-    }
+    $brief = article_draft_assert_brief_contract((string) $draft['brief']);
     $normalizedBrief = mb_strtolower(rtrim($brief, ".!? \t\n\r\0\x0B"));
     $normalizedTitle = mb_strtolower(rtrim(trim((string) $draft['title']), ".!? \t\n\r\0\x0B"));
     if ($normalizedBrief === $normalizedTitle) {
@@ -1144,6 +1602,15 @@ function validate_article_draft_output(array $operation, array $draft): array
         }
     }
     $usedSources = [];
+    $isV2Sections = isset($draft['sections']) && is_array($draft['sections']);
+    if ($isV2Sections) {
+        article_draft_assert_narrative_sections($operation, $draft['sections']);
+        foreach ($draft['sections'] as $index => $section) {
+            $referenceSection = [...(array) $section, 'text'=>(string) ($section['body'] ?? '')];
+            foreach (article_draft_assert_references($referenceSection, $knownClaims, $knownSources, "$.sections[{$index}]") as $sourceId) $usedSources[$sourceId] = true;
+            article_draft_assert_not_copied((string) ($section['body'] ?? ''), $knownSources, "$.sections[{$index}].body");
+        }
+    } else {
     foreach (['lead', 'why_important', 'comparison_context', 'practical_takeaway'] as $field) {
         $allowEmpty = $field === 'comparison_context';
         foreach (article_draft_assert_references(
@@ -1208,6 +1675,7 @@ function validate_article_draft_output(array $operation, array $draft): array
             $usedSources[$sourceId] = true;
         }
     }
+    }
     $declaredSources = array_values(array_unique((array) ($draft['used_source_ids'] ?? [])));
     sort($declaredSources);
     $actualSources = array_keys($usedSources);
@@ -1220,19 +1688,23 @@ function validate_article_draft_output(array $operation, array $draft): array
     // attribution, language, length and composition invariant has passed.
     $titleValidation = validate_article_title_strategy($draft, $knownClaims);
 
+    $visualTargetState = editorial_v2_visual_target_state($contentLength, $visualSlotCount);
     return [
         'valid' => true,
         'composition_mode' => $mode,
         'claim_reference_count' => count($knownClaims),
         'used_source_count' => count($usedSources),
-        'key_fact_count' => count((array) $draft['key_facts']),
-        'unknown_count' => count((array) $draft['unknowns']),
+        'key_fact_count' => count((array) ($draft['key_facts'] ?? [])),
+        'unknown_count' => count((array) ($draft['unknowns'] ?? [])),
         'main_content_character_count' => $contentLength,
         'main_content_minimum' => $lengthPolicy['minimum_characters'],
         'main_content_maximum' => $lengthPolicy['maximum_characters'],
         'title_variant_count' => $titleValidation['variant_count'],
         'selected_title_score' => $titleValidation['selected_score'],
         'supported_title_tokens' => $titleValidation['supported_title_tokens'],
+        'narrative_plan_contract' => $narrativePlanEvidence,
+        ...$visualTargetState,
+        'warnings' => $seoWarning === null ? [] : [$seoWarning],
     ];
 }
 
@@ -1356,6 +1828,23 @@ function article_draft_content_blocks(array $draft, array $imageIdsBySection = [
         }
     };
 
+    if (isset($draft['sections']) && is_array($draft['sections'])) {
+        foreach ($draft['sections'] as $section) {
+            $id = trim((string) ($section['section_id'] ?? ''));
+            $body = trim(strip_tags((string) ($section['body'] ?? '')));
+            if ($id === '' || $body === '') continue;
+            $contentType = (string) ($section['content_type'] ?? 'prose');
+            $sectionBlock = $makeSection($id, $body, 'v2-' . $contentType);
+            $sectionBlock['topic_role'] = (string) ($section['topic_role'] ?? 'A');
+            $sectionBlock['content_type'] = $contentType;
+            $heading = trim((string) ($section['heading'] ?? ''));
+            if ($heading !== '') array_unshift($sectionBlock['blocks'], ['type'=>'heading','level'=>2,'text'=>$heading]);
+            $blocks[] = $sectionBlock;
+        }
+        validate_article_blocks($blocks);
+        return $blocks;
+    }
+
     $appendTextSection('lead', $draft['lead']['text'] ?? '', 'lead');
     $appendTextSection(
         'why-important',
@@ -1425,8 +1914,8 @@ function promote_article_draft_to_post(int $draftVersionId): int
     );
     $statement->execute([':id' => $draftVersionId]);
     $draftRecord = $statement->fetch();
-    if (!is_array($draftRecord) || (string) $draftRecord['status'] !== 'completed') {
-        throw new RuntimeException('Do edytora można przenieść wyłącznie ukończony szkic.');
+    if (!is_array($draftRecord) || !in_array((string) $draftRecord['status'], ['completed', 'frozen'], true)) {
+        throw new RuntimeException('Do edytora można przenieść wyłącznie ukończony lub zatwierdzony przez QC szkic.');
     }
 
     $postId = (int) $draftRecord['post_id'];
@@ -1507,7 +1996,7 @@ function promote_article_draft_to_post(int $draftVersionId): int
     )->execute([
         ':id' => $postId,
         ':content_blocks' => generation_json($blocks),
-        ':seo_description' => mb_substr(trim((string) ($draft['seo_description'] ?? '')), 0, 160),
+        ':seo_description' => mb_substr(trim((string) ($draft['seo_description'] ?? '')), 0, 200),
         ':image_alt' => mb_substr(trim((string) ($draft['image_alt'] ?? '')), 0, 250),
         ':ai_components' => generation_json(['research', 'text', 'seo']),
         ':ai_disclosure' => 'Research, kompozycję tekstu i plan ilustracji wspomogło Gemini; publikacja wymaga kontroli redakcyjnej.',
@@ -1578,14 +2067,34 @@ function article_draft_mock_generation_value(array $operation): array
         'narrative' => $narrative,
     ];
     $draft = [...$draft, ...build_article_title_strategy_fixture((string) $draft['title'])];
+    $hasPlannedSections = array_key_exists('sections_json', (array) ($input['narrative_plan'] ?? []))
+        || isset($input['editorial_plan']['sections']);
+    $plannedSections = $hasPlannedSections ? article_draft_narrative_sections($operation) : [];
+    if ($plannedSections !== []) {
+        $draft['sections'] = array_map(static function (array $planned, int $plannedIndex) use ($claimId, $sourceId, $mockTitle): array {
+            $sectionId = (string) $planned['section_id'];
+            $opening = $plannedIndex === 0 ? ' Tematem tej części jest ' . $mockTitle . '.' : '';
+            return [
+                'section_id'=>$sectionId, 'topic_role'=>(string) $planned['topic_role'],
+                'content_type'=>(string) $planned['content_type'], 'heading'=>(string) ($planned['heading'] ?? ''),
+                'body'=>'Kontrolowana sekcja dynamiczna ' . $sectionId . ' opisuje zatwierdzone twierdzenie, które jest ważne dla tej części artykułu, oraz jego ograniczenia interpretacyjne.' . $opening,
+                'visual_slot_id'=>'', 'claim_ids'=>[$claimId], 'source_ids'=>[$sourceId],
+            ];
+        }, $plannedSections, array_keys($plannedSections));
+        foreach (['lead','why_important','key_facts','comparison_context','unknowns','practical_takeaway','narrative'] as $legacyField) unset($draft[$legacyField]);
+    }
     if (($input['qc_auto_repair']['strategy'] ?? '') === 'fresh_conservative_rewrite') {
-        $draft['practical_takeaway']['text'] .= ' Jest to ostrożny opis dla czytelnika, który nie wykracza poza najlepiej potwierdzone dane oraz zachowuje ich ograniczenia.';
+        if ($plannedSections !== []) $draft['sections'][array_key_last($draft['sections'])]['body'] .= ' Jest to ostrożny opis, który nie wykracza poza potwierdzone dane.';
+        else $draft['practical_takeaway']['text'] .= ' Jest to ostrożny opis dla czytelnika, który nie wykracza poza najlepiej potwierdzone dane oraz zachowuje ich ograniczenia.';
     }
     $policy = article_draft_length_policy($mode);
     $index = 1;
     while (article_draft_main_content_length($draft) < $policy['minimum_characters']) {
-        $draft['practical_takeaway']['text'] .= ' Techniczny kontekst ' . $index
-            . ' opisuje zakres danych, ich znaczenie, ograniczenia interpretacji oraz sposób zachowania przypisań do zatwierdzonego twierdzenia.';
+        $addition = ' Techniczny kontekst ' . $index . ' opisuje zakres danych, który jest ważny dla interpretacji, oraz wyjaśnia, czego nie można pominąć przy zachowaniu przypisań do zatwierdzonego twierdzenia.';
+        if ($plannedSections !== []) {
+            $sectionIndex = ($index - 1) % count($draft['sections']);
+            $draft['sections'][$sectionIndex]['body'] .= $addition;
+        } else $draft['practical_takeaway']['text'] .= $addition;
         $index++;
     }
     $makeImage = static fn (string $role, string $sectionId, string $layout, string $intent): array => [
@@ -1625,6 +2134,9 @@ function article_draft_mock_generation_value(array $operation): array
             ['full', 'left', 'right', 'breakout'][$imageIndex % 4],
             'Konkretna ilustracja treści sekcji ' . (string) $articleSection['id']
         );
+    }
+    if (is_array($input['narrative_plan'] ?? null)) {
+        $draft['illustration_plan'] = (array) (narrative_plan_draft_illustration_contract($input['narrative_plan'])['illustration_plan'] ?? []);
     }
 
     return $draft;

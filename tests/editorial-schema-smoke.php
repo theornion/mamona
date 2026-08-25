@@ -46,11 +46,11 @@ assert_same('2026-07-02 11:00:00', $rows[0]['content_updated_at'], 'Data aktuali
 assert_same('draft', $rows[1]['status'], 'Szkic otrzymał zły status.');
 assert_same(null, $rows[1]['published_at'], 'Szkic otrzymał datę publikacji.');
 assert_same($rows[0]['author_id'], $rows[1]['author_id'], 'Wpisy nie otrzymały domyślnego autora.');
-assert_same(25, (int) $database->query('SELECT COUNT(migration_key) FROM schema_migrations')->fetchColumn(), 'Migracje uruchomiły się więcej niż raz.');
+assert_same(48, (int) $database->query('SELECT COUNT(migration_key) FROM schema_migrations')->fetchColumn(), 'Migracje uruchomiły się więcej niż raz.');
 assert_same('healthy', (string) $database->query('SELECT health_status FROM technical_sources LIMIT 1')->fetchColumn(), 'Źródła nie otrzymały początkowego stanu zdrowia.');
 assert_same('[]', $rows[0]['content_blocks'], 'Kontrolowane bloki nie mają bezpiecznej wartości domyślnej.');
 assert_same('[]', $rows[0]['ai_components'], 'Nowe pole komponentów AI ma nieprawidłową wartość domyślną.');
-assert_same(21, (int) $database->query('SELECT COUNT(id) FROM technical_sources')->fetchColumn(), 'Nie dodano źródeł obu profili.');
+assert_same(22, (int) $database->query('SELECT COUNT(id) FROM technical_sources')->fetchColumn(), 'Nie dodano źródeł obu profili.');
 assert_same(15, (int) $database->query('SELECT COUNT(id) FROM technical_sources WHERE profile_key = "popular_science" AND is_active = 1')->fetchColumn(), 'Nie aktywowano źródeł popularnonaukowych.');
 assert_same(0, (int) $database->query('SELECT COUNT(id) FROM technical_sources WHERE profile_key = "developer" AND is_active = 1')->fetchColumn(), 'Źródła deweloperskie pozostały aktywne.');
 assert_same(8, (int) $database->query('SELECT COUNT(slug) FROM editorial_profile_categories WHERE is_active = 1')->fetchColumn(), 'Nie dodano kategorii profilu popularnonaukowego.');

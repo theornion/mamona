@@ -29,6 +29,7 @@ function generation_error_classification(Throwable $exception, ?int $httpStatus 
         || ($httpStatus !== null && $httpStatus >= 500 && $httpStatus <= 599)
         || str_contains($message, 'timeout') || str_contains($message, 'timed out')
         || str_contains($message, 'network') || str_contains($message, 'worker')
+        || str_contains($message, 'failed to connect') || str_contains($message, "couldn't connect")
         || str_contains($message, '429') || str_contains($message, 'rate limit')
         || preg_match('/http\s+5\d\d/', $message) === 1;
     return ['class' => $retryable ? 'retryable_transport' : 'non_retryable', 'retryable' => $retryable];
@@ -331,7 +332,7 @@ function prepare_generation_operation(
         'v' => 1, 'type' => $operationType, 'input' => $inputJson, 'schema' => $schemaJson,
         'mode' => $mode, 'provider' => $provider, 'model' => $model,
     ]));
-    $operationKey = in_array($operationType, ['field_text_repair'], true)
+    $operationKey = in_array($operationType, ['field_text_repair', 'image_recovery', 'image_recovery_replan', 'additive_module', 'final_visual_plan'], true)
         ? $stableOperationKey : bin2hex(random_bytes(16));
     $statement = bueno_database()->prepare(
         'INSERT INTO generation_operations (
@@ -511,7 +512,25 @@ function complete_generation_operation(
         return json_decode((string) $operation['output_json'], true, 128, JSON_THROW_ON_ERROR);
     }
     $output = decode_generation_response($rawResponse);
+    $seoNormalization = null;
+    if ($operation['operation_type'] === 'research_package') {
+        research_normalize_source_map($output);
+    }
+    if ($operation['operation_type'] === 'article_draft') {
+        article_draft_normalize_narrative_sections($operation, $output);
+        $seoNormalization = article_draft_normalize_seo_description($output);
+    }
     $schema = json_decode((string) $operation['output_schema_json'], true, 128, JSON_THROW_ON_ERROR);
+    if ($operation['operation_type'] === 'research_package') {
+        $researchInput = json_decode((string) ($operation['input_json'] ?? '{}'), true) ?: [];
+        $schema = research_package_schema(array_values(array_filter(array_map(
+            static fn (array $source): string => (string) ($source['source_id'] ?? ''),
+            (array) ($researchInput['numbered_sources'] ?? [])
+        ))));
+    }
+    if ($operation['operation_type'] === 'article_draft') {
+        article_draft_apply_seo_description_schema($schema);
+    }
     validate_generation_value($output, $schema);
 
     $specialValidation = null;
@@ -521,6 +540,20 @@ function complete_generation_operation(
         $specialValidation = validate_article_draft_output($operation, $output);
     } elseif ($operation['operation_type'] === 'quality_check') {
         $specialValidation = validate_quality_check_output($operation, $output);
+    } elseif ($operation['operation_type'] === 'image_recovery_replan') {
+        if (!function_exists('article_image_validate_recovery_replan')) {
+            throw new LogicException('Recovery replan validator is unavailable.');
+        }
+        $replanInput = json_decode((string) ($operation['input_json'] ?? '{}'), true) ?: [];
+        $specialValidation = article_image_validate_recovery_replan($replanInput, $output);
+    } elseif ($operation['operation_type'] === 'final_visual_plan') {
+        $finalPlanInput = json_decode((string) ($operation['input_json'] ?? '{}'), true) ?: [];
+        $specialValidation = article_final_visual_plan_validate($finalPlanInput, $output);
+    }
+    if ($operation['operation_type'] === 'article_draft' && is_array($specialValidation) && $seoNormalization !== null) {
+        $specialValidation['warnings'] = array_values(array_unique([
+            ...(array) ($specialValidation['warnings'] ?? []), $seoNormalization,
+        ], SORT_REGULAR));
     }
 
     $database = bueno_database();
@@ -946,6 +979,21 @@ function gemini_curl_transport(array $payload, string $apiKey, string $operation
     ];
 }
 
+/** Gemini responseJsonSchema rejects selected JSON-Schema validation constraints
+ * although local validation supports them. Keep the persisted contract strict
+ * and send only the provider-supported subset. */
+function gemini_response_schema(array $schema): array
+{
+    foreach (['minLength', 'maxLength', 'minItems', 'maxItems', 'minimum', 'maximum'] as $unsupported) {
+        unset($schema[$unsupported]);
+    }
+    foreach ((array) ($schema['properties'] ?? []) as $name => $child) {
+        if (is_array($child)) $schema['properties'][$name] = gemini_response_schema($child);
+    }
+    if (is_array($schema['items'] ?? null)) $schema['items'] = gemini_response_schema($schema['items']);
+    return $schema;
+}
+
 function gemini_error_details(array $response): array
 {
     $decoded = json_decode((string) ($response['body'] ?? ''), true);
@@ -1021,6 +1069,9 @@ function execute_openai_generation_operation(
             'research_package' => research_mock_generation_value($operation),
             'article_draft' => article_draft_mock_generation_value($operation),
             'quality_check' => quality_check_mock_generation_value(),
+            'final_visual_plan' => article_final_visual_plan_mock_generation_value($operation),
+            'image_recovery_replan' => article_image_recovery_replan_mock_generation_value($operation),
+            'final_multimodal_qc' => final_multimodal_qc_mock_generation_value(),
             default => generation_mock_value($schema),
         };
         $mockOutput = generation_json($mockValue);
@@ -1121,10 +1172,13 @@ function execute_generation_operation(
         return json_decode((string) $operation['output_json'], true, 128, JSON_THROW_ON_ERROR);
     }
 
+    // Deterministic transport guards run before recovery ownership. A missing
+    // key or a blocked live test is a zero-call refusal, not a running worker.
     $schema = json_decode((string) $operation['output_schema_json'], true, 128, JSON_THROW_ON_ERROR);
     $useBuiltInMock = (bool) app_config('gemini_mock') && $transport === null;
     $providedTransport = $transport !== null;
     $isLiveRequest = !$useBuiltInMock && !$providedTransport;
+    $isCountedRequest = !$useBuiltInMock;
     if (!$useBuiltInMock && $transport === null) {
         $apiKey = $apiKey ?? app_environment_value('GEMINI_API_KEY');
         if ($apiKey === null) {
@@ -1137,6 +1191,62 @@ function execute_generation_operation(
         && !(bool) app_config('allow_live_gemini_test')) {
         throw new RuntimeException('Testy nie moga laczyc sie z Gemini bez CMS_ALLOW_LIVE_GEMINI_TEST=1.');
     }
+
+    if (in_array((string) $operation['operation_type'], ['image_recovery', 'image_recovery_replan', 'additive_module'], true)) {
+        if (!function_exists('article_recovery_validate_generation_operation')) {
+            throw new LogicException('Recovery pretransport validator is unavailable.');
+        }
+        try {
+            article_recovery_validate_generation_operation($operation);
+        } catch (Throwable $exception) {
+            bueno_database()->prepare(
+                'UPDATE generation_operations SET status="failed",error_message=:error,next_retry_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=:id AND status="prepared"'
+            )->execute([':error'=>mb_substr($exception->getMessage(), 0, 2000), ':id'=>$operationId]);
+            throw $exception;
+        }
+        $recoveryDb = bueno_database();
+        $started = false;
+        try {
+            if (!$recoveryDb->inTransaction()) { $recoveryDb->exec('BEGIN IMMEDIATE'); $started = true; }
+            $freshStatement = $recoveryDb->prepare('SELECT * FROM generation_operations WHERE id=:id');
+            $freshStatement->execute([':id'=>$operationId]);
+            $freshOperation = $freshStatement->fetch();
+            $freshStatement->closeCursor();
+            if (!is_array($freshOperation)) {
+                throw new ArticleRecoveryPreflightException('recovery_preflight_failed', 'Recovery operation disappeared before ownership claim.');
+            }
+            // Revalidate the operation snapshot while the SQLite write lock is
+            // held, immediately before the other-owner check and status CAS.
+            article_recovery_validate_generation_operation($freshOperation);
+            $other = $recoveryDb->prepare(
+                'SELECT id FROM generation_operations WHERE post_id=:post AND operation_type IN ("image_recovery","image_recovery_replan","additive_module") AND status="running" AND id<>:id LIMIT 1'
+            );
+            $other->execute([':post'=>(int) $operation['post_id'], ':id'=>$operationId]);
+            $otherRunning = $other->fetchColumn() !== false;
+            $other->closeCursor();
+            if ($otherRunning) {
+                throw new ArticleRecoveryPreflightException('recovery_preflight_failed', 'Another recovery operation already owns this article.');
+            }
+            $claimRunning = $recoveryDb->prepare(
+                'UPDATE generation_operations SET status="running",updated_at=CURRENT_TIMESTAMP WHERE id=:id AND status="prepared"'
+            );
+            $claimRunning->execute([':id'=>$operationId]);
+            if ($claimRunning->rowCount() !== 1) {
+                throw new ArticleRecoveryPreflightException('recovery_preflight_failed', 'Recovery operation is already claimed or terminal.');
+            }
+            if ($started) $recoveryDb->exec('COMMIT');
+            $operation = $freshOperation;
+        } catch (Throwable $exception) {
+            if ($started) {
+                try { $recoveryDb->exec('ROLLBACK'); } catch (Throwable) {}
+            }
+            $recoveryDb->prepare(
+                'UPDATE generation_operations SET status="failed",error_message=:error,next_retry_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=:id AND status="prepared"'
+            )->execute([':error'=>mb_substr($exception->getMessage(), 0, 2000), ':id'=>$operationId]);
+            throw $exception;
+        }
+        $operation['status'] = 'running';
+    }
     $payload = [
         'contents' => [[
             'role' => 'user',
@@ -1144,15 +1254,19 @@ function execute_generation_operation(
         ]],
         'generationConfig' => [
             'responseMimeType' => 'application/json',
-            'responseJsonSchema' => $schema,
+            'responseJsonSchema' => gemini_response_schema($schema),
             'temperature' => 0.2,
         ],
     ];
     if ($useBuiltInMock) {
         $mockValue = match ($operation['operation_type']) {
             'research_package' => research_mock_generation_value($operation),
+            'narrative_plan' => narrative_plan_mock_generation_value($operation),
             'article_draft' => article_draft_mock_generation_value($operation),
             'quality_check' => quality_check_mock_generation_value(),
+            'image_recovery_replan' => article_image_recovery_replan_mock_generation_value($operation),
+            'final_visual_plan' => article_final_visual_plan_mock_generation_value($operation),
+            'final_multimodal_qc' => final_multimodal_qc_mock_generation_value(),
             default => generation_mock_value($schema),
         };
         $transport = static fn (): array => [
@@ -1185,10 +1299,11 @@ function execute_generation_operation(
             static fn (int $repairId): array => execute_generation_operation($repairId, $useBuiltInMock ? null : $transport, $apiKey)
         );
     }
-    $maximumAttempts = (int) app_config('gemini_max_attempts');
+    $singleShotRecoveryReplan = (string) ($operation['operation_type'] ?? '') === 'image_recovery_replan';
+    $maximumAttempts = $singleShotRecoveryReplan ? 1 : (int) app_config('gemini_max_attempts');
     $project = gemini_quota_project_identity((string) $apiKey);
     $models = gemini_configured_models((string) $operation['model']);
-    $maximumAttempts += max(0, count($models) - 1);
+    if (!$singleShotRecoveryReplan) $maximumAttempts += max(0, count($models) - 1);
     $modelIndex = 0;
     $activeModel = $models[0] ?? (string) $operation['model'];
     $callReason = gemini_call_reason($operation);
@@ -1204,24 +1319,52 @@ function execute_generation_operation(
                  updated_at = CURRENT_TIMESTAMP WHERE id = :id'
         )->execute([':attempt' => $attempt, ':id' => $operationId]);
         $admission = null;
+        $budgetClaim = [];
         $fingerprint = gemini_call_fingerprint($operation, $activeModel);
         if ($isLiveRequest) {
             $cached = gemini_cached_call(bueno_database(), $project, $activeModel, $fingerprint);
             if (is_array($cached)) {
-                $completedOutput = complete_generation_with_title_repair($operationId, (string) $cached['output_json'], 'api', [
+                $cacheMetadata = [
                     'response_id' => (string) $cached['provider_response_id'],
                     'usage' => [...(json_decode((string) $cached['usage_json'], true) ?: []), 'cache_hit' => true],
-                ], static fn(int $repairId): array => execute_generation_operation($repairId, null, $apiKey));
+                ];
+                $completedOutput = $singleShotRecoveryReplan
+                    ? complete_generation_operation($operationId, (string) $cached['output_json'], 'api', $cacheMetadata)
+                    : complete_generation_with_title_repair($operationId, (string) $cached['output_json'], 'api', $cacheMetadata,
+                        static fn(int $repairId): array => execute_generation_operation($repairId, null, $apiKey));
                 bueno_database()->prepare('UPDATE generation_operations SET model_used=:model,call_reason=:reason,call_fingerprint=:fingerprint WHERE id=:id')->execute([':model'=>$activeModel,':reason'=>$callReason,':fingerprint'=>$fingerprint,':id'=>$operationId]);
                 return $completedOutput;
             }
         }
         try {
+            if ($isCountedRequest && (int) ($operation['post_id'] ?? 0) > 0) {
+                $budgetClaim = gemini_article_budget_claim(
+                    bueno_database(),
+                    (int) $operation['post_id'],
+                    (string) $operation['operation_type'],
+                    (string) ($operation['operation_type'] ?? 'generation'),
+                    $attempt,
+                    'operation-' . $operationId . '-attempt-' . $attempt . '-' . bin2hex(random_bytes(8)),
+                    function_exists('article_recovery_protected_closure_calls')
+                        ? article_recovery_protected_closure_calls((string) $operation['operation_type']) : 0
+                );
+            }
             if ($isLiveRequest) {
                 $admission = gemini_quota_acquire(bueno_database(), $project, $activeModel, $operationId, $callReason, $fingerprint, gemini_estimated_tokens($payload));
             }
             $response = $transport($payload, (string) $apiKey, (string) $operation['operation_key'], $activeModel);
-        } catch (GeminiTopicBudgetException $exception) {
+        } catch (GeminiArticleBudgetException|GeminiTopicBudgetException $exception) {
+            // Admission happens after the operation is marked running. A hard
+            // budget rejection never reaches transport, so leave an explicit
+            // terminal audit state rather than an orphaned running operation.
+            bueno_database()->prepare(
+                'UPDATE generation_operations
+                 SET status="failed", error_message=:error_message, next_retry_at=NULL,
+                     quota_dimension="", updated_at=CURRENT_TIMESTAMP WHERE id=:id'
+            )->execute([
+                ':error_message' => mb_substr($exception->getMessage(), 0, 2000),
+                ':id' => $operationId,
+            ]);
             throw $exception;
         } catch (GeminiQuotaWaitException $exception) {
             $quotaException = $exception;
@@ -1230,6 +1373,16 @@ function execute_generation_operation(
             $response = ['status' => 0, 'body' => '', 'headers' => [], 'network_error' => $exception->getMessage()];
         }
         $status = (int) ($response['status'] ?? 0);
+        if ($isCountedRequest && (int) ($operation['post_id'] ?? 0) > 0 && $budgetClaim !== []) {
+            gemini_article_budget_reconcile_claim(
+                bueno_database(),
+                (int) $operation['post_id'],
+                (string) ($budgetClaim['claim_token'] ?? ''),
+                $status > 0 && !($quotaException instanceof GeminiQuotaWaitException)
+                    ? ($status >= 200 && $status < 300 ? 'completed' : 'failed')
+                    : 'released'
+            );
+        }
         if (is_array($admission)) {
             $probe = json_decode((string) ($response['body'] ?? ''), true) ?: [];
             gemini_quota_release(bueno_database(), $project, $activeModel, $admission, $status >= 200 && $status < 300 ? 'completed' : 'failed', (int) ($probe['usageMetadata']['totalTokenCount'] ?? 0));
@@ -1249,10 +1402,14 @@ function execute_generation_operation(
                 }
                 $providerOutput = gemini_extract_output($decoded);
 
-                $completedOutput = complete_generation_with_title_repair($operationId, (string) $providerOutput['text'], 'api', [
+                $completionMetadata = [
                     'response_id' => (string) $providerOutput['response_id'],
                     'usage' => (array) $providerOutput['usage'],
-                ], static fn(int $repairId): array => execute_generation_operation($repairId, $useBuiltInMock ? null : $transport, $apiKey));
+                ];
+                $completedOutput = $singleShotRecoveryReplan
+                    ? complete_generation_operation($operationId, (string) $providerOutput['text'], 'api', $completionMetadata)
+                    : complete_generation_with_title_repair($operationId, (string) $providerOutput['text'], 'api', $completionMetadata,
+                        static fn(int $repairId): array => execute_generation_operation($repairId, $useBuiltInMock ? null : $transport, $apiKey));
                 bueno_database()->prepare('UPDATE generation_operations SET model_used=:model,call_reason=:reason,call_fingerprint=:fingerprint,live_request_count=live_request_count+:live WHERE id=:id')->execute([':model'=>$activeModel,':reason'=>$callReason,':fingerprint'=>$fingerprint,':live'=>$isLiveRequest ? 1 : 0,':id'=>$operationId]);
                 if ($isLiveRequest) {
                     gemini_store_cached_call(bueno_database(), $project, $activeModel, $fingerprint, (string) $providerOutput['text'], (string) $providerOutput['response_id'], (array) $providerOutput['usage']);

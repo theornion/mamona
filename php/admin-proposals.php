@@ -154,10 +154,20 @@ $post = $selected ? find_post((int) $selected['post_id'], true) : null;
 $draftData = $selected ? proposal_json_decode((string) $selected['draft_json']) : [];
 $versions = $post ? list_proposal_versions((int) $post['id']) : [];
 $displayVersions = array_values(array_filter($versions, static function (array $version): bool {
-    if ((string) $version['status'] !== 'completed') return false;
+    if (!in_array((string) $version['status'], ['completed', 'frozen'], true)) return false;
     return article_draft_main_content_length(proposal_json_decode((string) ($version['draft_json'] ?? ''))) > 0;
 }));
 $images = $post ? list_article_images((int) $post['id']) : [];
+$proposalLayoutAudit = [];
+$proposalPreviewHtml = $selected && $post
+    ? render_article_blocks_with_layout(
+        article_draft_content_blocks($draftData),
+        $images,
+        article_layout_plan_for_post((int) $post['id'], $proposalLayoutAudit),
+        article_related_context_blocks_for_post((int) $post['id']),
+        $proposalLayoutAudit
+    )
+    : '';
 $feedback = $post ? list_proposal_feedback((int) $post['id']) : [];
 $audit = $post ? list_proposal_audit((int) $post['id']) : [];
 $package = $selected ? find_research_package((int) $selected['research_package_id']) : null;
@@ -172,7 +182,7 @@ $automationReport = $selected ? repair_report_for_draft((int) $selected['id']) :
 $compareId = filter_input(INPUT_GET, 'compare', FILTER_VALIDATE_INT) ?: 0;
 $completedComparisons = array_values(array_filter(
     $displayVersions,
-    static fn(array $version): bool => (string) $version['status'] === 'completed' && (int) $version['id'] !== $draftId
+    static fn(array $version): bool => in_array((string) $version['status'], ['completed', 'frozen'], true) && (int) $version['id'] !== $draftId
 ));
 $compare = $compareId > 0 ? find_proposal_draft($compareId) : ($completedComparisons[0] ?? null);
 $diff = $selected && is_array($compare) ? proposal_diff($compare, $selected) : null;
@@ -243,7 +253,7 @@ admin_page_open($proposalPageTitle, $proposalQueue === 'action' ? 'action-requir
             </section>
 
             <section class="proposal-preview"><div class="proposal-section-heading"><div><p class="proposal-kicker">Wybrany niepubliczny szkic</p><h2>Pełny artykuł</h2></div><a href="admin-post-preview.php?post=<?php echo (int) $post['id']; ?>&amp;draft=<?php echo (int) $selected['id']; ?>" target="_blank" rel="noopener">Otwórz aktywną wersję osobno</a></div>
-                <article class="proposal-draft-content"><h1><?php echo escape_html((string) ($draftData['title'] ?? '')); ?></h1><?php foreach (['lead', 'why_important', 'key_facts', 'comparison_context', 'unknowns', 'practical_takeaway'] as $field): $parts = isset($draftData[$field][0]) ? $draftData[$field] : [$draftData[$field] ?? []]; foreach ($parts as $part): $text = is_array($part) ? (string) ($part['text'] ?? '') : (string) $part; if ($text !== ''): ?><p><?php echo nl2br(escape_html($text)); ?></p><?php endif; endforeach; endforeach; ?></article>
+                <article class="proposal-draft-content"><h1><?php echo escape_html((string) ($draftData['title'] ?? '')); ?></h1><?php echo $proposalPreviewHtml; ?></article>
             </section>
 
             <section class="proposal-images"><h2>Obrazy i licencje</h2><div class="proposal-image-grid">

@@ -582,17 +582,20 @@ function persist_discovered_feed_item(array $source, array $item): ?int
 function persist_discovered_feed_item_with_retry(array $source, array $item, ?callable $persister = null): ?int
 {
     $persister ??= 'persist_discovered_feed_item';
-    for ($attempt = 1; $attempt <= 3; $attempt++) {
-        try {
-            return $persister($source, $item);
-        } catch (PDOException $exception) {
-            $message = strtolower($exception->getMessage());
-            $locked = str_contains($message, 'database is locked') || str_contains($message, 'database is busy');
-            if (!$locked || $attempt >= 3) throw $exception;
-            usleep($attempt * 100000);
+        $delays = [200, 300, 450, 675]; // Delays between attempts in milliseconds
+        for ($attempt = 1; $attempt <= 5; $attempt++) {
+            try {
+                return $persister($source, $item);
+            } catch (PDOException $exception) {
+                $message = strtolower($exception->getMessage());
+                $locked = str_contains($message, 'database is locked') || str_contains($message, 'database is busy');
+                if (!$locked || $attempt >= 5) {
+                    throw $exception;
+                }
+                usleep($delays[$attempt - 1] * 1000); // Apply the specific delay
+            }
         }
-    }
-    throw new RuntimeException('Nie udało się zapisać wpisu RSS.');
+        throw new RuntimeException('Nie udało się zapisać wpisu RSS.');
 }
 
 function run_feed_ingestion(?callable $fetcher = null, ?callable $progress = null): array

@@ -6,8 +6,11 @@
     }
 
     const isCustomGallery = Boolean(gallery.dataset.gallerySource);
+    if (!isCustomGallery) {
+        return;
+    }
     const isEmbeddedPreview = gallery.dataset.galleryEmbedded === 'true';
-    const source = gallery.dataset.gallerySource || gallery.dataset.catsSource || 'cats.php';
+    const source = gallery.dataset.gallerySource;
     const sectionTitle = gallery.dataset.galleryTitle || 'Nasze koty';
     const sectionKey = sectionTitle.toLowerCase().replace(/[^a-z0-9ąćęłńóśźż]+/gi, '-').replace(/^-|-$/g, '');
     const cropLayouts = [];

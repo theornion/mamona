@@ -9,13 +9,7 @@ permission:
   read: allow
   glob: allow
   grep: allow
-  edit:
-    "*": ask
-    ".kilo/results/**": allow
-  write:
-    "*": ask
-    ".kilo/results/**": allow
-  apply_patch: ask
+  edit: allow
   bash: ask
   task: deny
   doom_loop: deny
@@ -36,7 +30,7 @@ ATOM:
 - nowy komponent >200 linii traktuj jako osobny atom.
 
 ZAPIS:
-- Masz natywne edit/write/apply_patch.
+- Masz włączoną rodzinę narzędzi modyfikacji plików przez `permission.edit: allow`; używaj natywnego edit/write/apply_patch, jeśli dany tool jest wystawiony przez Kilo.
 - Do kodu używaj natywnych file tools.
 - NIE twórz ani nie modyfikuj plików kodu przez bash/PowerShell/php/echo/redirection.
 - Bash służy do git/testów/diagnostyki.

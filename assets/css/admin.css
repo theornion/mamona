@@ -345,3 +345,22 @@ body.admin-page-topics :is(button,input,select,a,summary):focus-visible{outline:
 }
 .automatic-dispatch-toggle{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;margin:1rem 0;padding:.8rem 1rem;border:1px solid rgba(255,255,255,.18);border-radius:.65rem;background:rgba(17,31,42,.72)}
 .automatic-dispatch-toggle span{color:#aebbc5;flex:1 1 20rem}.automatic-dispatch-toggle button{min-height:42px}.automatic-dispatch-toggle .dispatcher-pause{border-color:#e7b45a;color:#ffe2a8}.automatic-dispatch-toggle .dispatcher-play{border-color:#6df0c1;color:#cffff0}
+
+/* Proposal preview uses the same readable text rhythm as the public renderer. */
+body.admin-page .proposal-draft-content .article-layout__section .article-section p {
+    line-height: 1.72;
+    margin: 0;
+}
+body.admin-page .proposal-draft-content .article-layout__section .article-section p + p {
+    margin-top: 1.2rem;
+}
+body.admin-page .proposal-draft-content .article-layout__section .article-section strong {
+    color: #f2fff9;
+    font-weight: 800;
+}
+body.admin-page .proposal-draft-content .article-layout__section .article-section ul {
+    display: grid;
+    gap: .65rem;
+    margin: 1.15rem 0;
+    padding-left: 1.35rem;
+}

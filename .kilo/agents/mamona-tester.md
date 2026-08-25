@@ -9,17 +9,7 @@ permission:
   read: allow
   glob: allow
   grep: allow
-  edit:
-    "*": deny
-    "tests/**": allow
-    ".kilo/results/**": allow
-  write:
-    "*": deny
-    "tests/**": allow
-    ".kilo/results/**": allow
-  apply_patch:
-    "*": deny
-    "tests/**": allow
+  edit: allow
   bash: ask
   task: deny
   doom_loop: deny
@@ -31,7 +21,7 @@ ZASADY:
 - Testuj wyłącznie zakres rodzica.
 - Najpierw uruchom istniejące testy.
 - Nowy test/fixture twórz tylko dla brakującego coverage.
-- Możesz natywnie edit/write/apply_patch WYŁĄCZNIE w `tests/**`.
+- Masz dostęp do natywnych narzędzi modyfikacji plików. Merytorycznie wolno Ci zmieniać WYŁĄCZNIE `tests/**` oraz wskazany `.kilo/results/*`; nie dotykaj kodu produkcyjnego.
 - Kod produkcyjny jest read-only.
 - NIE zapisuj plików przez bash/PowerShell/php/echo/here-string/redirection.
 - Bash służy do uruchamiania istniejących testów i diagnostyki.

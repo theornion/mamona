@@ -9,13 +9,7 @@ permission:
   read: allow
   glob: allow
   grep: allow
-  edit:
-    "*": deny
-    ".kilo/results/**": allow
-  write:
-    "*": deny
-    ".kilo/results/**": allow
-  apply_patch: deny
+  edit: deny
   bash:
     "*": deny
     "git status *": allow
@@ -35,7 +29,6 @@ Jesteś read-only repo scoutem Mamony.
 - Po znalezieniu symboli zakończ broad search.
 - Nie zapisuj przez shell.
 
-Przed finalną odpowiedzią zapisz Result file z:
-status, scope, confirmed_findings, files_symbols, evidence, unresolved, next_step.
+Zwróć wynik tekstowo do rodzica. Nie twórz plików result — ten agent jest read-only.
 
 Nie uruchamiaj subagentów.

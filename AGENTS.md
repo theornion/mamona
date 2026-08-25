@@ -1,208 +1,698 @@
 # AGENTS.md — Mamona
+## V4.6.3 TRI-TIER PARALLEL — TOOL-FIRST / NO-NARRATION
 
 ## 1. Cel
 
-Mamona jest produkcyjnym systemem CMS i automatyzacji redakcyjnej w PHP 8.1+ i SQLite. Publiczna strona, panel administratora, research, generowanie tekstów, QC, obrazy, publikacja, RSS, sitemap i wygenerowane strony tworzą jeden audytowalny przepływ.
+Mamona jest produkcyjnym systemem CMS i automatyzacji redakcyjnej zbudowanym w PHP 8.1+ i SQLite. Publiczna strona, panel administratora, research, generowanie tekstów, QC, obrazy, publikacja, RSS, sitemap i wygenerowane strony tworzą jeden audytowalny przepływ.
 
-Preferuj małe, sprawdzalne zmiany. Nie zmieniaj zachowania poza aktywnym zakresem.
+Priorytety:
+
+1. poprawność;
+2. bezpieczeństwo;
+3. realne evidence;
+4. małe, sprawdzalne zmiany;
+5. autonomiczna kontynuacja pracy;
+6. minimalny narzut tokenów i narracji.
+
+Nie zmieniaj zachowania poza aktywnym zakresem.
+
+---
 
 ## 2. Źródła prawdy
 
 Kolejność:
-1. Aktualne polecenie użytkownika.
-2. Aktywny task oraz zaakceptowany checkpoint/handoff.
-3. `docs/CURRENT_WORK.md`.
-4. Aktualny kod, schemat bazy, konfiguracja i testy.
-5. `docs/ARCHITECTURE.md`, `docs/IMAGE_PIPELINE_MAP.md`, `docs/DECISIONS.md`, `docs/CONTEXT_INDEX.md`.
-6. README i dokumentacja operacyjna.
 
-Stare taski, archiwa i wcześniejsze raporty są wskazówkami. Trwałe ustalenie wymaga potwierdzenia w aktualnym kodzie, schemacie, konfiguracji albo teście.
+1. aktualne polecenie użytkownika;
+2. aktywny task/spec oraz zaakceptowany checkpoint;
+3. `docs/CURRENT_WORK.md`;
+4. aktualny working tree: kod, testy, schema i konfiguracja;
+5. najnowsze rzeczywiste wyniki testów, lintów i diffów;
+6. `docs/ARCHITECTURE.md`, `docs/IMAGE_PIPELINE_MAP.md`, `docs/DECISIONS.md`, `docs/CONTEXT_INDEX.md`;
+7. README i dokumentacja operacyjna.
 
-## 3. Protokół startu
+Starsze taski, checkpointy, raporty i wyniki semantic search są wskazówkami, nie nadrzędnym dowodem.
 
-1. Przeczytaj aktywny task, aktualny checkpoint/handoff i właściwą część `docs/CURRENT_WORK.md`.
-2. Sprawdź `git status --short`.
-3. Domyślnie użyj `git diff --stat`, nie pełnego `git diff`.
-4. Nie nadpisuj niezacommitowanych zmian użytkownika.
-5. Nie skanuj całego repo bez konkretnego pytania.
-6. Nie czytaj ponownie tego samego zakresu bez nowej hipotezy.
+Jeżeli dokumentacja jest sprzeczna z nowszym kodem, testem, diffem albo checkpointem, użyj nowszego potwierdzonego stanu i oznacz starszy dokument jako stale.
 
-## 4. Modele i role
+---
 
-### `ollama/qwen3.6:27b`
-Używaj do orkiestracji, architektury, implementacji, trudnych testów, review i root cause.
+## 3. Globalna zasada TOOL-FIRST / NO-NARRATION
 
-Warianty:
-- `balanced` — orkiestracja, implementacja i testy;
-- `deep` — architektura, trudne decyzje i krytyczne review.
+### 3.1. Nie narruj toku pracy
 
-### `ollama/qwen3.5:9b`
-Używaj do:
-- `quick-maintainer`;
-- `checkpoint-writer`;
-- krótkich handoffów;
-- prostych, niekrytycznych operacji mechanicznych.
+Nie wypisuj wewnętrznego monologu ani oczywistych kroków rozumowania.
 
-Dla mechaniki używaj wariantu `no-think`.
+Zabronione przykłady:
 
-### `ollama/qwen3.5-no-think`
-Dedykowany alias do automatycznego Context Condensing Kilo.
+- `Let's see...`
+- `I need to...`
+- `The user requested...`
+- `I should check...`
+- `Another thing to consider...`
+- powtarzanie treści zadania;
+- opisywanie oczywistej składni shell;
+- wyjaśnianie przed tool callem, że za chwilę zostanie wykonany tool call;
+- wielokrotne streszczanie tego samego błędu.
 
-## 5. Role
+Jeżeli następna akcja jest jednoznaczna:
 
-- `mamona-orchestrator` — delegacja, checkpointy, kontrola kolejności i kontekstu.
-- `repo-scout` — read-only rozpoznanie.
-- `mamona-architect` — kontrakty, root cause, migracje i plan.
-- `mamona-coder` — małe atomy implementacji.
-- `mamona-tester` — testy, regresje i diagnostyka.
-- `mamona-reviewer` — niezależne review.
-- `quick-maintainer` — mechaniczny zapis dokumentacji 9B/no-think.
-- `checkpoint-writer` — checkpoint/handoff 9B/no-think.
+```text
+TOOL -> RESULT -> NEXT TOOL
+```
 
-## 6. Atomowe subtaski
+Nie:
 
-Domyślny subtask implementacyjny:
-- 1–2 pliki produkcyjne;
-- jedna logiczna zmiana albo jeden integration point;
-- około 100–150 nowych/zmienionych linii;
-- maksymalnie jeden nowy duży komponent.
+```text
+długi opis planu -> restatement -> reasoning -> tool
+```
 
-Jeżeli nowy komponent przekroczy około 200 linii, oddziel:
-1. schema/kontrakt;
-2. implementację komponentu;
-3. integrację;
-4. test.
+### 3.2. Pierwszą akcją ma być narzędzie
 
-Nie zlecaj jednemu coderowi jednocześnie: migracji + dużego serwisu + integracji + dużych testów + dokumentacji.
+Jeżeli task wymaga odczytu, testu, grep, diffu, edycji albo komendy i nie ma niezbędnej niejasności:
 
-## 7. DIRECT_TARGET_MODE
+**pierwszą czynnością wykonawczą ma być tool call.**
 
-Jeżeli rodzic podał dokładny plik i symbol/funkcję:
-1. nie czytaj całego taska ani całej specyfikacji;
-2. nie wykonuj broad grep/glob;
-3. nie wykonuj `git log`;
-4. przeczytaj wskazany symbol i najwyżej jego bezpośrednie zależności;
-5. cel: maks. 8–12 operacji rozpoznawczych przed pierwszą edycją;
-6. po potwierdzeniu kontraktu przejdź do edycji;
-7. po edycji uruchom najmniejszy wystarczający test.
+Nie pisz planu przed pierwszym oczywistym tool callem.
 
-## 8. Statusy subtasków
+### 3.3. Co wolno raportować tekstowo
 
-- `COMPLETE` — cały atom zakończony i zweryfikowany.
-- `PARTIAL_COMPLETE` — bezpieczna, użyteczna część zapisana, ale pozostał jawny zakres.
-- `BLOCKED` — brak bezpiecznej możliwości kontynuacji.
+Tekst pomiędzy tool callami ogranicz do informacji, które realnie zmieniają dalsze wykonanie:
 
-`PARTIAL_COMPLETE` musi podać:
-- Completed;
-- Remaining;
-- Safe continuation point;
-- Changed files;
-- Tests.
+- `VALID_FINDING`;
+- `INVALID_FINDING`;
+- `BLOCKED`;
+- zmiana DAG;
+- decyzja routingu;
+- safety gate;
+- approval gate;
+- wynik walidacji;
+- krótki root cause;
+- exact evidence potrzebne parentowi.
 
-Brak raportu nie oznacza sukcesu.
+### 3.4. Trivial tool error
 
-## 9. Orchestrator — minimalny rodzic
+Dla oczywistego technicznego błędu, np. składni PowerShell:
 
-Orchestrator:
-- nie implementuje kodu produkcyjnego;
-- nie wykonuje `edit` zamiast codera;
-- po `COMPLETE` nie czyta ponownie całego diffu;
-- po `COMPLETE` przechodzi do wymaganej walidacji/testera;
-- po `PARTIAL_COMPLETE` uruchamia jeden continuation task tylko dla `Remaining`;
-- po pustym wyniku sprawdza wyłącznie `git diff --stat` i diff zmienionych plików;
-- nie wykonuje własnego reverse engineeringu zamiast brakującego raportu;
-- po drugim nieudanym continuation zwraca `BLOCKED`.
+1. odczytaj błąd;
+2. popraw komendę;
+3. retry maksymalnie raz;
+4. kontynuuj.
 
-## 10. Tester
+Nie opisuj szeroko przyczyny, jeśli poprawka jest mechaniczna.
 
-Tester:
-- najpierw uruchamia istniejące testy;
-- nowy test tworzy tylko dla brakującego coverage;
-- preferuje krótki test tabelaryczny;
-- nie buduje nowego mini-frameworka, gdy prostsza fixture wystarczy;
-- nie wykonuje realnych płatnych API ani produkcyjnych mutacji;
-- dla regresji semantycznych pozostaje na `qwen3.6:27b/balanced`.
+Przykład:
 
-## 11. Mechanical finalization
+```text
+`&&` unsupported in current shell
+-> retry with valid separator
+-> continue
+```
 
-`quick-maintainer` i `checkpoint-writer` używają `qwen3.5:9b/no-think`.
+### 3.5. Minimalny output childa
 
-Po udanym `write`/`edit`:
-- nie zapisuj tego samego pliku drugi raz;
-- nie czytaj ponownie pliku bez błędu narzędzia;
-- zwróć wymagany marker sukcesu.
+Subagent nie ma produkować eseju. Wynik powinien zawierać tylko fakty potrzebne coordinatorowi.
 
-Orchestrator po markerze sukcesu nie weryfikuje mechanicznego zapisu przez 27B, chyba że narzędzie zgłosi błąd.
+Domyślnie:
 
+```text
+STATUS:
+EVIDENCE:
+CHANGED_FILES:
+TESTS:
+FIRST_FAILURE:
+REMAINING:
+```
 
-## 11A. Natywny zapis plików i trwały wynik subagenta
+Pola nieistotne można pominąć.
 
-Kilo ma trzy natywne narzędzia modyfikacji plików: `edit`, `write`, `apply_patch`.
+---
 
-Reguła nadrzędna:
-- jeżeli agent ma uprawnienie do ścieżki, używa natywnego file tool;
-- brak file tool NIE jest zgodą na zapis przez bash/PowerShell/php/echo/redirection;
-- shell nie jest mechanizmem tworzenia kodu, testów ani dokumentacji.
+## 4. Protokół startu
 
-Macierz zapisu:
-- `mamona-coder`: kod/testy zgodnie z taskiem + `.kilo/results/**`;
-- `mamona-tester`: tylko `tests/**` + `.kilo/results/**`;
-- `mamona-architect`: tylko `docs/**` + `.kilo/results/**`;
-- `mamona-reviewer`: tylko `.kilo/results/**`;
-- `repo-scout`: tylko `.kilo/results/**`;
-- `quick-maintainer`: Markdown/docs + `.kilo/results/**`;
-- `checkpoint-writer`: Markdown/docs + `.kilo/results/**`;
-- `mamona-orchestrator`: tylko docs + `.kilo/results/**`, nigdy kod produkcyjny.
+Na początku aktywnego zadania:
 
-Każdy reasoning subagent dostaje od rodzica jawny:
-`Result file: .kilo/results/<SUBTASK-ID>.json`
+1. przeczytaj `AGENTS.md`;
+2. przeczytaj właściwą część `docs/CURRENT_WORK.md`;
+3. ustal aktywny task/spec i najnowszy checkpoint;
+4. wykonaj `git status --short`;
+5. wykonaj `git diff --stat`;
+6. `git log --oneline -5` tylko jeśli historia jest potrzebna do aktywnego problemu;
+7. nie cofaj ani nie nadpisuj niezacommitowanych zmian użytkownika;
+8. używaj ścieżek względnych wobec aktualnego worktree;
+9. najpierw grep/glob/index/symbol search, potem celowany read;
+10. nie skanuj całego repo bez konkretnego pytania;
+11. nie czytaj ponownie tego samego zakresu bez nowej hipotezy.
 
-Przed finalną odpowiedzią zapisuje mały, maszynowo czytelny wynik. Dzięki temu pusty/ucięty tekst child session nie zmusza Orchestratora do ponownego reverse engineeringu.
+Semantic search jest nawigacją, nie dowodem.
 
-`.kilo/results/*.json` są plikami runtime i nie trafiają do Git.
+---
 
-## 12. Auto-compaction i kontrola kontekstu
+## 5. Architektura agentów
 
-Kilo automatycznie kondensuje historię przy **65% kontekstu**.
+### `mamona-coordinator`
 
-Konfiguracja:
-- `compaction.auto = true`;
-- `compaction.threshold_percent = 65`;
-- `compaction.prune = true`;
-- `compaction.tail_turns = 2`;
-- `compaction.preserve_recent_tokens = 8000`;
-- `compaction.reserved = 20000`;
-- model summary: `ollama/qwen3.5-no-think`.
+Odpowiada za:
 
-Zasady:
-- NIE rób handoffu do nowego Orchestratora tylko dlatego, że kontekst osiągnął 65%;
-- pozwól Kilo wykonać automatyczny Context Condensing i kontynuuj w tej samej sesji;
-- nie przerywaj aktywnego child tasku z powodu progu kontekstu;
-- po compaction sprawdź tylko, czy zachowane są: aktywna faza, wykonany zakres, blockery i dokładny następny krok;
-- nie odtwarzaj całej starej historii, jeżeli summary zawiera potrzebny stan;
-- formalny handoff do pliku nadal wykonuj na checkpointach między dużymi fazami;
-- awaryjny handoff wykonaj tylko, gdy auto-compaction nie zadziała, summary utraci krytyczny stan albo sesja pozostanie blisko limitu mimo compaction.
+- DAG;
+- routing;
+- delegację;
+- evidence;
+- validation;
+- git inspection;
+- deterministic command fallback;
+- permission self-recovery;
+- phase/checkpoint gates;
+- autonomiczną kontynuację.
 
-Awaryjny handoff:
-- `quick-maintainer` na `qwen3.5:9b/no-think`;
-- około 800–1600 słów;
-- tylko potwierdzony stan;
-- completed, changed files, tests, open issues, exact next step;
-- bez ponownego researchu.
+**ZERO DIRECT WRITES.**
 
-## 13. Równoległość
+Coordinator technicznie może mieć szeroki delegation ceiling, ale kontraktowo:
 
-Przy `OLLAMA_NUM_PARALLEL=1` subagenci działają sekwencyjnie.
+- nie edytuje source;
+- nie edytuje tests;
+- nie edytuje config;
+- nie edytuje docs;
+- nie obchodzi zakazu przez shell, redirection, helper scripts ani generowanie pliku z bash.
 
-## 14. Ochrona przed zapętlaniem
+Każdy fizyczny zapis wykonuje właściwy writer.
 
-- Nie powtarzaj identycznej nieudanej komendy więcej niż raz.
-- Nie czytaj ponownie tego samego zakresu bez nowej hipotezy.
-- Nie uruchamiaj trzeciego pełnego recovery.
-- Przy wzroście zakresu zakończ `PARTIAL_COMPLETE`.
-- Nie zużywaj końca odpowiedzi na reasoning kosztem raportu.
+### `mamona-executor` — FAST / 9B
 
-## 15. Reguły produktu
+Do:
+
+- exact command;
+- PHP lint;
+- targeted test;
+- deterministic CLI;
+- git/read-only evidence.
+
+Nie:
+
+- diagnozuje;
+- projektuje;
+- edytuje;
+- deleguje.
+
+### `mamona-quick-worker` — FAST / 9B
+
+Do:
+
+- małej mechanicznej zmiany;
+- jednego pliku / jednego symbolu;
+- prostego, jednoznacznego fixa;
+- bounded test-fixture update.
+
+Nie używaj do root cause ani architektury.
+
+### `mamona-diagnoser` — MEDIUM / 14B
+
+Do:
+
+- jednego realnego failure cluster;
+- root cause;
+- exact evidence;
+- read-only diagnosis.
+
+Bez implementacji.
+
+### `mamona-architect` — MEDIUM / 14B
+
+Do:
+
+- bounded design;
+- kontraktu;
+- migration/test matrix;
+- rozwiązania architektonicznego.
+
+Read-only.
+
+### `mamona-worker` — MEDIUM / 14B
+
+Do:
+
+- standardowej bounded implementacji;
+- potwierdzonego `VALID_FINDING`;
+- zmian obejmujących więcej niż mechaniczny atom.
+
+### `mamona-reviewer` — MEDIUM / 14B
+
+Do:
+
+- niezależnego read-only review;
+- review actual diff;
+- review test evidence;
+- zgodności z task/spec.
+
+Nie implementuje.
+
+### `mamona-heavy-coder` — HEAVY / 30B
+
+Do:
+
+- tylko rzeczywiście ciężkiej cross-cutting implementacji;
+- dużej zmiany wymagającej większego reasoning budgetu.
+
+Zawsze SOLO.
+
+Nigdy jako fallback dla:
+
+- braku findingu;
+- prostego review;
+- grep;
+- permission error;
+- tool failure;
+- małego fixa.
+
+### `checkpoint-writer` — FAST / 9B
+
+Do:
+
+- `docs/CURRENT_WORK.md`;
+- checkpoint;
+- handoff;
+- zapis gotowych verified facts.
+
+Nie wykonuje nowego researchu, root cause ani decyzji produktowych.
+
+---
+
+## 6. Routing zapisów
+
+Każdy write ma dokładny `WRITE_SET`.
+
+Routing:
+
+```text
+mały mechaniczny fix
+-> mamona-quick-worker
+
+standardowy bounded fix
+-> mamona-worker
+
+ciężki cross-cutting fix
+-> mamona-heavy-coder SOLO
+
+CURRENT_WORK / checkpoint / handoff
+-> checkpoint-writer
+```
+
+Coordinator nigdy nie przejmuje zapisu po niepowodzeniu writera.
+
+---
+
+## 7. Kontrakt executora — minimalny output
+
+Executor ma być możliwie beznarracyjny.
+
+Nie wypisuje planu ani reasoning.
+
+Domyślny wynik:
+
+```text
+COMMAND:
+EXIT_CODE:
+STDOUT:
+STDERR:
+STATUS:
+```
+
+Jeżeli output jest duży, zwróć:
+
+- exact command;
+- exit code;
+- pierwszy realny failure;
+- krótki raw summary;
+- ścieżkę/artefakt do pełnego outputu, jeśli runtime ją zapewnia.
+
+Nie interpretuj szeroko wyniku. Interpretacja należy do coordinatora/diagnosera.
+
+---
+
+## 8. Kontrakt writerów — fizyczny zapis
+
+Writer nie kończy zadania na opisaniu planowanej zmiany.
+
+Musi:
+
+1. świeżo odczytać docelowy fragment;
+2. wykonać edit/write;
+3. potwierdzić fizyczny zapis;
+4. zwrócić exact changed files.
+
+Minimalny wynik:
+
+```text
+STATUS:
+ACTUAL_WRITE_PERFORMED: YES | NO
+CHANGED_FILES:
+```
+
+`COMPLETE` bez fizycznego diffu jest nieważne.
+
+Coordinator po writerze wykonuje:
+
+```text
+git diff -- <changed files>
+```
+
+i dopiero wtedy oznacza atom jako DONE.
+
+---
+
+## 9. Fresh-read rule dla edit / oldString
+
+Nigdy nie używaj starego `oldString` z:
+
+- poprzedniego child outputu;
+- wcześniejszego promptu;
+- starego line number;
+- zapamiętanego fragmentu pliku.
+
+Przed **każdym** edit:
+
+1. fresh read aktualnego fragmentu ze shared workspace;
+2. zlokalizuj dokładny symbol/blok;
+3. użyj dokładnego aktualnego tekstu;
+4. natychmiast wykonaj mały edit;
+5. sprawdź rezultat.
+
+Jeżeli `oldString mismatch`:
+
+- NIE ponawiaj tego samego `oldString`;
+- fresh read ponownie;
+- zmniejsz zakres edycji;
+- spróbuj raz jeszcze.
+
+Maksymalnie dwa fresh-match attempts dla jednego indywidualnego edit.
+
+`oldString mismatch` nie jest permission failure i nie uzasadnia zmiany roli.
+
+---
+
+## 10. Permission self-recovery
+
+Role mają pozostać bez zmian.
+
+Jeżeli runtime blokuje capability, które już należy do kontraktu danej roli, coordinator może naprawić techniczną permission rule.
+
+Dozwolone przykłady:
+
+```text
+executor
+-> bash / PHP CLI / targeted tests
+
+quick-worker
+-> edit / write w jego WRITE_SET
+
+worker
+-> edit / write w jego WRITE_SET
+
+checkpoint-writer
+-> read / edit / write wymaganych docs
+```
+
+Nie dawaj write:
+
+- reviewerowi;
+- diagnoserowi;
+- architectowi.
+
+Po permission fix:
+
+**maksymalnie jeden corrected retry.**
+
+Permission mismatch jest problemem runtime, nie findingiem produktu.
+
+---
+
+## 11. Delegacja childów
+
+Do child delegation używaj wyłącznie kanonicznego `Task` mechanismu Kilo.
+
+Jeden Task = jeden świeży bounded subtask.
+
+Nie używaj:
+
+- ręcznego `session_id`;
+- pseudo-resume childa;
+- serii childów dla tego samego problemu;
+- workerów jako terminal proxy;
+- kolejnego większego modelu tylko dlatego, że poprzedni zwrócił `NO_FINDING`.
+
+Subagent nie uruchamia kolejnych subagentów.
+
+---
+
+## 12. DAG
+
+Coordinator utrzymuje:
+
+```text
+DONE
+READY
+WAITING
+PARKED
+BLOCKED
+WAITING_FOR_APPROVAL
+```
+
+Każdy atom powinien mieć:
+
+- GOAL;
+- dependencies;
+- read scope;
+- `WRITE_SET` albo `NONE`;
+- agenta/tier;
+- validation;
+- STOP condition.
+
+Po każdym child result:
+
+1. zweryfikuj evidence;
+2. zaakceptuj albo odrzuć finding;
+3. sprawdź physical diff, jeśli child był writerem;
+4. zaktualizuj DAG;
+5. uruchom następny READY atom.
+
+**Nie kończ parent turn po zwykłym child result.**
+
+---
+
+## 13. Parallel scheduler
+
+Jeżeli istnieją dwa naprawdę niezależne READY atomy:
+
+```text
+Lane M: maks. 1 × 14B
+Lane F: maks. 1 × 9B
+```
+
+Można uruchomić je równolegle tylko gdy:
+
+- brak zależności;
+- brak write overlap;
+- brak read-after-write dependency;
+- wynik jednego nie jest potrzebny drugiemu.
+
+30B zawsze SOLO.
+
+Nie wymuszaj parallel dla samego parallel.
+
+---
+
+## 14. Evidence-first
+
+Finding jest ważny tylko wtedy, gdy ma konkretne evidence.
+
+Preferuj:
+
+```text
+exact file
+exact symbol
+exact current code
+exact command
+exit code
+actual diff
+actual test output
+```
+
+Nie uznawaj za dowód:
+
+- samego semantic search;
+- starego checkpointu sprzecznego z kodem;
+- abstrakcyjnej opinii reviewera;
+- zmyślonego symbolu;
+- nieistniejącej ścieżki;
+- wniosku sprzecznego z raw test evidence.
+
+Sprzeczny finding:
+
+```text
+INVALID
+```
+
+`NO_FINDING` i `PASS` są poprawnymi rezultatami.
+
+Nie eskaluj modelu tylko dlatego, że nic nie znaleziono.
+
+---
+
+## 15. Fix pipeline
+
+Przed implementacją musi istnieć:
+
+- realny problem lub zaakceptowany target;
+- root cause albo wystarczająco dokładny kontrakt;
+- evidence;
+- bounded `WRITE_SET`;
+- oczekiwana walidacja.
+
+Pipeline:
+
+```text
+EVIDENCE
+-> VALID_FINDING / APPROVED_TARGET
+-> WRITER
+-> PHYSICAL DIFF VERIFY
+-> LINT
+-> TARGETED TEST
+-> RELEVANT REGRESSION
+-> REVIEW, jeśli wymagany
+-> DONE
+```
+
+Nie dopasowuj testu do błędnej implementacji tylko po to, żeby zrobił się zielony.
+
+---
+
+## 16. Deterministic coordinator fallback
+
+Jeżeli `mamona-executor` ma:
+
+- permission failure;
+- tool runtime failure;
+- empty output;
+
+coordinator może wykonać **dokładnie ten sam** deterministyczny command, jeśli technicznie ma capability.
+
+Fallback obejmuje tylko read/test evidence, np.:
+
+- `git status`;
+- `git diff`;
+- `git log`;
+- `git grep`;
+- `git show`;
+- `git rev-parse`;
+- `git ls-files`;
+- PHP `-v`;
+- PHP lint;
+- exact targeted test;
+- bezpieczny dry-run zgodny z aktualnym approval boundary.
+
+**Nigdy write fallback.**
+
+---
+
+## 17. Anti-loop
+
+Nie powtarzaj:
+
+- tego samego broad prompta;
+- identycznej nieudanej komendy bez zmiany warunków;
+- tego samego search scope bez nowej hipotezy;
+- INVALID findingu;
+- stale `oldString`;
+- childa tylko po lepszy format raportu.
+
+Dla tool/runtime failure:
+
+```text
+1 analiza przyczyny
++ 1 corrected retry
+```
+
+potem PARKED/BLOCKED danego atomu.
+
+Po dwóch krokach na tym samym evidence/file-set bez nowej informacji:
+
+```text
+PARKED
+```
+
+Nie parkować całej sesji, jeśli istnieją inne READY atomy.
+
+---
+
+## 18. Autonomia
+
+Nie kończ pracy po:
+
+- jednym PASS;
+- jednym FAIL;
+- jednym `SUBTASK_RESULT`;
+- jednym BLOCKED atomie;
+- jednym `NO_FINDING`;
+- jednym writer failure;
+- pustym READY w pierwszym DAG-u.
+
+Jeżeli aktywny atom jest BLOCKED:
+
+1. zaparkuj go;
+2. zapisz dokładny blocker;
+3. kontynuuj inne READY atomy.
+
+Jeżeli `READY = 0`, wykonaj bounded backlog discovery w aktywnym zakresie:
+
+1. active task / acceptance criteria;
+2. current diff;
+3. test gaps;
+4. blocker decomposition;
+5. runtime agent infrastructure;
+6. contract consistency code vs tests vs docs.
+
+Nie twórz sztucznej pracy tylko po to, żeby wydłużyć sesję.
+
+Kończ dopiero na:
+
+- realnym checkpoint/hard stopie;
+- approval gate;
+- decyzji użytkownika, której nie da się wyprowadzić z repo;
+- braku jakiejkolwiek bezpiecznej repo-grounded pracy;
+- nieodwracalnej nieautoryzowanej operacji.
+
+---
+
+## 19. Checkpoint writer
+
+Checkpoint-writer dostaje **gotowe verified facts**, nie zadanie badawcze.
+
+Prompt powinien wskazać:
+
+- exact doc paths;
+- exact facts;
+- exact status;
+- test evidence;
+- next action.
+
+Writer:
+
+1. fresh read target docs;
+2. write/edit;
+3. verify;
+4. zwraca changed files.
+
+Jeżeli zwróci empty output:
+
+1. sprawdź, czy wykonał tool calls;
+2. sprawdź runtime capability/path matching;
+3. jeden corrected retry;
+4. jeśli nadal brak physical diff — PARK checkpoint writer atom i raportuj runtime blocker.
+
+Coordinator nadal nie wykonuje direct write fallbacku.
+
+---
+
+## 20. Product safety
 
 1. `editorial_status` jest źródłem prawdy widoczności.
 2. Publiczny może być wyłącznie nieusunięty artykuł ze statusem `published`.
@@ -212,22 +702,87 @@ Przy `OLLAMA_NUM_PARALLEL=1` subagenci działają sekwencyjnie.
 6. Nie omijaj praw, licencji, creditu ani ochron SSRF.
 7. Placeholder, fallback techniczny i grafika redakcyjna zastępcza nie mogą być finalnym assetem.
 8. Artykuł bez wymaganych prawidłowych grafik nie może zostać ukończony ani opublikowany.
-9. Nie uruchamiaj płatnych API, publikacji ani mutujących testów bez zgody.
-10. Nie commituj i nie pushuj bez prośby użytkownika.
+9. Nie uruchamiaj live providerów, płatnych API, publikacji ani real-data mutation bez właściwego approval.
+10. Nie commituj, pushuj, resetuj, clean, rebase ani merge bez wyraźnej zgody użytkownika.
+11. Fail-closed guards mają być zachowane; nie osłabiaj guarda tylko po to, aby test lub workflow przeszedł.
+12. Nie loguj sekretów ani pełnych API keys.
 
-## 16. Kodowanie
+---
 
-- UTF-8.
-- Kod bez BOM, jeśli format nie wymaga inaczej.
-- Zachowuj polskie znaki.
-- Nie konwertuj przez Windows-1250/1252.
-- Przed checkpointem sprawdź `�`, `Ã`, `Â`, `Ä`, `Å`, `â€`.
+## 21. SQLite / test-data safety
 
-## 17. Zakończenie etapu
+Nie używaj produkcyjnej SQLite jako przypadkowego test targetu.
 
-1. Przejrzyj `git diff --stat`.
-2. Pełny diff czytaj tylko dla plików wymaganych do decyzji.
-3. Uruchom najmniejszy wystarczający zestaw testów.
-4. Zaktualizuj dokumentację przez 9B/no-think.
-5. Sprawdź UTF-8.
-6. Zwróć krótki raport.
+Jeżeli operacja mutująca wymaga disposable/test DB:
+
+- target musi być jawny;
+- deterministic;
+- seeded zgodnie z kontraktem;
+- zweryfikowany przed apply;
+- backup/checksum muszą spełniać aktywny task;
+- dry-run i apply muszą pracować na właściwym, zweryfikowanym zakresie.
+
+Nie omijaj `CMS_TEST_DATABASE_FILE` ani analogicznych fail-closed guardów.
+
+---
+
+## 22. Kodowanie
+
+- zmieniane pliki tekstowe zapisuj jako UTF-8;
+- kod źródłowy zapisuj bez BOM, chyba że format wymaga inaczej;
+- zachowuj polskie znaki;
+- nie konwertuj przez Windows-1250 ani Windows-1252;
+- przed checkpointem sprawdź typowe symptomy uszkodzonego UTF-8: `�`, `Ã`, `Â`, `Ä`, `Å`, `â€`.
+
+---
+
+## 23. Finalizacja zmiany
+
+Przed oznaczeniem atomu jako DONE:
+
+1. actual `git diff`;
+2. lint zmienionych plików, jeśli dotyczy;
+3. targeted test;
+4. relevant regression;
+5. review, jeżeli wymaga tego task/spec lub ryzyko;
+6. sprawdzenie scope creep;
+7. brak nieautoryzowanej publikacji/provider call/mutacji.
+
+Nie uruchamiaj pełnych regresji bez powodu, jeśli targeted evidence jest wystarczające.
+
+---
+
+## 24. Końcowy raport coordinatora
+
+Raport ma być krótki.
+
+Nie opisuj całej historii reasoning.
+
+Preferowany format:
+
+```text
+MAMONA_RESULT
+
+- Active_task:
+- Completed:
+- Valid_findings:
+- Fixes:
+- Changed_files:
+- Tests:
+- Blockers:
+- Parked:
+- Approval_required:
+- Next_action:
+```
+
+Jeżeli potrzebny jest dokładniejszy phase-specific format, użyj formatu aktywnego tasku/checkpointu.
+
+---
+
+## 25. Zasada końcowa
+
+**Narzędzia i fizyczne evidence są ważniejsze niż narracja.**
+
+Jeżeli możesz wykonać bezpieczny, jednoznaczny następny krok:
+
+**wykonaj go zamiast opisywać, że zamierzasz go wykonać.**

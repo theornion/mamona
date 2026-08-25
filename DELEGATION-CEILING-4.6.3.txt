@@ -1,0 +1,16 @@
+MAMONA V4.6.3 — DELEGATION CEILING
+
+Kilo currently propagates parent edit/bash restrictions into child sessions.
+Therefore V4.6.2 hard edit:deny/bash allowlists on mamona-coordinator blocked checkpoint-writer, executor and workers.
+
+V4.6.3 strategy:
+- project config: read/edit/write/bash/task capability ceiling ALLOW;
+- coordinator: edit/write/bash technically ALLOW so children can work;
+- coordinator system contract: ZERO DIRECT WRITES; every write must be delegated;
+- child agents retain their own strict role permissions;
+- checkpoint-writer explicitly gets both edit and write for docs/**/*.md;
+- executor remains edit/write deny;
+- workers get edit+write for implementation/new files;
+- destructive git/shell operations remain denied on coordinator and workers.
+
+This is a runtime compatibility workaround until Kilo supports separate self vs delegated permissions.

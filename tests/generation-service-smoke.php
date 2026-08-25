@@ -42,7 +42,20 @@ $schema = [
     'properties' => [
         'summary' => ['type' => 'string'],
         'decision' => ['type' => 'string', 'enum' => ['ready', 'needs_review']],
-        'notes' => ['type' => 'array', 'items' => ['type' => 'string']],
+        'notes' => [
+            'type' => 'array',
+            'minItems' => 0,
+            'maxItems' => 2,
+            'items' => [
+                'type' => 'object',
+                'properties' => [
+                    'label' => ['type' => 'string', 'minLength' => 2, 'maxLength' => 80],
+                    'score' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100],
+                ],
+                'required' => ['label', 'score'],
+                'additionalProperties' => false,
+            ],
+        ],
     ],
     'required' => ['summary', 'decision', 'notes'],
     'additionalProperties' => false,
@@ -122,6 +135,20 @@ try {
         generation_assert(
             ($payload['generationConfig']['responseJsonSchema']['additionalProperties'] ?? null) === false,
             'Żądanie Gemini nie przekazuje ścisłego schematu.'
+        );
+        $providerSchema = $payload['generationConfig']['responseJsonSchema'];
+        $providerSchemaJson = generation_json($providerSchema);
+        foreach (['minLength', 'maxLength', 'minItems', 'maxItems', 'minimum', 'maximum'] as $unsupported) {
+            generation_assert(
+                !str_contains($providerSchemaJson, '"' . $unsupported . '"'),
+                "Żądanie Gemini zawiera nieobsługiwany {$unsupported}."
+            );
+        }
+        generation_assert(
+            ($providerSchema['properties']['notes']['items']['additionalProperties'] ?? null) === false
+            && ($providerSchema['properties']['notes']['items']['required'] ?? null) === ['label', 'score']
+            && ($providerSchema['properties']['notes']['items']['properties']['score']['type'] ?? '') === 'integer',
+            'Żądanie Gemini usunęło obsługiwany zagnieżdżony kontrakt schematu.'
         );
         if ($attempts === 1) {
             return [

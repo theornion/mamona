@@ -1,0 +1,1 @@
+php tests/p3d-audit-reset-test.php 2>&1

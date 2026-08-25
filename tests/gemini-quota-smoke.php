@@ -74,20 +74,58 @@ $sourceId=save_technical_source(['name'=>'Quota fixture','website_url'=>'https:/
 $source=find_technical_source($sourceId);
 $postId=persist_discovered_feed_item($source,['external_id'=>'quota-topic','source_url'=>'https://example.com/quota/article','title'=>'Kontrolowany budzet tematu','source_name'=>'Quota fixture','published_at'=>gmdate('Y-m-d H:i:s'),'summary'=>'Zweryfikowany material testowy.','category'=>'science','content_hash'=>hash('sha256','quota-topic')]);
 $topicQuery=$database->prepare('SELECT topic_id FROM feed_topic_memberships m INNER JOIN discovered_feed_items i ON i.id=m.feed_item_id WHERE i.post_id=:post');$topicQuery->execute([':post'=>$postId]);$topicId=(int)$topicQuery->fetchColumn();
-for($number=1;$number<=14;$number++) $database->prepare('INSERT INTO gemini_quota_events(project_key,model,topic_id,stage,attempt,call_reason,fingerprint,status,created_at) VALUES("budget-fixture","budget-model",:topic,"repair",:attempt,"repair",:fingerprint,"completed",:created)')->execute([':topic'=>$topicId,':attempt'=>$number,':fingerprint'=>'budget-'.$number,':created'=>gmdate('Y-m-d H:i:s',$base+$number)]);
-$finalizerId=prepare_generation_operation('article_draft',['fixture'=>'source-bounded-finalizer'],$schema,$postId,$topicId);
-$database->exec('DELETE FROM gemini_quota_events WHERE topic_id=' . $topicId . ' AND attempt=14');
-$finalizerAdmission=gemini_quota_acquire($database,'budget-fixture','budget-model',$finalizerId,'article_draft','finalizer',10,$base+9994);
-$finalizerEvent=$database->query('SELECT attempt,call_reason FROM gemini_quota_events ORDER BY id DESC LIMIT 1')->fetch();
-quota_assert((int)$finalizerEvent['attempt']===14 && $finalizerEvent['call_reason']==='source_bounded_finalizer','Request 14 was not reserved for the source-bounded finalizer.');
-gemini_quota_release($database,'budget-fixture','budget-model',$finalizerAdmission,'completed',10);
-$finalQcId=prepare_generation_operation('quality_check',['fixture'=>'final-qc'],$schema,$postId,$topicId);
-$finalAdmission=gemini_quota_acquire($database,'budget-fixture','budget-model',$finalQcId,'quality_check','final-qc',10,$base+10000);
-$finalEvent=$database->query('SELECT attempt,call_reason FROM gemini_quota_events ORDER BY id DESC LIMIT 1')->fetch();
-quota_assert((int)$finalEvent['attempt']===15 && $finalEvent['call_reason']==='final_quality_check','Request 15 was not reserved exclusively for final QC.');
-gemini_quota_release($database,'budget-fixture','budget-model',$finalAdmission,'completed',10);
-try { gemini_quota_acquire($database,'budget-fixture','budget-model',$finalQcId,'quality_check','request-16',10,$base+10006); throw new RuntimeException('Request 16 was admitted.'); }
-catch(GeminiTopicBudgetException $exception){ quota_assert($exception->usedRequests===15,'Topic budget did not stop exactly after 15 sent calls.'); }
+$draftId=prepare_generation_operation('quota_fixture',['fixture'=>'central-budget'],$schema,$postId,$topicId);
+$responses=0;
+$transport=static function() use (&$responses): array { $responses++; return ['status'=>200,'body'=>generation_json(['responseId'=>'budget-'.$responses,'candidates'=>[['content'=>['parts'=>[['text'=>generation_json(['ok'=>true])]]]]],'usageMetadata'=>['totalTokenCount'=>1]]),'headers'=>[],'network_error'=>'']; };
+execute_generation_operation($draftId,$transport,'fixture-key');
+$qcId=prepare_generation_operation('quota_fixture',['fixture'=>'central-budget-qc'],$schema,$postId,$topicId);
+execute_generation_operation($qcId,$transport,'fixture-key');
+$budget=gemini_article_budget_state($postId);
+quota_assert($responses===2 && (int)$budget['used_calls']===2,'Two actual controlled Gemini responses did not consume exactly two shared budget points.');
+$database->prepare('UPDATE article_generation_budget SET used_calls=20,is_exhausted=1 WHERE article_id=:post')->execute([':post'=>$postId]);
+$blockedId=prepare_generation_operation('quota_fixture',['fixture'=>'budget-blocked'],$schema,$postId,$topicId);
+$blockedTransportCalls=0;
+try {
+    execute_generation_operation($blockedId,static function() use (&$blockedTransportCalls): array { $blockedTransportCalls++; return ['status'=>200,'body'=>'{}','headers'=>[],'network_error'=>'']; },'fixture-key');
+    throw new RuntimeException('Request 21 reached the controlled transport.');
+} catch (GeminiArticleBudgetException) {
+    quota_assert($blockedTransportCalls===0,'Request 21 reached the controlled transport before the budget gate.');
+    quota_assert((string)find_generation_operation($blockedId)['status']==='failed', 'Rejected request 21 left generation operation in running/prepared state.');
+    quota_assert((int)find_generation_operation($blockedId)['live_request_count']===0, 'Rejected request 21 was recorded as a live provider call.');
+}
+
+// The article budget claim is durable and atomic across independent SQLite
+// connections: the second contender cannot claim call 21, and a no-response
+// transport release makes exactly that single point available again.
+$raceArticleId = $postId + 100000;
+$database->prepare('INSERT INTO article_generation_budget (article_id,max_calls,used_calls,convergence_threshold,calls_log_json,is_exhausted,convergence_active,created_at,updated_at) VALUES (:id,20,19,16,"[]",0,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)')->execute([':id'=>$raceArticleId]);
+$firstClaim = gemini_article_budget_claim($database, $raceArticleId, 'image_vision_assessment', 'images', 1, 'race-first');
+try {
+    gemini_article_budget_claim($secondConnection, $raceArticleId, 'image_vision_assessment', 'images', 1, 'race-second');
+    throw new RuntimeException('Second SQLite contender claimed the same final Gemini budget point.');
+} catch (GeminiArticleBudgetException) {
+    quota_assert((int)gemini_article_budget_state($raceArticleId)['used_calls']===20, 'Atomic first claim was not persisted before the second contender.');
+}
+quota_assert(gemini_article_budget_reconcile_claim($database, $raceArticleId, (string)$firstClaim['claim_token'], 'released'), 'No-response claim was not reconciled.');
+quota_assert((int)gemini_article_budget_state($raceArticleId)['used_calls']===19, 'Released no-response claim did not return exactly one budget point.');
+$finalClaim = gemini_article_budget_claim($database, $raceArticleId, 'image_vision_assessment', 'images', 1, 'race-final');
+gemini_article_budget_reconcile_claim($database, $raceArticleId, (string)$finalClaim['claim_token'], 'completed');
+$secondConnection = null;
+quota_assert((int)gemini_article_budget_state($raceArticleId)['used_calls']===20, 'Reconciled provider response did not consume exactly one final budget point.');
+
+// Direct Vision has to stop at the closure floor, even if another worker asks
+// the central budget directly after the allowance was calculated.
+$closureArticleId = $postId + 100001;
+$database->prepare('INSERT INTO article_generation_budget (article_id,max_calls,used_calls,convergence_threshold,calls_log_json,is_exhausted,convergence_active,created_at,updated_at) VALUES (:id,20,14,16,"[]",0,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)')->execute([':id'=>$closureArticleId]);
+$secondConnection = new PDO('sqlite:' . $databaseFile, null, null, [PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION]);
+$secondConnection->exec('PRAGMA busy_timeout=5000');
+try {
+    gemini_article_budget_claim($secondConnection, $closureArticleId, 'image_vision_assessment', 'images', 1, 'closure-direct', 7);
+    throw new RuntimeException('Direct Vision consumed closure-reserved Gemini budget.');
+} catch (GeminiArticleBudgetException) {
+    $secondConnection = null;
+    quota_assert((int)gemini_article_budget_state($closureArticleId)['used_calls']===14, 'Closure-floor rejection mutated article budget.');
+}
 
 $sameA=prepare_generation_operation('field_text_repair', ['fixture'=>'idempotent'], $schema);
 $sameB=prepare_generation_operation('field_text_repair', ['fixture'=>'idempotent'], $schema);

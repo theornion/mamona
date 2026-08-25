@@ -1,0 +1,13 @@
+SERVER START NOW — MAMONA V4.6
+
+1. Upload `mamona-vast-kilo-ollama-v4.6-init.sh` to the Vast instance.
+2. Run:
+   chmod +x mamona-vast-kilo-ollama-v4.6-init.sh
+   ./mamona-vast-kilo-ollama-v4.6-init.sh
+3. Wait for `MAMONA V4.6 SERVER READY`.
+4. On Windows open tunnel (replace PORT/IP):
+   ssh -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 11436:127.0.0.1:11435 -p <PORT> root@<IP>
+5. Install agent pack with INSTALL-V4.6.ps1.
+6. Run VERIFY-V4.6.1.ps1.
+7. Developer: Reload Window.
+8. New Kilo session -> mamona-coordinator -> select primary model -> paste PROMPT_START_MAMONA_V4.6.1.md.

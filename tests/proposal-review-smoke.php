@@ -45,10 +45,15 @@ foreach (['article', 'titles', 'lead', 'section', 'style', 'images', 'caption_al
 
 $page = (string) file_get_contents(dirname(__DIR__) . '/php/admin-proposals.php');
 $service = (string) file_get_contents(dirname(__DIR__) . '/php/proposal-review-service.php');
+$preview = (string) file_get_contents(dirname(__DIR__) . '/php/admin-post-preview.php');
 proposal_smoke_assert(str_contains($service, 'function list_article_proposals_for_review'), 'Missing separate review list.');
+proposal_smoke_assert(str_contains($service, 'drafts.status IN ("completed", "frozen")'), 'QC-frozen draft is excluded from proposal list.');
+proposal_smoke_assert(str_contains($service, 'latest.status IN ("completed", "frozen", "failed")'), 'QC-frozen draft is excluded from fallback proposal selection.');
 proposal_smoke_assert(!str_contains($service, 'checks.status = "completed" AND checks.passed = 1'), 'Review list still hides failed QC.');
 proposal_smoke_assert(!str_contains($service, 'EXISTS (SELECT 1 FROM article_images proposal_images'), 'Review list still requires an image record.');
 proposal_smoke_assert(str_contains($page, 'proposal-draft-content'), 'Selected draft is not rendered in full.');
+proposal_smoke_assert(str_contains($page, "['completed', 'frozen']"), 'Frozen draft version is hidden from review UI.');
+proposal_smoke_assert(str_contains($preview, "['completed', 'frozen']"), 'Frozen draft version cannot be opened in private preview.');
 proposal_smoke_assert(str_contains($page, 'review_quality_risk(') && str_contains($page, "'quality_human_review'"), 'Human decision is not handled and audited.');
 proposal_smoke_assert(str_contains($page, 'Ta blokada nie podlega ręcznemu obejściu'), 'Non-reviewable block has no repair path.');
 proposal_smoke_assert(str_contains($page, 'admin-post-preview.php?post='), 'Preview nie używa renderera publikacji.');

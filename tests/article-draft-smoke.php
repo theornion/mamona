@@ -7,6 +7,7 @@ if (getenv('CMS_ALLOW_ARTICLE_DRAFT_SMOKE') !== '1') {
     exit(2);
 }
 
+putenv('CMS_TEST_DATABASE_FILE=:memory:');
 putenv('CMS_SKIP_PUBLIC_SYNC=1');
 require_once dirname(__DIR__) . '/php/admin-database.php';
 
@@ -217,6 +218,17 @@ try {
         && $titleValidation['supported_title_tokens'] >= 2,
         'Tytuł zgodny z faktami i treścią nie przeszedł strategii wyboru.'
     );
+    $preliminaryHeroMismatch = $manualOutput;
+    foreach (['visual_intent', 'expected_content', 'alt', 'caption'] as $field) {
+        $preliminaryHeroMismatch['illustration_plan']['hero'][$field] = 'Dokumentalna fotografia obiektu badawczego.';
+    }
+    $preliminaryHeroMismatch['illustration_plan']['hero']['search_queries'] = ['documentary research object photograph'];
+    draft_smoke_assert(
+        validate_article_title_strategy($preliminaryHeroMismatch, [
+            'C1' => ['claim' => 'Laboratorium opisało kontrolowany pomiar.'],
+        ])['variant_count'] === 5,
+        'Preliminary hero został błędnie potraktowany jak finalny title/hero gate przed FinalVisualPlan.'
+    );
     $forbiddenTitle = draft_smoke_replace_selected_title(
         $manualOutput,
         'Nie uwierzysz, co ujawnił kontrolowany pomiar'
@@ -414,6 +426,114 @@ try {
         json_decode((string) $manualDraft['draft_json'], true) === $manualOutput,
         'Regeneracja nadpisała wcześniejszą wersję.'
     );
+    $activeBeforeOversizedRepair = $database->query(
+        'SELECT id FROM article_draft_versions WHERE post_id=' . (int) $postId . ' AND is_active=1 ORDER BY id'
+    )->fetchAll(PDO::FETCH_COLUMN);
+    $qcRepairId = prepare_article_qc_repair_operation(
+        (int) $apiDraft['id'],
+        ['id' => 987654],
+        ['categories' => ['structure'], 'feedback' => ['Zachowaj strukturę i popraw pojedynczą uwagę.']],
+        1
+    );
+    $operationIds[] = $qcRepairId;
+    $qcRepairOperation = find_generation_operation($qcRepairId);
+    $qcRepairInput = json_decode((string) $qcRepairOperation['input_json'], true, 128, JSON_THROW_ON_ERROR);
+    $qcRepairPrompt = (string) $qcRepairOperation['prompt_text'];
+    draft_smoke_assert(
+        ($qcRepairInput['length_requirements']['minimum_characters'] ?? null) === 3000
+        && ($qcRepairInput['length_requirements']['maximum_characters'] ?? null) === 7000
+        && ($qcRepairInput['length_requirements']['target_characters'] ?? null) === '3400–3500'
+        && isset($qcRepairInput['length_requirements']['measurement'], $qcRepairInput['length_requirements']['final_check'])
+        && str_contains($qcRepairPrompt, 'minimum_characters')
+        && str_contains($qcRepairPrompt, 'maximum_characters'),
+        'Targeted QC repair nie dostał pełnego kontraktu 3000–7000 dla łącznej treści.'
+    );
+    draft_smoke_assert(
+        ($qcRepairInput['qc_repair_contract_version'] ?? null) === ARTICLE_DRAFT_QC_REPAIR_CONTRACT_VERSION
+        && prepare_article_qc_repair_operation(
+            (int) $apiDraft['id'],
+            ['id' => 987654],
+            ['categories' => ['structure'], 'feedback' => ['Zachowaj strukturę i popraw pojedynczą uwagę.']],
+            1
+        ) === $qcRepairId,
+        'Ten sam kontrakt targeted QC repair nie jest idempotentny.'
+    );
+    $repairVisualPlan = [
+        'id' => 991,
+        'visual_plan_json' => generation_json([
+            'hero_slot' => [
+                'slot_id' => 'hero-main', 'role' => 'hero', 'section_anchor' => 'article',
+                'visual_need' => 'Teleskop i obserwowany obiekt', 'required' => true,
+                'must_be_direct' => true, 'acceptable_related' => false,
+                'search_queries_direct' => ['space telescope documentary photograph'],
+                'search_queries_related' => [],
+            ],
+            'inline_slots' => [
+                ['slot_id'=>'inline-lead','role'=>'inline','section_anchor'=>'lead','visual_need'=>'Instrument obserwacyjny','required'=>true,'must_be_direct'=>false,'acceptable_related'=>false,'search_queries_direct'=>['space observatory instrument'],'search_queries_related'=>[]],
+                ['slot_id'=>'inline-why','role'=>'inline','section_anchor'=>'why-important','visual_need'=>'Dane pomiarowe','required'=>true,'must_be_direct'=>false,'acceptable_related'=>false,'search_queries_direct'=>['scientific measurement data'],'search_queries_related'=>[]],
+                ['slot_id'=>'inline-fact','role'=>'inline','section_anchor'=>'fact-1','visual_need'=>'Schemat analizy','required'=>true,'must_be_direct'=>false,'acceptable_related'=>false,'search_queries_direct'=>['analysis diagram'],'search_queries_related'=>[]],
+            ],
+        ]),
+    ];
+    $apiInput = json_decode((string) $apiOperation['input_json'], true, 128, JSON_THROW_ON_ERROR);
+    $apiInput['narrative_plan'] = $repairVisualPlan;
+    $apiInput['draft_visual_plan_contract_version'] = ARTICLE_DRAFT_VISUAL_PLAN_CONTRACT_VERSION;
+    $database->prepare('UPDATE generation_operations SET input_json=:input WHERE id=:id')->execute([
+        ':input' => generation_json($apiInput), ':id' => $apiId,
+    ]);
+    $planRepairId = prepare_article_qc_repair_operation(
+        (int) $apiDraft['id'], ['id' => 987655],
+        ['categories' => ['structure'], 'feedback' => ['Zachowaj strukturę.']], 1
+    );
+    $operationIds[] = $planRepairId;
+    $planRepairOperation = find_generation_operation($planRepairId);
+    $planRepairInput = json_decode((string) $planRepairOperation['input_json'], true, 128, JSON_THROW_ON_ERROR);
+    $planRepairSchema = json_decode((string) $planRepairOperation['output_schema_json'], true, 128, JSON_THROW_ON_ERROR);
+    $expectedIllustrations = narrative_plan_draft_illustration_contract($repairVisualPlan)['illustration_plan'];
+    draft_smoke_assert(
+        ($planRepairInput['narrative_plan']['id'] ?? null) === 991
+        && ($planRepairInput['draft_visual_plan_contract_version'] ?? null) === ARTICLE_DRAFT_VISUAL_PLAN_CONTRACT_VERSION
+        && count((array) ($expectedIllustrations['inline'] ?? [])) === 3,
+        'Korekta QC nie odziedziczyła VisualPlan źródłowego szkicu.'
+    );
+    validate_generation_value($expectedIllustrations, $planRepairSchema['properties']['illustration_plan']);
+    $changedHero = $expectedIllustrations;
+    $changedHero['hero']['search_queries'] = ['unrelated stock photo'];
+    $visualRepairRejected = false;
+    try {
+        validate_generation_value($changedHero, $planRepairSchema['properties']['illustration_plan']);
+    } catch (InvalidArgumentException) {
+        $visualRepairRejected = true;
+    }
+    draft_smoke_assert($visualRepairRejected, 'Schema korekty QC dopuścił zmianę hero VisualPlan przed transportem.');
+    draft_smoke_assert(
+        prepare_article_qc_repair_operation((int) $apiDraft['id'], ['id' => 987655], ['categories' => ['structure'], 'feedback' => ['Zachowaj strukturę.']], 1) === $planRepairId,
+        'Wersjonowany kontrakt VisualPlan korekty QC nie jest idempotentny.'
+    );
+    $qcRepairDraft = find_article_draft_by_operation($qcRepairId);
+    $oversizedRepair = $apiOutput;
+    $oversizedRepair['practical_takeaway']['text'] .= str_repeat(' Nadmiarowa treść poprawki QC.', 250);
+    draft_smoke_assert(article_draft_main_content_length($oversizedRepair) > ARTICLE_MAIN_CONTENT_MAX_LENGTH, 'Fixture zbyt długiej poprawki QC nie przekracza maksimum.');
+    $database->prepare(
+        'UPDATE article_draft_versions
+         SET status="completed", draft_json=:json, validation_json=:validation
+         WHERE id=:id'
+    )->execute([
+        ':json' => generation_json($oversizedRepair),
+        ':validation' => generation_json(['valid' => true]),
+        ':id' => (int) $qcRepairDraft['id'],
+    ]);
+    $oversizedActivationRejected = false;
+    try {
+        activate_completed_article_qc_repair((int) $qcRepairDraft['id']);
+    } catch (RuntimeException) {
+        $oversizedActivationRejected = true;
+    }
+    draft_smoke_assert($oversizedActivationRejected, 'Zbyt długa poprawka QC została dopuszczona do aktywacji.');
+    $activeAfterOversizedRepair = $database->query(
+        'SELECT id FROM article_draft_versions WHERE post_id=' . (int) $postId . ' AND is_active=1 ORDER BY id'
+    )->fetchAll(PDO::FETCH_COLUMN);
+    draft_smoke_assert($activeAfterOversizedRepair === $activeBeforeOversizedRepair, 'Odrzucona zbyt długa poprawka QC zmieniła aktywną wersję.');
     $repairParentId = prepare_article_draft_operation((int) $researchPackage['id'], 'informational');
     $operationIds[] = $repairParentId;
     $badDraft = draft_smoke_replace_selected_title($apiOutput, 'Kontrolowany pomiar to przełom, który zmieni życie każdego człowieka!');

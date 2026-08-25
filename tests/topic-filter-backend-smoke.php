@@ -7,6 +7,9 @@ topic_filter_backend_assert(generation_workflow_queue_state(['readiness' => true
 foreach (['waiting_review', 'manual_review', 'failed', 'rate_limited'] as $status) {
     topic_filter_backend_assert(generation_workflow_queue_state(['readiness' => false, 'status' => $status]) === 'action', 'Misclassified action: ' . $status);
 }
+foreach (['ready', 'ready_for_preview', 'ready_with_notes'] as $status) {
+    topic_filter_backend_assert(generation_workflow_queue_state(['readiness' => false, 'status' => $status]) === 'action', 'Unready proposal was classified as ready: ' . $status);
+}
 foreach (['eligible', 'queued', 'research', 'draft', 'quality_check', 'images'] as $status) {
     topic_filter_backend_assert(generation_workflow_queue_state(['readiness' => false, 'status' => $status]) === 'work', 'Misclassified work: ' . $status);
 }

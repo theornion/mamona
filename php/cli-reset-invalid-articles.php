@@ -10,10 +10,11 @@ if (PHP_SAPI !== 'cli') {
 require_once __DIR__ . '/admin-database.php';
 
 /**
- * P2-G — Deterministyczny audyt i reset wadliwych artykułów.
+ * P3-D — Deterministyczny audyt i reset wadliwych artykułów.
  *
  * Nie używa Gemini ani providerów grafik.
  * Tryby: --dry-run (manifest) lub --apply (reset z backupem).
+ * Fail-closed: --apply możliwy TYLKO gdy CMS_TEST_DATABASE_FILE jest ustawiona.
  */
 
 const RESET_INVALID_ARTICLES_BACKUP_DIR = __DIR__ . '/../data/backups';
@@ -50,7 +51,13 @@ function main(): void
         exit(0);
     }
 
-    // --apply mode
+    // --apply mode — fail-closed guard: tylko na testowej bazie
+    $testDb = trim((string) getenv('CMS_TEST_DATABASE_FILE'));
+    if ($testDb === '') {
+        fwrite(STDERR, "BŁĄD P3-D: --apply wymaga CMS_TEST_DATABASE_FILE (fail-closed guard).\n");
+        exit(3);
+    }
+
     $articleIds = array_map('intval', array_column($candidates, 'id'));
     $backupPath = backup_affected_records($db, $articleIds);
     $sha256 = hash_file('sha256', $backupPath);
@@ -81,6 +88,7 @@ function main(): void
  * 2. Artykuł ma grafikę odrzuconą przez bramkę semantyczną (editorial_rejected=1)
  * 3. Artykuł ma grafikę z brakującym plikiem assetu na dysku
  * 4. Artykuł ma za mało prawidłowych grafik vs wymagane sloty
+ * 5. Brakuje multimodal ACCEPT albo finalny rekord jest niespójny
  */
 function audit_invalid_articles(PDO $db): array
 {
@@ -97,6 +105,35 @@ function audit_invalid_articles(PDO $db): array
             $invalidMap[$pid] = ['reasons' => [], 'images' => []];
         }
         $invalidMap[$pid]['reasons'][] = 'fallback_image';
+        $invalidMap[$pid]['images'][] = image_summary($img);
+    }
+
+    // Criterion 3b: placeholder/missing image state.
+    $stmt = $db->query(
+        'SELECT post_id, id, role, local_path, status FROM article_images' .
+        ' WHERE status IN ("missing","manual_review")'
+    );
+    foreach ($stmt->fetchAll() as $img) {
+        $pid = (int) $img['post_id'];
+        $invalidMap[$pid] ??= ['reasons' => [], 'images' => []];
+        if (!in_array('placeholder_or_pending_image', $invalidMap[$pid]['reasons'], true)) {
+            $invalidMap[$pid]['reasons'][] = 'placeholder_or_pending_image';
+        }
+        $invalidMap[$pid]['images'][] = image_summary($img);
+    }
+
+    // Criterion 3c: downloaded image without persisted multimodal ACCEPT or coherent final metadata.
+    $stmt = $db->query(
+        'SELECT post_id, id, role, local_path, status FROM article_images' .
+        ' WHERE status="downloaded" AND (' .
+        'multimodal_accepted<>1 OR source_page_url="" OR source_file_url="" OR license="" OR local_path="")'
+    );
+    foreach ($stmt->fetchAll() as $img) {
+        $pid = (int) $img['post_id'];
+        $invalidMap[$pid] ??= ['reasons' => [], 'images' => []];
+        if (!in_array('missing_multimodal_accept_or_inconsistent_final_record', $invalidMap[$pid]['reasons'], true)) {
+            $invalidMap[$pid]['reasons'][] = 'missing_multimodal_accept_or_inconsistent_final_record';
+        }
         $invalidMap[$pid]['images'][] = image_summary($img);
     }
 
@@ -137,13 +174,16 @@ function audit_invalid_articles(PDO $db): array
     }
 
     // Criterion 4: too few valid images vs required slots
-    $postIdsStmt = $db->query('SELECT DISTINCT post_id FROM article_images');
+    $postIdsStmt = $db->query(
+        'SELECT post_id FROM article_images UNION SELECT id AS post_id FROM posts WHERE status="published" OR is_published=1'
+    );
     $postIdsWithImages = array_map('intval', array_column($postIdsStmt->fetchAll(), 'post_id'));
 
     foreach ($postIdsWithImages as $pid) {
         $validStmt = $db->prepare(
             'SELECT COUNT(*) AS cnt FROM article_images' .
-            ' WHERE post_id = :post_id AND status = "downloaded" AND is_fallback = 0 AND editorial_rejected = 0'
+            ' WHERE post_id = :post_id AND status = "downloaded" AND is_fallback = 0' .
+            ' AND editorial_rejected = 0 AND multimodal_accepted = 1'
         );
         $validStmt->execute([':post_id' => $pid]);
         $validCount = (int) $validStmt->fetchColumn();
@@ -151,7 +191,8 @@ function audit_invalid_articles(PDO $db): array
         // Check if any valid image files actually exist on disk
         $validFilesStmt = $db->prepare(
             'SELECT local_path FROM article_images' .
-            ' WHERE post_id = :post_id AND status = "downloaded" AND is_fallback = 0 AND editorial_rejected = 0 AND local_path <> ""'
+            ' WHERE post_id = :post_id AND status = "downloaded" AND is_fallback = 0' .
+            ' AND editorial_rejected = 0 AND multimodal_accepted = 1 AND local_path <> ""'
         );
         $validFilesStmt->execute([':post_id' => $pid]);
         $filesExist = 0;
@@ -176,6 +217,19 @@ function audit_invalid_articles(PDO $db): array
             }
             if (!in_array('too_few_valid_images', $invalidMap[$pid]['reasons'], true)) {
                 $invalidMap[$pid]['reasons'][] = 'too_few_valid_images';
+            }
+        }
+
+        $heroStmt = $db->prepare(
+            'SELECT COUNT(*) FROM article_images WHERE post_id=:post_id AND role="hero"' .
+            ' AND status="downloaded" AND is_fallback=0 AND editorial_rejected=0' .
+            ' AND multimodal_accepted=1 AND local_path<>""'
+        );
+        $heroStmt->execute([':post_id' => $pid]);
+        if ((int) $heroStmt->fetchColumn() === 0) {
+            $invalidMap[$pid] ??= ['reasons' => [], 'images' => []];
+            if (!in_array('missing_valid_hero', $invalidMap[$pid]['reasons'], true)) {
+                $invalidMap[$pid]['reasons'][] = 'missing_valid_hero';
             }
         }
     }
@@ -246,6 +300,8 @@ function enrich_audit_results(PDO $db, array $invalidMap): array
 
 /**
  * Buduje manifest kandydatów do resetu (--dry-run).
+ *
+ * Wzbogaca o seed/topic/brief/type/category/language/input/settings/status_history/batch_context.
  */
 function build_manifest(PDO $db, array $candidates): array
 {
@@ -267,6 +323,43 @@ function build_manifest(PDO $db, array $candidates): array
         $imgStmt->execute([':post_id' => $articleId]);
         $allImages = $imgStmt->fetchAll();
 
+        // Seed/topic context from generation_batch_items → editorial_topics
+        $batchStmt = $db->prepare(
+            'SELECT items.input, items.settings, items.batch_id, items.stage AS batch_stage,' .
+            ' items.status AS batch_status, topics.brief, topics.type, topics.language' .
+            ' FROM generation_batch_items items' .
+            ' INNER JOIN editorial_topics topics ON topics.id = items.topic_id' .
+            ' WHERE items.post_id = :post_id ORDER BY items.id DESC LIMIT 1'
+        );
+        $batchStmt->execute([':post_id' => $articleId]);
+        $batchRow = $batchStmt->fetch();
+
+        // Category title
+        $catStmt = $db->prepare('SELECT title FROM post_categories WHERE id = :id');
+        $catStmt->execute([':id' => $candidate['category_id']]);
+        $categoryTitle = (string) $catStmt->fetchColumn();
+
+        // Status history
+        $histStmt = $db->prepare(
+            'SELECT previous_status, new_status, reason, created_at FROM post_status_history' .
+            ' WHERE post_id = :post_id ORDER BY id DESC'
+        );
+        $histStmt->execute([':post_id' => $articleId]);
+        $statusHistory = $histStmt->fetchAll();
+
+        // Batch context — execution_mode i dispatch_mode z generation_batches
+        $batchCtx = [];
+        if (is_array($batchRow) && (int) $batchRow['batch_id'] > 0) {
+            $bCtxStmt = $db->prepare(
+                'SELECT execution_mode, dispatch_mode, action FROM generation_batches WHERE id = :id'
+            );
+            $bCtxStmt->execute([':id' => (int) $batchRow['batch_id']]);
+            $bCtxRow = $bCtxStmt->fetch();
+            if (is_array($bCtxRow)) {
+                $batchCtx = $bCtxRow;
+            }
+        }
+
         $articles[] = [
             'article_id' => $candidate['id'],
             'title' => $candidate['title'],
@@ -275,6 +368,7 @@ function build_manifest(PDO $db, array $candidates): array
             'current_status' => $candidate['status'],
             'is_published' => $candidate['is_published'],
             'category_id' => $candidate['category_id'],
+            'category_title' => $categoryTitle,
             'editorial_origin' => $candidate['editorial_origin'],
             'qualification_reasons' => $candidate['reasons'],
             'assets' => [
@@ -286,11 +380,26 @@ function build_manifest(PDO $db, array $candidates): array
                 'narrative_plans_count' => $planCount,
                 'thumbnail_versions_count' => $thumbCount,
             ],
-            'fields_to_clean' => [
+            'seed_topic_context' => [
+                'brief' => is_array($batchRow) ? (string) ($batchRow['brief'] ?? '') : '',
+                'type' => is_array($batchRow) ? (string) ($batchRow['type'] ?? '') : '',
+                'language' => is_array($batchRow) ? (string) ($batchRow['language'] ?? '') : '',
+            ],
+            'input_settings' => [
+                'input' => is_array($batchRow) ? (string) ($batchRow['input'] ?? '') : '',
+                'settings' => is_array($batchRow) ? (string) ($batchRow['settings'] ?? '') : '',
+            ],
+            'status_history' => $statusHistory,
+            'batch_context' => $batchCtx,
+            'fields_to_clear' => [
                 'posts.title',
                 'posts.excerpt',
                 'posts.content',
                 'posts.image_path',
+                'posts.content_image_path',
+                'posts.content_images',
+                'posts.content_blocks',
+                'posts.image_alt',
                 'posts.slug',
                 'posts.status -> draft',
                 'article_draft_versions (DELETE)',
@@ -305,6 +414,9 @@ function build_manifest(PDO $db, array $candidates): array
                 'posts.category_id',
                 'posts.created_at',
                 'posts.updated_at',
+                'posts.editorial_origin',
+                'seed_title/topic context',
+                'generation_batch_items input/settings context',
                 'post_status_history',
                 'gemini_quota_events',
             ],
@@ -446,7 +558,7 @@ function apply_reset(PDO $db, array $articleIds): array
                     ':post_id' => $articleId,
                     ':prev' => $previousStatus,
                     ':new' => 'draft',
-                    ':reason' => 'Reset wadliwego artykułu — P2-G audit reset tool',
+                    ':reason' => 'Reset wadliwego artykułu — P3-D audit reset tool',
                     ':actor' => 'reset-tool',
                 ]);
             }
@@ -458,14 +570,21 @@ function apply_reset(PDO $db, array $articleIds): array
                 " excerpt = ''," .
                 " content = ''," .
                 " image_path = ''," .
-                " slug = ''," .
+                " content_image_path = ''," .
+                " content_images = '[]'," .
+                " content_blocks = '[]'," .
+                " image_alt = ''," .
+                " slug = :reset_slug," .
                 " status = 'draft'," .
                 " is_published = 0," .
                 " published_at = NULL," .
                 " updated_at = CURRENT_TIMESTAMP" .
                 ' WHERE id = :id'
             );
-            $updateStmt->execute([':id' => $articleId]);
+            $updateStmt->execute([
+                ':id' => $articleId,
+                ':reset_slug' => 'reset-' . $articleId,
+            ]);
 
             // Delete derived artifacts — order respects FK constraints
             // narrative_plans: no FK to other derived tables
@@ -493,6 +612,16 @@ function apply_reset(PDO $db, array $articleIds): array
             $db->prepare('DELETE FROM article_images WHERE post_id = :id')
                 ->execute([':id' => $articleId]);
 
+            // Preserve seed/input linkage but stop automatic execution until an operator resumes it.
+            $db->prepare(
+                'UPDATE generation_batch_items SET status="paused_by_operator", stage="research",' .
+                ' progress_percent=0, research_operation_id=NULL, research_package_id=NULL,' .
+                ' draft_operation_id=NULL, draft_version_id=NULL, quality_operation_id=NULL,' .
+                ' quality_check_id=NULL, retry_count=0, lease_token=NULL, lease_expires_at=NULL,' .
+                ' wait_reason="reset_pending_generation_manual_resume", error_message="",' .
+                ' completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE post_id=:id'
+            )->execute([':id' => $articleId]);
+
             $details[] = [
                 'article_id' => $articleId,
                 'previous_status' => $previousStatus,
@@ -512,4 +641,6 @@ function apply_reset(PDO $db, array $articleIds): array
     return $details;
 }
 
-main();
+if (realpath((string) ($_SERVER['SCRIPT_FILENAME'] ?? '')) === __FILE__) {
+    main();
+}

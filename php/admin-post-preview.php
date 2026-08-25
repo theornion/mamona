@@ -20,7 +20,7 @@ if ($post === null) {
 
 if ($draftId > 0) {
     $draftRecord = find_proposal_draft($draftId);
-    if (!is_array($draftRecord) || (int) $draftRecord['post_id'] !== $postId || (string) $draftRecord['status'] !== 'completed') {
+    if (!is_array($draftRecord) || (int) $draftRecord['post_id'] !== $postId || !in_array((string) $draftRecord['status'], ['completed', 'frozen'], true)) {
         http_response_code(404);
         header('Content-Type: text/plain; charset=UTF-8');
         echo 'Nie znaleziono wskazanej wersji szkicu.';
@@ -29,7 +29,15 @@ if ($draftId > 0) {
     $draft = proposal_json_decode((string) $draftRecord['draft_json']);
     $post['title'] = trim((string) ($draft['title'] ?? $post['title']));
     $post['excerpt'] = mb_substr(trim((string) ($draft['brief'] ?? '')), 0, 500);
-    $post['content'] = render_article_blocks(article_draft_content_blocks($draft), list_article_images($postId));
+    $layoutAudit = [];
+    $post['rendered_content_override'] = render_article_blocks_with_layout(
+        article_draft_content_blocks($draft),
+        list_article_images($postId),
+        article_layout_plan_for_post($postId, $layoutAudit),
+        article_related_context_blocks_for_post($postId),
+        $layoutAudit
+    );
+    $post['rendered_content_includes_hero'] = true;
 }
 
 header('Content-Type: text/html; charset=UTF-8');

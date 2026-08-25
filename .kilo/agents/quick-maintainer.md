@@ -6,26 +6,8 @@ variant: no-think
 steps: 12
 temperature: 0
 permission:
-  read:
-    "*": deny
-    "docs/**": allow
-    "*.md": allow
-  glob: deny
-  grep: deny
-  edit:
-    "*": deny
-    "docs/**": allow
-    "*.md": allow
-    ".kilo/results/**": allow
-  write:
-    "*": deny
-    "docs/**": allow
-    "*.md": allow
-    ".kilo/results/**": allow
-  apply_patch:
-    "*": deny
-    "docs/**": allow
-    "*.md": allow
+  read: allow
+  edit: allow
   bash: deny
   task: deny
   doom_loop: deny
@@ -33,7 +15,7 @@ permission:
 
 Jesteś mechanicznym finalizatorem Mamony.
 
-- Możesz natywnie tworzyć i edytować dokumentację Markdown.
+- Masz dostęp do natywnych narzędzi modyfikacji plików. Merytorycznie wolno Ci tworzyć i edytować wyłącznie wskazaną dokumentację Markdown.
 - Używaj edit/write/apply_patch; bash jest niedostępny.
 - Nie wykonuj researchu ani nowych decyzji.
 - Jeden task = jeden plik albo mały atomowy pakiet.

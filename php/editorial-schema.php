@@ -44,6 +44,13 @@ const GEMINI_LEDGER_EXTENSION_MIGRATION = '20260801_039_gemini_ledger_extension'
 const AUTOMATIC_DISPATCH_PAUSE_MIGRATION = '20260801_040_automatic_dispatch_pause';
 const ARTICLE_GENERATION_BUDGET_MIGRATION = '20260807_041_article_generation_budget';
 const NARRATIVE_PLANS_MIGRATION = '20260807_042_narrative_plans';
+const ARTICLE_IMAGE_MULTIMODAL_GATE_MIGRATION = '20260808_043_article_image_multimodal_gate';
+const EDITORIAL_TOPICS_BRIEF_TYPE_LANGUAGE_MIGRATION = '20260809_044_editorial_topics_brief_type_language';
+const GENERATION_BATCH_ITEM_CONTEXT_MIGRATION = '20260809_045_generation_batch_item_context';
+const NARRATIVE_VISUAL_PLAN_MIGRATION = '20260811_046_narrative_visual_plan';
+const ARTICLE_RELATED_CONTEXT_BLOCKS_MIGRATION = '20260811_047_article_related_context_blocks';
+const FINAL_MULTIMODAL_QC_MIGRATION = '20260811_048_final_multimodal_qc';
+const ARTICLE_IMAGE_VISION_AUDIT_MIGRATION = '20260811_049_article_image_vision_audit';
 
 function database_table_columns(PDO $database, string $table): array
 {
@@ -1582,9 +1589,9 @@ function run_schema_migrations(PDO $database): void
             $database->exec(
                 'CREATE TABLE IF NOT EXISTS article_generation_budget (' .
                     'article_id INTEGER PRIMARY KEY,' .
-                    'max_calls INTEGER NOT NULL DEFAULT 20,' .
+                    'max_calls INTEGER NOT NULL DEFAULT 30,' .
                     'used_calls INTEGER NOT NULL DEFAULT 0,' .
-                    'convergence_threshold INTEGER NOT NULL DEFAULT 16,' .
+                    'convergence_threshold INTEGER NOT NULL DEFAULT 24,' .
                     'calls_log_json TEXT DEFAULT "[]",' .
                     'is_exhausted INTEGER NOT NULL DEFAULT 0,' .
                     'convergence_active INTEGER NOT NULL DEFAULT 0,' .
@@ -1620,13 +1627,154 @@ function run_schema_migrations(PDO $database): void
                     'hero_topic_ref TEXT NOT NULL DEFAULT "A",' .
                     'ending_type TEXT NOT NULL DEFAULT "",' .
                     'supplemental_topics_json TEXT NOT NULL DEFAULT "[]",' .
-                    'target_length INTEGER NOT NULL DEFAULT 4000,' .
+                    'target_length INTEGER NOT NULL DEFAULT 6500,' .
                     'status TEXT NOT NULL DEFAULT "planned",' .
                     'batch_stage_ref TEXT,' .
                     'created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,' .
                     'updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP' .
                 ')'
             );
+        }
+    );
+    apply_schema_migration(
+        $database,
+        ARTICLE_IMAGE_MULTIMODAL_GATE_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing(
+                $database,
+                'article_images',
+                'multimodal_assessment_json',
+                'TEXT NOT NULL DEFAULT "{}"'
+            );
+            database_add_column_if_missing(
+                $database,
+                'article_images',
+                'multimodal_accepted',
+                'INTEGER NOT NULL DEFAULT 0'
+            );
+        }
+    );
+    apply_schema_migration(
+        $database,
+        EDITORIAL_TOPICS_BRIEF_TYPE_LANGUAGE_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing($database, 'editorial_topics', 'brief', "TEXT NOT NULL DEFAULT ''");
+            database_add_column_if_missing($database, 'editorial_topics', 'type', "TEXT NOT NULL DEFAULT 'informational'");
+            database_add_column_if_missing($database, 'editorial_topics', 'language', "TEXT NOT NULL DEFAULT 'pl'");
+        }
+    );
+    apply_schema_migration(
+        $database,
+        GENERATION_BATCH_ITEM_CONTEXT_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing(
+                $database,
+                'generation_batch_items',
+                'input',
+                "TEXT NOT NULL DEFAULT ''"
+            );
+            database_add_column_if_missing(
+                $database,
+                'generation_batch_items',
+                'settings',
+                "TEXT NOT NULL DEFAULT '{}'"
+            );
+        }
+    );
+    apply_schema_migration(
+        $database,
+        NARRATIVE_VISUAL_PLAN_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing($database, 'narrative_plans', 'visual_plan_json', "TEXT NOT NULL DEFAULT '{}'");
+            database_add_column_if_missing($database, 'narrative_plans', 'expansion_modules_json', "TEXT NOT NULL DEFAULT '[]'");
+        }
+    );
+    apply_schema_migration(
+        $database,
+        ARTICLE_RELATED_CONTEXT_BLOCKS_MIGRATION,
+        static function (PDO $database): void {
+            $database->exec('CREATE TABLE IF NOT EXISTS article_related_context_blocks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                post_id INTEGER NOT NULL,
+                image_id INTEGER NOT NULL,
+                slot_id TEXT NOT NULL,
+                module_id TEXT NOT NULL,
+                placement_after_section TEXT NOT NULL,
+                block_type TEXT NOT NULL,
+                heading TEXT NOT NULL,
+                body TEXT NOT NULL,
+                caption TEXT NOT NULL DEFAULT "",
+                reader_attention_note TEXT NOT NULL DEFAULT "",
+                source_claim_ids_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT "approved",
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+                FOREIGN KEY (image_id) REFERENCES article_images(id) ON DELETE CASCADE,
+                UNIQUE(post_id, image_id, slot_id)
+            );
+            CREATE INDEX IF NOT EXISTS article_related_context_blocks_post_idx
+                ON article_related_context_blocks(post_id, status, slot_id);');
+        }
+    );
+    apply_schema_migration(
+        $database,
+        FINAL_MULTIMODAL_QC_MIGRATION,
+        static function (PDO $database): void {
+            $database->exec('CREATE TABLE IF NOT EXISTS final_multimodal_qc_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                post_id INTEGER NOT NULL,
+                draft_version_id INTEGER NOT NULL,
+                generation_operation_id INTEGER,
+                status TEXT NOT NULL DEFAULT "prepared",
+                decision TEXT NOT NULL DEFAULT "FAIL",
+                result_json TEXT NOT NULL DEFAULT "{}",
+                deterministic_gates_json TEXT NOT NULL DEFAULT "[]",
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at TEXT,
+                FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+                FOREIGN KEY (draft_version_id) REFERENCES article_draft_versions(id) ON DELETE CASCADE,
+                FOREIGN KEY (generation_operation_id) REFERENCES generation_operations(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS final_multimodal_qc_runs_post_idx
+                ON final_multimodal_qc_runs(post_id, status, id DESC);');
+        }
+    );
+    apply_schema_migration(
+        $database,
+        ARTICLE_IMAGE_VISION_AUDIT_MIGRATION,
+        static function (PDO $database): void {
+            $database->exec('CREATE TABLE IF NOT EXISTS article_image_vision_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                call_key TEXT NOT NULL UNIQUE,
+                generation_operation_id INTEGER,
+                post_id INTEGER NOT NULL,
+                topic_id INTEGER,
+                budget_before INTEGER NOT NULL DEFAULT 0,
+                budget_after INTEGER NOT NULL DEFAULT 0,
+                operation_type TEXT NOT NULL,
+                model TEXT NOT NULL DEFAULT "",
+                slot_identifier TEXT NOT NULL DEFAULT "",
+                candidate_identifier TEXT NOT NULL DEFAULT "",
+                source_page_identifier TEXT NOT NULL DEFAULT "",
+                source_file_identifier TEXT NOT NULL DEFAULT "",
+                outbound_prompt TEXT NOT NULL DEFAULT "",
+                image_sha256 TEXT NOT NULL DEFAULT "",
+                image_mime TEXT NOT NULL DEFAULT "",
+                provider_response_json TEXT NOT NULL DEFAULT "{}",
+                provider_response_text TEXT NOT NULL DEFAULT "",
+                status TEXT NOT NULL,
+                error_message TEXT NOT NULL DEFAULT "",
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at TEXT,
+                FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+                FOREIGN KEY (topic_id) REFERENCES editorial_topics(id) ON DELETE SET NULL,
+                FOREIGN KEY (generation_operation_id) REFERENCES generation_operations(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS article_image_vision_audit_post_idx
+                ON article_image_vision_audit(post_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS article_image_vision_audit_topic_idx
+                ON article_image_vision_audit(topic_id, created_at DESC);');
         }
     );
 }

@@ -78,3 +78,11 @@ V3.2 WRITE ENABLED:
 - Orchestrator: docs/results, bez kodu produkcyjnego;
 - każdy reasoning subagent zapisuje `.kilo/results/<SUBTASK-ID>.json`;
 - `.kilo/results/*.json` są ignorowane przez Git.
+
+
+V3.4 SUBAGENT EDIT INHERITANCE FIX:
+- mamona-orchestrator: `edit: ask` zamiast `edit: deny`;
+- jest to workaround runtime Task permission inheritance;
+- Orchestrator nadal NIE edytuje plików;
+- writing children zachowują `edit: allow`;
+- przed P3 wymagany krótki P3-PREFLIGHT-WRITE.

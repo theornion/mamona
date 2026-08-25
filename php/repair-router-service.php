@@ -14,17 +14,26 @@ function repair_router_assess(array $check, bool $convergenceActive = false): ar
         $issues[] = ['code' => $code, 'gate' => $gate, 'suggested_stage' => $stage,
             'repair_strategy' => $strategy, 'message' => $message];
     };
+    $issueMessage = static function (mixed $issue): string {
+        if (!is_array($issue)) {
+            return (string) $issue;
+        }
+        if (isset($issue['message']) && !is_array($issue['message'])) {
+            return (string) $issue['message'];
+        }
+        return json_encode($issue, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: 'Nieprawidłowy szczegół QC.';
+    };
     foreach ((array) ($result['unsupported_claims'] ?? []) as $issue) {
-        $add('unsupported_claim', 'factual_source', 'draft', 'claim_prune_or_research', (string) ($issue['message'] ?? $issue));
+        $add('unsupported_claim', 'factual_source', 'draft', 'claim_prune_or_research', $issueMessage($issue));
     }
     foreach ((array) ($result['false_quotes'] ?? []) as $issue) {
-        $add('false_quote', 'factual_source', 'draft', 'quote_sanitize', (string) ($issue['message'] ?? $issue));
+        $add('false_quote', 'factual_source', 'draft', 'quote_sanitize', $issueMessage($issue));
     }
     if (($result['title_supported'] ?? true) !== true) $add('unsupported_title', 'title_lead_seo', 'draft', 'title_ladder', 'Tytuł zawiera niewsparty fakt.');
-    foreach ((array) ($result['clickbait_phrases'] ?? []) as $issue) $add('clickbait', 'title_lead_seo', 'draft', 'title_ladder', (string) $issue);
-    foreach ((array) ($result['missing_elements'] ?? []) as $issue) $add('missing_element', 'completeness_length', 'draft', 'topic_b_expansion', (string) $issue);
-    foreach ((array) ($result['language_issues'] ?? []) as $issue) $add('language_issue', 'structure_education', 'draft', 'composition_switch', (string) $issue);
-    foreach ((array) ($result['risk_flags'] ?? []) as $issue) $add('high_risk', 'factual_source', 'draft', 'safe_composer', (string) ($issue['message'] ?? $issue));
+    foreach ((array) ($result['clickbait_phrases'] ?? []) as $issue) $add('clickbait', 'title_lead_seo', 'draft', 'title_ladder', $issueMessage($issue));
+    foreach ((array) ($result['missing_elements'] ?? []) as $issue) $add('missing_element', 'completeness_length', 'draft', 'topic_b_expansion', $issueMessage($issue));
+    foreach ((array) ($result['language_issues'] ?? []) as $issue) $add('language_issue', 'structure_education', 'draft', 'composition_switch', $issueMessage($issue));
+    foreach ((array) ($result['risk_flags'] ?? []) as $issue) $add('high_risk', 'factual_source', 'draft', 'safe_composer', $issueMessage($issue));
     if ($issues === [] && (($result['recommendation'] ?? 'pass') !== 'pass' || (int) ($check['passed'] ?? 1) !== 1)) {
         $add('quality_below_threshold', 'final_package', 'draft', 'targeted_repair', (string) ($result['justification'] ?? 'QC nie zaliczyło pakietu.'));
     }

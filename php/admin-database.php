@@ -74,17 +74,6 @@ function bueno_database(): PDO
             replied_at TEXT
         );
         CREATE INDEX IF NOT EXISTS messages_created_at_idx ON messages(created_at DESC);
-        CREATE TABLE IF NOT EXISTS cats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            description TEXT NOT NULL DEFAULT "",
-            image_path TEXT NOT NULL,
-            image_crop TEXT NOT NULL DEFAULT "",
-            sort_order INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            deleted_at TEXT
-        );
-        CREATE INDEX IF NOT EXISTS cats_sort_order_idx ON cats(sort_order, id);
         CREATE TABLE IF NOT EXISTS galleries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
@@ -148,7 +137,6 @@ function bueno_database(): PDO
     ensure_message_important_column($database);
     ensure_message_subject_column($database);
     purge_expired_trashed_messages($database);
-    seed_initial_cats($database);
     seed_initial_posts($database);
     ensure_gallery_sort_order_column($database);
     ensure_gallery_mobile_layout_column($database);
@@ -814,7 +802,7 @@ function ensure_message_subject_column(PDO $database): void
 
 function ensure_content_trash_columns(PDO $database): void
 {
-    foreach (['cats', 'galleries', 'gallery_items', 'post_categories', 'posts'] as $table) {
+    foreach (['galleries', 'gallery_items', 'post_categories', 'posts'] as $table) {
         $columns = $database->query('PRAGMA table_info(' . $table . ')')->fetchAll();
         $hasDeletedAt = false;
 
@@ -951,35 +939,6 @@ function purge_expired_trashed_content(PDO $database): void
         permanently_delete_gallery((int) $row['id']);
     }
 
-    foreach ($database->query('SELECT id FROM cats WHERE deleted_at IS NOT NULL AND datetime(deleted_at) <= ' . $cutoff)->fetchAll() as $row) {
-        permanently_delete_cat((int) $row['id']);
-    }
-}
-
-function seed_initial_cats(PDO $database): void
-{
-    $count = (int) $database->query('SELECT COUNT(*) FROM cats')->fetchColumn();
-
-    if ($count > 0) {
-        return;
-    }
-
-    // Koty są dodawane przez panel administratora. Nie wstawiamy danych
-    // przykładowych odziedziczonych po poprzedniej stronie.
-    $initialCats = [];
-
-    $statement = $database->prepare(
-        'INSERT INTO cats (name, description, image_path, sort_order) VALUES (:name, :description, :image_path, :sort_order)'
-    );
-
-    foreach ($initialCats as $index => [$name, $description, $imagePath]) {
-        $statement->execute([
-            ':name' => $name,
-            ':description' => $description,
-            ':image_path' => $imagePath,
-            ':sort_order' => $index + 1,
-        ]);
-    }
 }
 
 function save_contact_message(string $name, string $email, string $subject, string $message): int
@@ -1136,92 +1095,6 @@ function permanently_delete_message(int $messageId): void
 {
     $statement = bueno_database()->prepare('DELETE FROM messages WHERE id = :id AND status = "trash"');
     $statement->execute([':id' => $messageId]);
-}
-
-function list_cats(bool $includeDeleted = false): array
-{
-    $where = $includeDeleted ? '' : ' WHERE deleted_at IS NULL';
-    return bueno_database()
-        ->query('SELECT * FROM cats' . $where . ' ORDER BY sort_order ASC, id ASC')
-        ->fetchAll();
-}
-
-function find_cat(int $catId, bool $includeDeleted = false): ?array
-{
-    $statement = bueno_database()->prepare('SELECT * FROM cats WHERE id = :id' . ($includeDeleted ? '' : ' AND deleted_at IS NULL'));
-    $statement->execute([':id' => $catId]);
-    $cat = $statement->fetch();
-
-    return is_array($cat) ? $cat : null;
-}
-
-function create_cat(string $name, string $description, string $imagePath): void
-{
-    $nextOrder = (int) bueno_database()->query('SELECT COALESCE(MAX(sort_order), 0) + 1 FROM cats')->fetchColumn();
-    $statement = bueno_database()->prepare(
-        'INSERT INTO cats (name, description, image_path, sort_order) VALUES (:name, :description, :image_path, :sort_order)'
-    );
-    $statement->execute([
-        ':name' => $name,
-        ':description' => $description,
-        ':image_path' => $imagePath,
-        ':sort_order' => $nextOrder,
-    ]);
-}
-
-function update_cat(int $catId, string $name, string $description, ?string $imagePath = null): void
-{
-    $sql = 'UPDATE cats SET name = :name, description = :description';
-    $parameters = [':id' => $catId, ':name' => $name, ':description' => $description];
-
-    if ($imagePath !== null) {
-        $sql .= ', image_path = :image_path';
-        $parameters[':image_path'] = $imagePath;
-    }
-
-    $sql .= ' WHERE id = :id';
-    $statement = bueno_database()->prepare($sql);
-    $statement->execute($parameters);
-}
-
-function delete_cat(int $catId): ?array
-{
-    $cat = find_cat($catId);
-
-    if ($cat === null) {
-        return null;
-    }
-
-    $statement = bueno_database()->prepare('UPDATE cats SET deleted_at = CURRENT_TIMESTAMP WHERE id = :id');
-    $statement->execute([':id' => $catId]);
-
-    return $cat;
-}
-
-function trash_all_cats(): int
-{
-    $statement = bueno_database()->prepare('UPDATE cats SET deleted_at = CURRENT_TIMESTAMP WHERE deleted_at IS NULL');
-    $statement->execute();
-    return $statement->rowCount();
-}
-
-function restore_cat(int $catId): void
-{
-    $statement = bueno_database()->prepare('UPDATE cats SET deleted_at = NULL WHERE id = :id');
-    $statement->execute([':id' => $catId]);
-}
-
-function permanently_delete_cat(int $catId): void
-{
-    $cat = find_cat($catId, true);
-    if ($cat === null) return;
-    $statement = bueno_database()->prepare('DELETE FROM cats WHERE id = :id AND deleted_at IS NOT NULL');
-    $statement->execute([':id' => $catId]);
-    $imagePath = (string) ($cat['image_path'] ?? '');
-    if (str_starts_with($imagePath, 'images/cats/')) {
-        $filePath = dirname(__DIR__) . '/' . $imagePath;
-        if (is_file($filePath)) unlink($filePath);
-    }
 }
 
 function seed_initial_posts(PDO $database): void
@@ -1647,9 +1520,12 @@ function render_post_page_html(array $post, bool $preview = false): string
     $renderPostArticleAd = $adBudget > 0 && in_array('post-article', $allowedAdPlacements, true);
     $adBudget -= $renderPostArticleAd ? 1 : 0;
     $adConfig['max_inline_slots'] = min((int) ($adConfig['max_inline_slots'] ?? 0), $adBudget);
-    $content = is_array($contentBlocks) && $contentBlocks !== []
-        ? render_article_blocks_with_advertising($contentBlocks, $articleImages, $adConfig)
-        : nl2br(htmlspecialchars((string) $post['content'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
+    $renderedContentOverride = $preview ? ($post['rendered_content_override'] ?? null) : null;
+    $content = is_string($renderedContentOverride)
+        ? $renderedContentOverride
+        : (is_array($contentBlocks) && $contentBlocks !== []
+            ? render_article_blocks_with_advertising($contentBlocks, $articleImages, $adConfig)
+            : nl2br(htmlspecialchars((string) $post['content'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')));
     $contentImages = post_content_image_items($post);
     $hasMainImage = trim((string) ($post['image_path'] ?? '')) !== ''
         && is_file(app_path((string) $post['image_path']));
@@ -1741,21 +1617,24 @@ function render_post_page_html(array $post, bool $preview = false): string
             . '</aside>';
     }
     $imageBlock = '';
-    foreach ($articleImages as $articleImage) {
-        if ((string) ($articleImage['role'] ?? '') === 'hero'
-            && (string) ($articleImage['status'] ?? '') === 'downloaded') {
-            $imageBlock = render_article_image_record($articleImage, true);
-            break;
+    $contentAlreadyIncludesHero = $preview && !empty($post['rendered_content_includes_hero']);
+    if (!$contentAlreadyIncludesHero) {
+        foreach ($articleImages as $articleImage) {
+            if ((string) ($articleImage['role'] ?? '') === 'hero'
+                && (string) ($articleImage['status'] ?? '') === 'downloaded') {
+                $imageBlock = render_article_image_record($articleImage, true);
+                break;
+            }
         }
-    }
-    if ($imageBlock === '') {
-        $imageBlock = render_cropped_post_image(
-            (string) ($post['image_path'] ?? ''),
-            post_main_image_crop($post),
-            'post-page-image',
-            false,
-            trim((string) ($post['image_alt'] ?? '')) ?: (string) $post['title']
-        );
+        if ($imageBlock === '') {
+            $imageBlock = render_cropped_post_image(
+                (string) ($post['image_path'] ?? ''),
+                post_main_image_crop($post),
+                'post-page-image',
+                false,
+                trim((string) ($post['image_alt'] ?? '')) ?: (string) $post['title']
+            );
+        }
     }
     if ($imageBlock !== '') {
         $imageBlock = "\t\t\t\t\t\t\t{$imageBlock}\n";
@@ -3103,7 +2982,6 @@ function restore_trash_item(string $type, int $id): void
         case 'post': restore_post($id); break;
         case 'gallery': restore_gallery($id); break;
         case 'gallery_item': restore_gallery_item($id); break;
-        case 'cat': restore_cat($id); break;
         case 'message': restore_message_from_trash($id); break;
     }
 }
@@ -3115,7 +2993,6 @@ function permanently_delete_trash_item(string $type, int $id): void
         case 'post': permanently_delete_post($id); break;
         case 'gallery': permanently_delete_gallery($id); break;
         case 'gallery_item': permanently_delete_gallery_item($id); break;
-        case 'cat': permanently_delete_cat($id); break;
         case 'message': permanently_delete_message($id); break;
     }
     sync_public_navigation();

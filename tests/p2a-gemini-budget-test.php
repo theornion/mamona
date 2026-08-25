@@ -1,6 +1,6 @@
 <?php
 /**
- * P2-A Test — centralny GeminiBudget, limit 20, convergence mode.
+ * P2-A Test — centralny GeminiBudget, limit 30, convergence/closure mode.
  * Używa SQLite w pamięci. Nie łączy się z prawdziwą bazą ani API.
  */
 
@@ -77,9 +77,9 @@ echo "\n=== TEST 1: Migration — CREATE TABLE article_generation_budget ===\n";
 $pdo->exec(
     'CREATE TABLE IF NOT EXISTS article_generation_budget (' .
         'article_id INTEGER PRIMARY KEY,' .
-        'max_calls INTEGER NOT NULL DEFAULT 20,' .
+        'max_calls INTEGER NOT NULL DEFAULT 30,' .
         'used_calls INTEGER NOT NULL DEFAULT 0,' .
-        'convergence_threshold INTEGER NOT NULL DEFAULT 16,' .
+        'convergence_threshold INTEGER NOT NULL DEFAULT 24,' .
         'calls_log_json TEXT DEFAULT "[]",' .
         'is_exhausted INTEGER NOT NULL DEFAULT 0,' .
         'convergence_active INTEGER NOT NULL DEFAULT 0,' .
@@ -98,11 +98,11 @@ foreach (['article_id', 'max_calls', 'used_calls', 'convergence_threshold', 'cal
     assert_test(in_array($col, $cols, true), sprintf('Kolumna %s istnieje w article_generation_budget', $col));
 }
 
-// Verify defaults: max_calls=20, convergence_threshold=16
+// Verify defaults: max_calls=30, convergence_threshold=24
 $pdo->exec('INSERT INTO article_generation_budget (article_id) VALUES (999)');
 $row = q1($pdo, 'SELECT * FROM article_generation_budget WHERE article_id=?', [999]);
-assert_test((int)$row['max_calls'] === 20, 'Domyślny max_calls = 20');
-assert_test((int)$row['convergence_threshold'] === 16, 'Domyślny convergence_threshold = 16');
+assert_test((int)$row['max_calls'] === 30, 'Domyślny max_calls = 30');
+assert_test((int)$row['convergence_threshold'] === 24, 'Domyślny convergence_threshold = 24');
 assert_test((int)$row['used_calls'] === 0, 'Domyślny used_calls = 0');
 assert_test((int)$row['is_exhausted'] === 0, 'Domyślny is_exhausted = 0');
 assert_test((int)$row['convergence_active'] === 0, 'Domyślny convergence_active = 0');
@@ -165,9 +165,9 @@ echo "\n=== TEST 4: gemini_article_budget_ensure() ===\n";
 $state = gemini_article_budget_ensure($pdo, 42);
 assert_test(is_array($state), 'Zwraca tablicę');
 assert_test((int)($state['article_id'] ?? 0) === 42, 'article_id = 42');
-assert_test((int)($state['max_calls'] ?? 0) === 20, 'max_calls = 20');
+assert_test((int)($state['max_calls'] ?? 0) === 30, 'max_calls = 30');
 assert_test((int)($state['used_calls'] ?? -1) === 0, 'used_calls = 0');
-assert_test((int)($state['convergence_threshold'] ?? 0) === 16, 'convergence_threshold = 16');
+assert_test((int)($state['convergence_threshold'] ?? 0) === 24, 'convergence_threshold = 24');
 assert_test((int)($state['is_exhausted'] ?? -1) === 0, 'is_exhausted = 0');
 assert_test((int)($state['convergence_active'] ?? -1) === 0, 'convergence_active = 0');
 
@@ -180,52 +180,54 @@ echo "\n=== TEST 5: gemini_article_budget_increment() inkrementacja ===\n";
 
 $pdo->exec('DELETE FROM article_generation_budget WHERE article_id=100');
 
-for ($i = 1; $i <= 20; $i++) {
+for ($i = 1; $i <= 30; $i++) {
     try {
-        gemini_article_budget_increment($pdo, 100, 'article_draft', 'draft', $i, 'success');
+        $operationType = $i >= 27 ? 'quality_check' : 'article_draft';
+        $stage = $i >= 27 ? 'quality_check' : 'draft';
+        gemini_article_budget_increment($pdo, 100, $operationType, $stage, $i, 'success');
 
         $row = q1($pdo, 'SELECT used_calls, convergence_active, is_exhausted FROM article_generation_budget WHERE article_id=100');
         $used = (int)$row['used_calls'];
 
         assert_test($used === $i, sprintf('Po %d. wywołaniu used_calls=%d', $i, $i));
 
-        // Convergence test: calls 1-15 -> convergence_active=0
-        if ($i <= 15) {
+        // Convergence test: calls 1-23 -> convergence_active=0
+        if ($i <= 23) {
             assert_test((int)$row['convergence_active'] === 0, sprintf('Call %d: convergence_active=0 (normal mode)', $i));
         }
-        // Call 16+ -> convergence_active=1
-        if ($i >= 16 && $i < 20) {
+        // Call 24+ -> convergence_active=1
+        if ($i >= 24 && $i < 30) {
             assert_test((int)$row['convergence_active'] === 1, sprintf('Call %d: convergence_active=1 (convergence mode)', $i));
         }
 
         // is_exhausted test
-        if ($i < 20) {
+        if ($i < 30) {
             assert_test((int)$row['is_exhausted'] === 0, sprintf('Call %d: is_exhausted=0', $i));
         }
     } catch (GeminiArticleBudgetException $e) {
-        // Expected on call 21 — handled below
-        if ($i <= 20) {
+        // Expected on call 31 — handled below
+        if ($i <= 30) {
             assert_test(false, sprintf('Call %d NIE powinien rzucać wyjątku', $i));
         }
     }
 }
 
-// Call 20 should set is_exhausted=1 (used >= max)
+// Call 30 should set is_exhausted=1 (used >= max)
 $row = q1($pdo, 'SELECT is_exhausted FROM article_generation_budget WHERE article_id=100');
-assert_test((int)$row['is_exhausted'] === 1, 'Po call 20: is_exhausted=1');
+assert_test((int)$row['is_exhausted'] === 1, 'Po call 30: is_exhausted=1');
 
-// Call 21 should throw GeminiArticleBudgetException
-echo "\n=== TEST 6: Call 21 rzuca GeminiArticleBudgetException ===\n";
+// Call 31 should throw GeminiArticleBudgetException before transport
+echo "\n=== TEST 6: Call 31 rzuca GeminiArticleBudgetException ===\n";
 try {
-    gemini_article_budget_increment($pdo, 100, 'article_draft', 'draft', 21, 'success');
-    assert_test(false, 'Call 21 powinien rzucić GeminiArticleBudgetException');
+    gemini_article_budget_increment($pdo, 100, 'quality_check', 'quality_check', 31, 'success');
+    assert_test(false, 'Call 31 powinien rzucić GeminiArticleBudgetException');
 } catch (GeminiArticleBudgetException $e) {
-    assert_test(true, 'Call 21 rzuca GeminiArticleBudgetException');
+    assert_test(true, 'Call 31 rzuca GeminiArticleBudgetException');
     assert_test($e->articleId === 100, sprintf('Exception articleId=%d', $e->articleId));
-    assert_test($e->usedCalls === 21, sprintf('Exception usedCalls=%d', $e->usedCalls));
-    assert_test($e->maxCalls === 20, sprintf('Exception maxCalls=%d', $e->maxCalls));
+    assert_test($e->usedCalls === 30, sprintf('Exception usedCalls=%d (call 31 blocked without mutation)', $e->usedCalls));
+    assert_test($e->maxCalls === 30, sprintf('Exception maxCalls=%d', $e->maxCalls));
 } catch (Throwable $e) {
-    assert_test(false, sprintf('Call 21 rzucił niewłaściwy wyjątek: %s', get_class($e)));
+    assert_test(false, sprintf('Call 31 rzucił niewłaściwy wyjątek: %s', get_class($e)));
 }
 
 // --- TEST 7: calls_log_json zawiera wszystkie wywołania ---
@@ -234,7 +236,7 @@ echo "\n=== TEST 7: calls_log_json ===\n";
 $row = q1($pdo, 'SELECT calls_log_json FROM article_generation_budget WHERE article_id=100');
 $log = json_decode($row['calls_log_json'], true);
 assert_test(is_array($log), 'calls_log_json jest tablicą');
-assert_test(count($log) === 20, sprintf('calls_log_json ma %d wpisów (oczekiwano 20)', count($log)));
+assert_test(count($log) === 30, sprintf('calls_log_json ma %d wpisów (oczekiwano 30)', count($log)));
 
 if (count($log) >= 1) {
     $first = $log[0];
@@ -247,27 +249,29 @@ echo "\n=== TEST 8: Stary limit 15 nie zatrzymuje ===\n";
 
 $pdo->exec('DELETE FROM article_generation_budget WHERE article_id=200');
 
-// Start with used_calls=14, max_calls=20
-$pdo->exec('INSERT INTO article_generation_budget (article_id, max_calls, used_calls, convergence_threshold, calls_log_json, is_exhausted, convergence_active) VALUES (200, 20, 14, 16, "[]", 0, 0)');
+// Start with used_calls=23, max_calls=30
+$pdo->exec('INSERT INTO article_generation_budget (article_id, max_calls, used_calls, convergence_threshold, calls_log_json, is_exhausted, convergence_active) VALUES (200, 30, 23, 24, "[]", 0, 0)');
 
-// Call 15 should succeed
+// Call 24 should succeed and activate convergence
 try {
-    gemini_article_budget_increment($pdo, 200, 'article_draft', 'draft', 15, 'success');
-    $row = q1($pdo, 'SELECT used_calls FROM article_generation_budget WHERE article_id=200');
-    assert_test((int)$row['used_calls'] === 15, 'Call 15 przechodzi (stary limit nie blokuje)');
-} catch (GeminiArticleBudgetException $e) {
-    assert_test(false, 'Call 15 NIE powinien rzucać wyjątku');
-}
-
-// Call 16 should succeed and activate convergence
-try {
-    gemini_article_budget_increment($pdo, 200, 'article_draft', 'draft', 16, 'success');
+    gemini_article_budget_increment($pdo, 200, 'article_draft', 'draft', 24, 'success');
     $row = q1($pdo, 'SELECT used_calls, convergence_active FROM article_generation_budget WHERE article_id=200');
-    assert_test((int)$row['used_calls'] === 16, 'Call 16 przechodzi');
-    assert_test((int)$row['convergence_active'] === 1, 'Call 16 aktywuje convergence');
+    assert_test((int)$row['used_calls'] === 24, 'Call 24 przechodzi');
+    assert_test((int)$row['convergence_active'] === 1, 'Call 24 aktywuje convergence');
 } catch (GeminiArticleBudgetException $e) {
-    assert_test(false, 'Call 16 NIE powinien rzucać wyjątku');
+    assert_test(false, 'Call 24 NIE powinien rzucać wyjątku');
 }
+
+// Non-closure call 28 must be rejected; closure-safe QC may use calls 28–30.
+$pdo->exec('UPDATE article_generation_budget SET used_calls=27,convergence_active=1 WHERE article_id=200');
+try {
+    gemini_article_budget_increment($pdo, 200, 'article_draft', 'draft', 28, 'success');
+    assert_test(false, 'Call 28 discovery nie powinien przejść w closure-only');
+} catch (GeminiArticleBudgetException $e) {
+    assert_test(true, 'Call 28 discovery jest blokowany w closure-only');
+}
+gemini_article_budget_increment($pdo, 200, 'quality_check', 'quality_check', 28, 'success');
+assert_test((int)qCol($pdo, 'SELECT used_calls FROM article_generation_budget WHERE article_id=200') === 28, 'Call 28 closure-safe QC przechodzi');
 
 // --- TEST 9: repair_router_assess z convergenceActive=true ---
 echo "\n=== TEST 9: repair_router_assess convergence mode ===\n";
@@ -324,21 +328,21 @@ gemini_article_budget_increment($pdo, 300, 'article_draft', 'draft', 1, 'success
 $row = q1($pdo, 'SELECT used_calls FROM article_generation_budget WHERE article_id=300');
 assert_test((int)$row['used_calls'] === 3, 'article_draft inkrementuje budżet');
 
-// --- TEST 11: GeminiArticleBudgetException domyślny maxCalls = 20 ---
+// --- TEST 11: GeminiArticleBudgetException domyślny maxCalls = 30 ---
 echo "\n=== TEST 11: GeminiArticleBudgetException domyślne wartości ===\n";
 
-$exc = new GeminiArticleBudgetException(999, 21);
+$exc = new GeminiArticleBudgetException(999, 31);
 assert_test($exc->articleId === 999, 'Exception articleId');
-assert_test($exc->usedCalls === 21, 'Exception usedCalls');
-assert_test($exc->maxCalls === 20, 'Exception maxCalls domyślnie = 20');
-assert_test(str_contains($exc->getMessage(), '20'), 'Wiadomość zawiera limit 20');
+assert_test($exc->usedCalls === 31, 'Exception usedCalls');
+assert_test($exc->maxCalls === 30, 'Exception maxCalls domyślnie = 30');
+assert_test(str_contains($exc->getMessage(), '30'), 'Wiadomość zawiera limit 30');
 
-// --- TEST 12: is_exhausted=1 po call 20 (ostatni dozwolony) ---
+// --- TEST 12: is_exhausted=1 po call 30 (ostatni dozwolony) ---
 echo "\n=== TEST 12: is_exhausted po wyczerpaniu ===\n";
 
 $row = q1($pdo, 'SELECT is_exhausted, convergence_active FROM article_generation_budget WHERE article_id=100');
-assert_test((int)$row['is_exhausted'] === 1, 'Po call 20: is_exhausted=1');
-assert_test((int)$row['convergence_active'] === 1, 'Po call 20: convergence_active=1');
+assert_test((int)$row['is_exhausted'] === 1, 'Po call 30: is_exhausted=1');
+assert_test((int)$row['convergence_active'] === 1, 'Po call 30: convergence_active=1');
 
 // --- Summary ---
 echo "\n========================================\n";

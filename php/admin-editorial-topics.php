@@ -64,8 +64,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pause = trim((string) ($_POST['dispatcher_state'] ?? 'paused')) === 'paused';
             $dispatch = generation_set_automatic_dispatch_paused($pause, 'admin', $pause);
             $_SESSION['topic_grouping_result'] = $pause
-                ? sprintf('Automatyka wstrzymana. Zatrzymano %d elementÃ³w; rÄ™czne â€žWygeneruj caÅ‚oÅ›Ä‡â€ť pozostaje dostÄ™pne.', (int) $dispatch['paused_items'])
-                : 'Pauza automatyki zostaÅ‚a jawnie zdjÄ™ta. Wstrzymane tematy nie zostaÅ‚y uruchomione automatycznie.';
+                ? sprintf('Automatyka wstrzymana. Zatrzymano %d elementów; ręczne „Wygeneruj całość” pozostaje dostępne.', (int) $dispatch['paused_items'])
+                : 'Pauza automatyki została jawnie zdjęta. Wstrzymane tematy nie zostały uruchomione automatycznie.';
         } elseif ($action === 'cleanup_profile') {
             $confirmed = isset($_POST['confirm_cleanup'])
                 && trim((string) ($_POST['cleanup_confirmation'] ?? '')) === 'ZMIEŃ PROFIL';
@@ -256,8 +256,8 @@ admin_page_open('Grupowanie tematów', 'topics');
         <input type="hidden" name="action" value="toggle_automatic_dispatch">
         <input type="hidden" name="dispatcher_state" value="<?php echo $automaticDispatchPaused ? 'running' : 'paused'; ?>">
         <strong><?php echo $automaticDispatchPaused ? 'Automatyczny dispatcher: PAUZA' : 'Automatyczny dispatcher: aktywny'; ?></strong>
-        <span><?php echo $automaticDispatchPaused ? 'Wstrzymane tematy nie ruszÄ… bez rÄ™cznego klikniÄ™cia.' : 'Scheduler i automatyczne retry mogÄ… uruchamiaÄ‡ zadania.'; ?></span>
-        <button type="submit" class="<?php echo $automaticDispatchPaused ? 'dispatcher-play' : 'dispatcher-pause'; ?>"><?php echo $automaticDispatchPaused ? 'â–¶ WznÃ³w automatykÄ™' : 'â¸ Wstrzymaj automatykÄ™'; ?></button>
+        <span><?php echo $automaticDispatchPaused ? 'Wstrzymane tematy nie ruszą bez ręcznego kliknięcia.' : 'Scheduler i automatyczne retry mogą uruchamiać zadania.'; ?></span>
+        <button type="submit" class="<?php echo $automaticDispatchPaused ? 'dispatcher-play' : 'dispatcher-pause'; ?>"><?php echo $automaticDispatchPaused ? '▶ Wznów automatykę' : '⏸ Wstrzymaj automatykę'; ?></button>
     </form>
 
     <form class="topic-bulk-toolbar" id="topic-bulk-toolbar" method="post" action="admin-editorial-topics.php" data-api="admin-editorial-topics-api.php" data-filter="<?php echo escape_html($topicFilter); ?>" data-limit="<?php echo CONTENT_STUDIO_BATCH_LIMIT; ?>" data-dispatch-paused="<?php echo $automaticDispatchPaused ? '1' : '0'; ?>">
@@ -330,8 +330,12 @@ admin_page_open('Grupowanie tematów', 'topics');
                     <input type="hidden" name="return_filter" value="<?php echo escape_html($topicFilter); ?>"><input type="hidden" name="return_topic_id" value="<?php echo (int) $topic['id']; ?>"><input type="hidden" name="return_show_ready" value="<?php echo $showReady ? '1' : '0'; ?>"><input type="hidden" name="return_show_action" value="<?php echo $showAction ? '1' : '0'; ?>">
                     <input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>"><input type="hidden" name="action" value="run_workflow"><input type="hidden" name="topic_ids[]" value="<?php echo (int) $topic['id']; ?>"><input type="hidden" name="request_key" value="topic-<?php echo (int) $topic['id']; ?>-<?php echo escape_html(bin2hex(random_bytes(5))); ?>">
                     <?php foreach (['research' => 'Research', 'draft' => 'Szkic', 'quality' => 'Kontrola jakości', 'images' => 'Grafiki', 'generate_all' => 'Wygeneruj całość'] as $actionKey => $actionLabel): $actionState = $state['actions'][$actionKey]; ?>
-                        <button name="workflow_action" value="<?php echo $actionKey; ?>"<?php echo $actionState['enabled'] ? '' : ' disabled'; ?> title="<?php echo escape_html($actionState['enabled'] ? $actionLabel : $actionState['reason']); ?>"<?php echo $actionKey === 'generate_all' ? ' class="topic-generate-all"' : ''; ?>><?php echo escape_html($actionLabel); ?></button>
+                        <button name="workflow_action" value="<?php echo $actionKey; ?>" data-workflow-action="1"<?php echo $actionState['enabled'] ? '' : ' disabled'; ?> title="<?php echo escape_html($actionState['enabled'] ? $actionLabel : $actionState['reason']); ?>"<?php echo $actionKey === 'generate_all' ? ' class="topic-generate-all"' : ''; ?>><?php echo escape_html($actionLabel); ?></button>
                     <?php endforeach; ?>
+                    <?php $jobStatus = (string) ($state['job']['status'] ?? ''); ?>
+                    <button type="button" class="topic-item-control topic-pause-item" data-pause-item="<?php echo (int) ($state['job']['id'] ?? 0); ?>" title="Wstrzymaj generowanie tego tematu" aria-label="Wstrzymaj generowanie tego tematu"<?php echo in_array($jobStatus, GENERATION_BATCH_ACTIVE_STATUSES, true) ? '' : ' hidden'; ?>><span aria-hidden="true">⏸️</span></button>
+                    <button type="button" class="topic-item-control topic-resume-item" data-resume-item="<?php echo (int) ($state['job']['id'] ?? 0); ?>" title="Wznów generowanie tego tematu" aria-label="Wznów generowanie tego tematu"<?php echo $jobStatus === 'paused_by_operator' ? '' : ' hidden'; ?>><span aria-hidden="true">▶️</span></button>
+                    <button type="button" class="topic-item-control topic-reset-fresh" data-reset-topic="<?php echo (int) $topic['id']; ?>" title="Zapisz backup i wyzeruj artykuł do ponownego wygenerowania" aria-label="Zapisz backup i wyzeruj artykuł do ponownego wygenerowania"><span aria-hidden="true">♻️</span></button>
                 </form>
                 <?php if ($state['proposal_url']): ?><a class="topic-proposal-link" href="<?php echo escape_html((string) $state['proposal_url']); ?>">Otwórz propozycję do przeglądu →</a><?php endif; ?>
                 <?php if ($breakdown !== []): ?>

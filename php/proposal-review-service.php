@@ -37,7 +37,7 @@ function record_proposal_audit(int $postId, ?int $draftId, string $action, array
     return (int) bueno_database()->lastInsertId();
 }
 
-/** Completed drafts with a completed, current QC are reviewable regardless of its result or images. */
+/** Completed or QC-frozen drafts with a completed, current QC are reviewable regardless of its result or images. */
 function list_article_proposals_for_review(?int $postId = null, int $limit = 100): array
 {
     $where = $postId === null ? '' : ' AND drafts.post_id = :post_id';
@@ -58,13 +58,13 @@ function list_article_proposals_for_review(?int $postId = null, int $limit = 100
          LEFT JOIN quality_check_runs checks ON checks.id = (
             SELECT id FROM quality_check_runs q WHERE q.draft_version_id = drafts.id ORDER BY q.id DESC LIMIT 1
          )
-         WHERE drafts.status = "completed"
+         WHERE drafts.status IN ("completed", "frozen")
            AND checks.status = "completed"
            AND drafts.id = COALESCE(
                 (SELECT active.id FROM article_draft_versions active
                  WHERE active.post_id = drafts.post_id AND active.is_active = 1 ORDER BY active.id DESC LIMIT 1),
                 (SELECT MAX(latest.id) FROM article_draft_versions latest
-                 WHERE latest.post_id = drafts.post_id AND latest.status IN ("completed", "failed"))
+                 WHERE latest.post_id = drafts.post_id AND latest.status IN ("completed", "frozen", "failed"))
            )' . $where . '
          ORDER BY drafts.updated_at DESC, drafts.id DESC LIMIT :limit'
     );

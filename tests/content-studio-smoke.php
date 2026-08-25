@@ -158,6 +158,8 @@ try {
     });
     studio_assert($retriedWrite === 42 && $lockedAttempts === 3, 'Chwilowa blokada SQLite nie jest ponawiana w ograniczony sposób.');
 
+    $busyAttempts = 0; $busyExhausted = false; try { persist_discovered_feed_item_with_retry([], [], static function () use (&$busyAttempts): int { $busyAttempts++; throw new PDOException('SQLSTATE[HY000]: General error: 5 database is busy'); }); } catch (PDOException $exception) { $busyExhausted = str_contains(strtolower($exception->getMessage()), 'database is busy'); } studio_assert($busyExhausted && $busyAttempts === 5, 'Trwała blokada SQLite nie jest ponawiana w ograniczony sposób.');
+
     echo "CONTENT_STUDIO_SMOKE_OK\n";
 } finally {
     foreach ($postIds as $postId) {

@@ -1,0 +1,5 @@
+$env:GEMINI_API_KEY = "AQ.Ab8RN6JA_1DQfLZIkC3xfddoQWHfGZyF4AZZwPVmNg03TdnNHw"
+$env:CMS_GENERATION_MODE = "api"
+$env:CMS_GENERATION_PROVIDER = "gemini"
+
+C:\xampp\php\php.exe -S localhost:8000 -t C:\Projekty\mamona

@@ -11,6 +11,12 @@ function admin_asset_url(string $path): string
 
 function admin_page_open(string $title, string $active): void
 {
+    // Ustaw nagłówek przed rozpoczęciem renderowania HTML, aby polskie znaki
+    // nie były dekodowane przez przeglądarkę jako ISO-8859-1/Windows-1252.
+    if (!headers_sent()) {
+        header('Content-Type: text/html; charset=UTF-8');
+    }
+
     $pageLabels = [
         'studio' => 'Studio redakcyjne', 'topics' => 'Tematy', 'generation' => 'Generowanie',
         'action-required' => 'Wymagające akcji', 'proposals' => 'Gotowe propozycje', 'editorial' => 'Procesy / Historia', 'posts' => 'Posty',

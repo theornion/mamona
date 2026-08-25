@@ -51,7 +51,7 @@ try {
     $categoryId = (int) $database->lastInsertId();
 
     for ($number = 1; $number <= 6; $number++) {
-        $image = $number >= 5 ? 'images/posts/2c48fdab2b5b333c482d6a940cf767ca.jpg' : '';
+        $image = $number >= 5 ? 'images/digital_rain.png' : '';
         $postIds[] = create_post(
             $categoryId,
             'SSR artykuł ' . $number . ' ' . $token,

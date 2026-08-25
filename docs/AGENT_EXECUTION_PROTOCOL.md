@@ -1,262 +1,120 @@
-# Agent Execution Protocol — Mamona V3.1
+# Agent Execution Protocol — Mamona V4.6.3
 
-Ten dokument jest trwałym kontraktem wykonawczym dla agentów Kilo.
+## 1. Start primary
+Coordinator:
+1. odczytuje `AGENTS.md`;
+2. odczytuje `docs/CURRENT_WORK.md` jeśli istnieje;
+3. odczytuje najnowszy checkpoint aktywnej fazy i tylko właściwy task/spec;
+4. wykonuje `git status --short` i `git diff --stat`;
+5. buduje mały DAG atomów: READY / WAITING / PARKED / DONE.
 
-## 1. Definicja subtasku
+Coordinator jest STRICT NON-WRITER na poziomie kontraktu. Techniczne edit/write/bash ALLOW jest delegation ceiling, ponieważ Kilo propaguje restrykcje parenta do child sessions.
 
-```text
-SUBTASK
-- ID:
-- Cel:
-- Agent:
-- Model:
-- Wariant:
-- Tryb: read-only / edit / test / review / mechanical / checkpoint
-- Tryb lokalizacji: DIRECT_TARGET / TARGETED_SEARCH / EXPLORATORY
-- Maks. plików produkcyjnych:
-- Maks. nowych/zmienionych linii (orientacyjnie):
-- Dozwolone narzędzia:
-- Zakazane operacje:
-- Punkt startowy:
-- Exact targets:
-- Wymagane dowody:
-- Warunek COMPLETE:
-- Warunek PARTIAL_COMPLETE:
-- Warunek BLOCKED:
-- Format raportu:
-```
+## 2. Atomic task contract
+Każdy child dostaje:
+- ATOM_ID;
+- GOAL;
+- EXACT_SCOPE;
+- INPUT_EVIDENCE;
+- WRITE_SET albo `NONE`;
+- ALLOWED_COMMANDS/TEST;
+- STOP_CONDITION;
+- REQUIRED_RESULT.
 
-## 2. Rozmiar atomu
+Nie deleguj broad recovery bez granic.
 
-Domyślny atom:
-- 1–2 pliki produkcyjne;
-- jedna logiczna odpowiedzialność;
-- jeden integration point;
-- około 100–150 nowych/zmienionych linii.
-
-Jeżeli zadanie wymaga >200 linii nowego komponentu, podziel:
-`schema/contract → component → integration → test`.
-
-Nie łącz:
-`migration + duży service + dispatch integration + duży test + docs`.
-
-## 3. DIRECT_TARGET_MODE
-
-Aktywuj, gdy prompt zawiera dokładny plik i symbol.
-
-Subagent:
-1. nie czyta całego taska/specyfikacji;
-2. nie wykonuje `git log`;
-3. nie używa broad grep/glob;
-4. czyta wskazany symbol i najwyżej bezpośrednie zależności;
-5. wykonuje maksymalnie 8–12 operacji discovery przed pierwszym `edit`;
-6. edytuje;
-7. uruchamia najmniejszy test;
-8. kończy raportem.
-
-## 4. TARGETED_SEARCH
-
-Gdy exact target nie jest znany:
-1. maks. 2 wyszukiwania symboli;
-2. maks. 6 nowych plików;
-3. po znalezieniu symbolu przejdź do DIRECT_TARGET_MODE;
-4. nie wracaj do broad research.
-
-## 5. EXPLORATORY
-
-Tylko dla repo-scout/architect:
-- maks. 12 plików;
-- brak edycji produkcyjnej;
-- każdy odczyt odpowiada konkretnemu pytaniu;
-- semantic search jest tropem, nie dowodem.
-
-## 6. Statusy
-
-### COMPLETE
-Cały atom wykonany, test minimalny zakończony, raport kompletny.
-
-### PARTIAL_COMPLETE
-Spójna część została zapisana, ale atom nie został domknięty.
-
+## 3. Jednolity wynik childa
 ```text
 SUBTASK_RESULT
-- Status: PARTIAL_COMPLETE
-- Completed:
+- Status: COMPLETE | PASS | FAIL | NO_FINDING | PARTIAL | BLOCKED | ESCALATE_14B | ESCALATE_30B
+- Atom:
+- Evidence:
+- Changed_files:
+- Commands_tests:
+- First_failure:
 - Remaining:
-- Safe continuation point:
-- Changed files:
-- Tests:
-- Risks:
+- Safe_next:
 ```
 
-Rodzic uruchamia jeden continuation task wyłącznie dla `Remaining`.
+Każdy child MUSI wysłać do parenta niepustą końcową wiadomość tekstową w tym formacie po każdym zadaniu. Sukces narzędzia/testu nie kończy childa: przy wykonanej komendzie Evidence zawiera surowe stdout/stderr i exit code.
+Brak idealnego formatu nie jest powodem do resume child session. Parent wykorzystuje faktyczny tekst. Jeśli brakuje krytycznego evidence, najwyżej jeden NOWY, węższy Task call.
 
-### BLOCKED
-Nie ma bezpiecznego następnego kroku bez nowej decyzji/danych.
+## 4. Write routing — obowiązkowe
+Coordinator NIE implementuje.
 
-## 7. Coder
+- exact mechanical 1-file/1-symbol -> `mamona-quick-worker` 9B;
+- standard bounded implementation -> `mamona-worker` 14B;
+- repo-level/cross-cutting -> `mamona-heavy-coder` 30B exclusive;
+- `docs/CURRENT_WORK.md`, checkpoint/handoff -> `checkpoint-writer` 9B.
 
-Coder:
-- nie wykonuje nowego szerokiego researchu;
-- preferuje małe `edit`;
-- nie tworzy wielkiego `write/apply_patch`, gdy zmianę można podzielić;
-- nowy plik >200 linii traktuje jako osobny atom;
-- nie łączy dużego komponentu z integracją, jeśli grozi to utratą raportu;
-- przy rosnącym zakresie zwraca `PARTIAL_COMPLETE`, nie pusty wynik.
+Nie wolno obchodzić tego shellem, heredoc, redirection ani workerem jako terminal proxy.
 
-Docelowo:
-- 3–8 min typowo;
-- <=25 tool calli;
-- <=12 discovery przed pierwszym edit;
-- 1–2 pliki produkcyjne.
+## 5. FAST_PARALLEL
+Maksymalnie jeden 14B + jeden 9B.
 
-To cele operacyjne, nie twarde kryteria błędu.
-
-## 8. Tester
-
-Kolejność:
-1. uruchom istniejące testy związane ze zmianą;
-2. zinterpretuj failure;
-3. dodaj nową fixture tylko dla brakującego coverage;
-4. preferuj test tabelaryczny i mały;
-5. nie twórz mini-frameworka, jeśli prosty test wystarczy;
-6. dla realnego błędu zwróć exact fix target;
-7. nie implementuj produkcyjnej poprawki.
-
-## 9. Orchestrator
-
-Orchestrator jest dispatcherem, nie drugim coderem.
-
-### Po COMPLETE
-Sprawdza status, pliki, test i ryzyka. Nie czyta całego diffu ponownie. Deleguje kolejny wymagany krok.
-
-### Po PARTIAL_COMPLETE
-Nie reverse-engineeruje repo. Uruchamia jeden continuation task z `Completed`, `Remaining`, `Safe continuation point`, `Changed files`.
-
-### Po pustym wyniku / abort
-1. `git diff --stat`;
-2. diff tylko plików zmienionych przez subtask;
-3. jeden targeted recovery;
-4. po drugim niepowodzeniu `BLOCKED`.
-
-Orchestrator nie wykonuje `edit` produkcyjnego kodu.
-
-
-## 9A. Result file — obowiązkowy durable handback
-
-Każdy subtask reasoningowy otrzymuje:
-`Result file: .kilo/results/<SUBTASK-ID>.json`
-
-Subagent zapisuje ten JSON natywnym `write` przed finalną odpowiedzią.
-
-Minimalny kontrakt:
-```json
-{
-  "status": "COMPLETE|PARTIAL_COMPLETE|BLOCKED",
-  "changed_files": [],
-  "tests": [],
-  "remaining": [],
-  "safe_continuation_point": "",
-  "risks": []
-}
+Przed dispatch:
+```text
+FAST_PARALLEL_PLAN
+- Lane_M:
+- Lane_F:
+- Dependency: NONE
+- Write_overlap: NONE
+- Cross_read_dependency: NONE
+- Barrier:
 ```
 
-Rodzic po zakończeniu childa:
-1. czyta Result file;
-2. jeżeli istnieje i jest spójny, nie analizuje ponownie całego diffu;
-3. pusty wynik tekstowy przy istniejącym Result file nie jest awarią;
-4. brak tekstu i brak Result file uruchamia dopiero recovery.
+Coordinator emituje oba `Task` calls przed czekaniem na pierwszy wynik. Potem BARRIER.
+Jeżeli niezależności nie da się udowodnić — sekwencyjnie.
 
-Pliki `.kilo/results/*.json` są ignorowane przez Git.
+## 6. HEAVY_EXCLUSIVE
+30B tylko dla potwierdzonej ciężkiej implementacji:
+- repo-level/cross-cutting;
+- >3–4 zależne file/symbol clusters;
+- 14B zwrócił `ESCALATE_30B` z konkretnym powodem;
+- potrzebny realny kontekst >64K.
 
-## 9B. Zakaz shell-write
+Przed 30B zakończ lane M/F i BARRIER. Po 30B wykonaj direct/9B retest.
+30B nigdy nie jest audytorem tylko dlatego, że nic nie znaleziono.
 
-Żaden agent nie może traktować braku `edit/write/apply_patch` jako zgody na zapis przez:
-- PowerShell;
-- bash redirection;
-- `echo`;
-- `Set-Content`;
-- `Out-File`;
-- `php -r`;
-- here-string;
-- base64;
-- skrypt generujący plik.
+## 7. Execution fallback
+Preferuj `mamona-executor` do exact command/test. Jeżeli child zwróci permission/tool/internal-session/empty-output failure:
+- nie próbuj `agent_manager`;
+- nie resume'uj child session;
+- nie używaj writera jako terminal proxy;
+- coordinator wykonuje TEN SAM deterministyczny command bezpośrednio, jeśli jego permission pozwala.
 
-Do plików używaj natywnych file tools zgodnie z permission scope.
+Fallback dotyczy wyłącznie read/test execution, nigdy edycji.
 
-## 10. Auto-compaction Orchestratora
+## 8. Evidence-first diagnosis
+Po FAIL:
+1. raw failure + exit code;
+2. exact symbol/file evidence;
+3. dopiero `mamona-diagnoser`;
+4. fix tylko przy potwierdzonym target;
+5. writer odpowiedniego tieru;
+6. coordinator potwierdza fizyczny diff;
+7. executor/direct fallback robi targeted retest.
 
-### Standard
+## 9. Write verification
+Każdy writer musi podać Changed_files. Coordinator:
+1. wykonuje `git diff -- <files>`;
+2. weryfikuje deklarowany target;
+3. lint/test;
+4. dopiero potem DONE.
 
-Nie rotuj sesji automatycznie przy 65%.
+`COMPLETE` bez physical diff -> `INVALID_WRITE`; najwyżej jeden węższy retry właściwego writera.
 
-Kilo wykonuje Context Condensing przy `threshold_percent = 65`:
-- starsza historia zostaje zastąpiona zakotwiczonym summary;
-- ostatnie 2 turny są zachowywane verbatim, gdy mieszczą się w budżecie;
-- do 8000 tokenów recent tail jest preferowane do zachowania;
-- stare duże tool outputs są prunowane;
-- summary wykonuje `ollama/qwen3.5-no-think`.
+## 10. Task runtime errors
+Schema/session-id mismatch lub child tool failure:
+- `TASK_RUNTIME_ERROR`;
+- zero `new` session id;
+- zero ręcznego child resume;
+- najwyżej jeden świeży Task po korekcie exact call;
+- następnie deterministic primary fallback albo PARKED blocker.
 
-Po compaction:
-1. kontynuuj w tej samej sesji;
-2. nie czytaj ponownie P0/P1/P2 tylko dlatego, że odbył się compaction;
-3. sprawdź jedynie, czy summary zachowało aktywny cel, completed scope, blockery i exact next step;
-4. jeżeli stan jest wystarczający, kontynuuj;
-5. jeżeli summary utraciło krytyczną informację, odczytaj wyłącznie najnowszy trwały checkpoint/handoff.
+## 11. Autonomia
+Nie pytaj użytkownika po zwykłym PASS, child result, bounded fix ani retest.
+Pracuj dalej po DAG aż do phase/checkpoint hard stopu, realnego blockera, destrukcyjnej operacji lub decyzji produktowej nierozstrzygalnej z repo.
 
-### Formalny handoff nadal istnieje
-
-Handoff do pliku wykonuj:
-- na granicy dużych faz, np. P2→P3, P3→P4;
-- przed krytyczną mutacją wymagającą osobnej akceptacji;
-- gdy auto-compaction technicznie nie zadziała;
-- gdy po compaction kontekst nadal jest blisko limitu lub summary jest niewystarczające.
-
-Nie twórz nowej sesji tylko po to, aby zejść z 65%.
-
-## 11. Mechanical finalization
-
-- `quick-maintainer` → `ollama/qwen3.5:9b/no-think`;
-- `checkpoint-writer` → `ollama/qwen3.5:9b/no-think`.
-
-Po successful write/edit:
-- nie powtarzaj write;
-- nie czytaj ponownie pliku;
-- zwróć marker.
-
-Rodzic po markerze nie uruchamia 27B tylko po to, aby ponownie sprawdził dokument.
-
-## 12. Runtime stability
-
-- subagent `doom_loop: deny`;
-- subagent nie uruchamia dalszych subagentów;
-- `OLLAMA_NUM_PARALLEL=1`;
-- provider `timeout=false`;
-- `chunkTimeout=1800000`;
-- `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=65536`;
-- duże argumenty tool call dziel na atomy.
-
-Techniczny abort nie oznacza rollbacku zapisanych zmian.
-
-## 13. Recovery limit
-
-Maksymalnie:
-1. continuation istniejącej sesji, jeśli dostępne;
-2. jeden nowy targeted recovery.
-
-Po kolejnym failure: `BLOCKED`.
-
-## 14. Bezpieczeństwo
-
-- bez płatnych API bez zgody;
-- bez publikacji bez zgody;
-- bez produkcyjnych mutacji bez zgody;
-- bez commit/push bez prośby;
-- nie nadpisuj niezacommitowanych zmian użytkownika.
-
-## 15. UTF-8
-
-- UTF-8;
-- kod bez BOM, jeśli format nie wymaga inaczej;
-- zachowuj polskie znaki;
-- sprawdź `�`, `Ã`, `Â`, `Ä`, `Å`, `â€`.
+## 12. Zakazy
+No live provider calls, publication, destructive git, commit/push, production reset/apply bez jawnej zgody.

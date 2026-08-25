@@ -228,6 +228,20 @@ try {
 
     $manualCheckOperationId = prepare_quality_check_operation((int) $cleanDraft['id']);
     $operationIds[] = $manualCheckOperationId;
+    $manualCheckInput = json_decode(
+        (string) find_generation_operation($manualCheckOperationId)['input_json'],
+        true,
+        128,
+        JSON_THROW_ON_ERROR
+    );
+    $legacyCheckInput = $manualCheckInput;
+    unset($legacyCheckInput['input_contract_version']);
+    quality_smoke_assert(
+        ($manualCheckInput['input_contract_version'] ?? null) === QUALITY_CHECK_INPUT_CONTRACT_VERSION
+        && hash('sha256', generation_json($manualCheckInput)) !== hash('sha256', generation_json($legacyCheckInput))
+        && hash('sha256', generation_json($manualCheckInput)) === hash('sha256', generation_json($manualCheckInput)),
+        'Wersja kontraktu deterministic QC nie jest częścią tożsamości wejścia operacji.'
+    );
     $manualResult = quality_smoke_result(90);
     import_manual_generation_response($manualCheckOperationId, generation_json($manualResult));
     $manualCheck = find_quality_check_by_operation($manualCheckOperationId);
@@ -241,6 +255,39 @@ try {
         && ($manualDeterministic['main_content_maximum'] ?? 0) === ARTICLE_MAIN_CONTENT_MAX_LENGTH,
         'Poprawna manualna kontrola jakości nie została zaliczona.'
     );
+    persist_article_image($postId, [
+        'role' => 'hero',
+        'section_id' => 'article',
+        'visual_intent' => 'Zweryfikowana ilustracja naukowa',
+        'expected_content' => 'Kontrolowany pomiar laboratoryjny',
+        'search_queries' => ['controlled laboratory measurement'],
+        'source_page_url' => 'https://example.org/quality-smoke-image',
+        'source_file_url' => 'https://example.org/quality-smoke-image.jpg',
+        'local_path' => 'images/digital_rain.png',
+        'author' => 'Quality Smoke Fixture',
+        'license' => 'CC0 1.0',
+        'license_url' => 'https://creativecommons.org/publicdomain/zero/1.0/',
+        'attribution' => 'Quality Smoke Fixture, CC0',
+        'alt' => 'Kontrolowany pomiar laboratoryjny',
+        'caption' => 'Zweryfikowana ilustracja testowa.',
+        'layout' => 'full',
+        'status' => 'downloaded',
+        'width' => 1600,
+        'height' => 900,
+        'is_fallback' => 0,
+        'multimodal_accepted' => 1,
+        'multimodal_assessment' => [
+            'semantic_relevance' => 9,
+            'editorial_fit' => 9,
+            'depicts_required_subject' => true,
+            'misleading' => false,
+            'inappropriate' => false,
+            'decision' => 'accept',
+            'reason' => 'Kontrolowany mock Vision.',
+        ],
+    ], 'controlled laboratory measurement');
+    $db = bueno_database();
+    $db->prepare('INSERT INTO final_multimodal_qc_runs (post_id,draft_version_id,status,decision,result_json,deterministic_gates_json,completed_at) VALUES (:post,:draft,"completed","PASS","{}","[]",CURRENT_TIMESTAMP)')->execute([':post'=>$postId, ':draft'=>(int)$cleanDraft['id']]);
     assert_post_quality_allows_publication($postId);
 
     $invalidCheckOperationId = prepare_quality_check_operation((int) $cleanDraft['id']);

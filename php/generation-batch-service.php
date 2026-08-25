@@ -7,6 +7,15 @@ const GENERATION_BATCH_TERMINAL_STATUSES = ['ready', 'ready_for_preview', 'ready
 const GENERATION_WORKFLOW_ACTIONS = ['research', 'draft', 'quality', 'images', 'generate_all', 'retry'];
 const GENERATION_WORKFLOW_STAGES = ['research', 'draft', 'quality_check', 'images'];
 
+final class GenerationBatchItemPausedException extends RuntimeException
+{
+}
+
+function generation_batch_image_coverage_allows_finalization(array $coverage): bool
+{
+    return !empty($coverage['coverage_complete']);
+}
+
 function generation_automatic_dispatch_paused(): bool
 {
     if ((bool) app_config('automatic_dispatch_paused')) return true;
@@ -78,7 +87,7 @@ function generation_set_automatic_dispatch_paused(bool $paused, string $actor = 
                 if (!empty($item['status'])) {
                     $database->prepare('UPDATE generation_batch_items SET
                         paused_from_status=status,status="paused_by_operator",outcome="manual_ready_to_resume",
-                        wait_reason="Wstrzymany â€” uruchom rÄ™cznie.",next_retry_at=NULL,quota_dimension="",quota_model="",
+                        wait_reason="Wstrzymany — uruchom ręcznie.",next_retry_at=NULL,quota_dimension="",quota_model="",
                         lease_token=NULL,lease_expires_at=NULL,paused_at=CURRENT_TIMESTAMP,completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
                         WHERE id=:id')->execute([':id' => (int) $item['id']]);
                     $database->prepare('INSERT INTO generation_batch_audit(batch_id,item_id,action,actor,details_json)
@@ -252,7 +261,7 @@ function generation_topics_workflow_payload(array $topics): array
         $manualGenerateAllEnabled = $status['active_job_id'] === null
             && !in_array((string) ($topic['primary_post_status'] ?? $topic['status'] ?? ''), ['rejected', 'trash', 'published', 'scheduled'], true);
         $researchDone = ($status['steps']['research']['status'] ?? '') === 'completed';
-        $draftDone = ($status['steps']['draft']['status'] ?? '') === 'completed';
+        $draftDone = in_array((string) ($status['steps']['draft']['status'] ?? ''), ['completed', 'frozen'], true);
         $qualityDone = ($status['steps']['quality']['status'] ?? '') === 'completed';
         $queueState = generation_workflow_queue_state($status);
         $requiresAction = $queueState === 'action';
@@ -293,6 +302,8 @@ function generation_topics_workflow_payload(array $topics): array
                 'quota_model' => $status['quota_model'] ?? '',
                 'gemini_calls_used' => $status['gemini_calls_used'] ?? 0,
                 'gemini_call_budget' => $status['gemini_call_budget'] ?? 15,
+                'image_completed' => $status['steps']['images']['completed'] ?? 0,
+                'image_total' => $status['steps']['images']['total'] ?? 0,
                 'retry_after_seconds' => $status['retry_after_seconds'] ?? null],
             'automation_report' => $status['latest_job_id'] === null ? ['events' => [], 'unresolved' => []] : repair_report_get((int) $status['latest_job_id']),
             'proposal_url' => $status['proposal_url'],
@@ -303,7 +314,8 @@ function generation_topics_workflow_payload(array $topics): array
 function generation_workflow_queue_state(array $status): string
 {
     if (!empty($status['readiness'])) return 'ready';
-    return in_array((string) ($status['status'] ?? ''), ['waiting_review', 'manual_review', 'failed', 'rate_limited'], true)
+    if (($status['steps']['images']['status'] ?? '') === 'manual_review') return 'action';
+    return in_array((string) ($status['status'] ?? ''), ['waiting_review', 'manual_review', 'failed', 'rate_limited', 'ready', 'ready_for_preview', 'ready_with_notes'], true)
         ? 'action'
         : 'work';
 }
@@ -404,6 +416,33 @@ function generation_workflow_images_state(int $postId): array
     ]);
 }
 
+/**
+ * Recover a persisted NarrativePlan from an already completed operation without
+ * dispatching Gemini again. A completed operation without a recoverable plan is
+ * an explicit inconsistent artifact, never a reason to silently skip P06.
+ */
+function generation_batch_finalize_stored_narrative_plan(int $topicId, ?int $postId = null): ?array
+{
+    if ($postId !== null && $postId > 0) {
+        $persisted = find_narrative_plan_for_post($postId, $topicId);
+        if (is_array($persisted)) return $persisted;
+    }
+    $statement = bueno_database()->prepare(
+        'SELECT id FROM generation_operations
+         WHERE topic_id = :topic_id AND operation_type = "narrative_plan"
+           AND status = "completed" AND output_json <> ""
+         ORDER BY id DESC LIMIT 1'
+    );
+    $statement->execute([':topic_id' => $topicId]);
+    $operationId = (int) $statement->fetchColumn();
+    if ($operationId <= 0) return null;
+
+    complete_narrative_plan_operation($operationId, '', generation_mode());
+    return $postId !== null && $postId > 0
+        ? find_narrative_plan_for_post($postId, $topicId)
+        : find_narrative_plan_for_topic($topicId);
+}
+
 function generation_workflow_initial_item(int $topicId, string $action, ?string $retryStage = null): array
 {
     $requestedStage = $action === 'quality' ? 'quality' : ($action === 'generate_all' ? '' : ($retryStage ?: $action));
@@ -447,7 +486,7 @@ function generation_workflow_initial_item(int $topicId, string $action, ?string 
         if (!$technicalFailure && !$sourceDataChanged) {
             return ['status' => 'invalid', 'stage' => (string) $retryStage, 'requested_stage' => $requestedStage,
                 'outcome' => 'invalid', 'progress_percent' => 0,
-                'wait_reason' => 'Ponowienie jest dozwolone tylko po bĹ‚Ä™dzie technicznym albo zmianie danych ĹşrĂłdĹ‚owych.',
+                'wait_reason' => 'Ponowienie jest dozwolone tylko po błędzie technicznym albo zmianie danych źródłowych.',
                 'completed_at' => gmdate('Y-m-d H:i:s')];
         }
     }
@@ -455,16 +494,18 @@ function generation_workflow_initial_item(int $topicId, string $action, ?string 
     $research = generation_workflow_latest('research_packages', $topicId);
     $approved = generation_workflow_latest_approved_research($topicId);
     $draft = generation_workflow_latest('article_draft_versions', $topicId);
+    $draftAccepted = is_array($draft) && in_array((string) $draft['status'], ['completed', 'frozen'], true);
     $quality = is_array($draft) ? generation_workflow_latest_quality((int) $draft['id']) : null;
     $qualityPassed = is_array($quality) && $quality['status'] === 'completed'
         && (int) $quality['passed'] === 1 && quality_active_hard_blocks($quality) === [];
     $images = is_array($draft) ? generation_workflow_images_state((int) $draft['post_id']) : ['total' => 0, 'completed' => 0, 'manual' => 0, 'missing' => 0];
-    $imageReady = $images['total'] > 0 && $images['completed'] === $images['total'];
+    $coverage = is_array($draft) ? article_image_coverage_state((int) $draft['post_id'], $topicId) : null;
+    $imageReady = is_array($coverage) && !empty($coverage['coverage_complete']);
     $stage = $action === 'quality' ? 'quality_check' : $action;
     if ($action === 'retry') $stage = (string) $retryStage;
     if ($action === 'generate_all') {
         $stage = !is_array($approved) ? 'research'
-            : (!is_array($draft) || $draft['status'] !== 'completed' ? 'draft'
+            : (!$draftAccepted ? 'draft'
             : (!$qualityPassed ? 'quality_check' : 'images'));
         if ($qualityPassed && $imageReady) {
             return ['status' => 'already_complete', 'stage' => 'ready', 'requested_stage' => '', 'outcome' => 'already_complete',
@@ -476,7 +517,7 @@ function generation_workflow_initial_item(int $topicId, string $action, ?string 
     }
     $prerequisite = match ($stage) {
         'draft' => is_array($approved),
-        'quality_check' => is_array($draft) && $draft['status'] === 'completed',
+        'quality_check' => $draftAccepted,
         'images' => $qualityPassed,
         default => true,
     };
@@ -493,7 +534,7 @@ function generation_workflow_initial_item(int $topicId, string $action, ?string 
             'post_id' => (int) $research['post_id']];
     }
     $already = ($stage === 'research' && is_array($research) && in_array($research['status'], ['completed', 'approved'], true))
-        || ($stage === 'draft' && is_array($draft) && $draft['status'] === 'completed')
+        || ($stage === 'draft' && $draftAccepted)
         || ($stage === 'quality_check' && $qualityPassed)
         || ($stage === 'images' && $imageReady);
     if ($already && $action !== 'generate_all' && $action !== 'retry') {
@@ -505,8 +546,8 @@ function generation_workflow_initial_item(int $topicId, string $action, ?string 
         'progress_percent' => 0, 'wait_reason' => '', 'completed_at' => null,
         'research_operation_id' => is_array($researchForItem) ? (int) $researchForItem['generation_operation_id'] : null,
         'research_package_id' => is_array($researchForItem) ? (int) $researchForItem['id'] : null,
-        'draft_operation_id' => is_array($draft) && $draft['status'] === 'completed' ? (int) $draft['generation_operation_id'] : null,
-        'draft_version_id' => is_array($draft) && $draft['status'] === 'completed' ? (int) $draft['id'] : null,
+        'draft_operation_id' => $draftAccepted ? (int) $draft['generation_operation_id'] : null,
+        'draft_version_id' => $draftAccepted ? (int) $draft['id'] : null,
         'quality_operation_id' => $qualityPassed ? (int) $quality['generation_operation_id'] : null,
         'quality_check_id' => $qualityPassed ? (int) $quality['id'] : null,
         'post_id' => is_array($draft) ? (int) $draft['post_id'] : (is_array($researchForItem) ? (int) $researchForItem['post_id'] : null)];
@@ -653,12 +694,23 @@ function generation_workflow_step_status(?string $recordStatus, ?string $operati
     if ($waiting) return 'waiting_review';
     if ($passed) return 'completed';
     return match ($recordStatus ?: $operationStatus ?: '') {
-        'approved', 'completed' => 'completed',
+        'approved', 'completed', 'frozen' => 'completed',
         'failed' => 'failed',
         'running' => 'running',
         'prepared', 'queued' => 'queued',
         default => 'not_started',
     };
+}
+
+function generation_batch_item_is_retryable(array $item, array $draftValidation = []): bool
+{
+    $status = (string) ($item['job_status'] ?? $item['status'] ?? '');
+    $stage = (string) ($item['job_stage'] ?? $item['stage'] ?? '');
+    $outcome = (string) ($item['outcome'] ?? '');
+    return in_array($status, ['rate_limited', 'cancelled'], true)
+        || ($status === 'failed'
+            && ((string) ($draftValidation['repair_scope'] ?? '') === 'titles' || $outcome !== 'validation_contract'))
+        || (in_array($status, ['manual_review', 'waiting_review'], true) && $stage === 'images');
 }
 
 /** One SQL query for a topic list; no per-topic lookups. */
@@ -752,13 +804,14 @@ function generation_workflow_statuses(mixed $rawTopicIds): array
         $draftValidation = json_decode((string) ($row['draft_validation'] ?? '{}'), true) ?: [];
         $qualityIsCurrent = (int) ($row['quality_draft_id'] ?? 0) === (int) ($row['draft_id'] ?? 0);
         $qualityPassed = $qualityIsCurrent && (int) ($row['passed'] ?? 0) === 1 && $hardBlocks === [];
-        $imageReady = (int) $row['image_total'] > 0 && (int) $row['image_total'] === (int) $row['image_completed'];
+        $coverage = !empty($row['post_id']) ? article_image_coverage_state((int) $row['post_id'], (int) $row['topic_id']) : null;
+        $imageReady = is_array($coverage) && !empty($coverage['publication_floor_met']);
         $imageManual = (int) $row['image_manual'] > 0 || (int) $row['image_pending'] > 0;
-        $proposalReviewable = ($row['draft_status'] ?? '') === 'completed'
+        $proposalReviewable = in_array((string) ($row['draft_status'] ?? ''), ['completed', 'frozen'], true)
             && $qualityIsCurrent && ($row['quality_status'] ?? '') === 'completed';
         $allStagesReady = ($row['research_status'] ?? '') === 'approved'
             && !empty($row['approved_at'])
-            && ($row['draft_status'] ?? '') === 'completed'
+            && in_array((string) ($row['draft_status'] ?? ''), ['completed', 'frozen'], true)
             && $qualityPassed
             && $imageReady;
         $active = in_array((string) ($row['job_status'] ?? ''), GENERATION_BATCH_ACTIVE_STATUSES, true);
@@ -766,7 +819,7 @@ function generation_workflow_statuses(mixed $rawTopicIds): array
         $qualityWaiting = $qualityIsCurrent && ($row['quality_status'] ?? '') === 'completed' && !$qualityPassed;
         $jobStatus = (string) ($row['job_status'] ?? '');
         $overall = $active ? $jobStatus
-            : (in_array($jobStatus, ['ready_for_preview', 'ready_with_notes'], true) ? $jobStatus
+            : (in_array($jobStatus, ['ready_for_preview', 'ready_with_notes', 'manual_review', 'waiting_review'], true) ? $jobStatus
             : ($jobStatus === 'auto_rejected' ? 'auto_rejected'
             : ($qualityWaiting || $researchWaiting ? 'waiting_review'
             : ($allStagesReady ? 'ready'
@@ -785,7 +838,7 @@ function generation_workflow_statuses(mixed $rawTopicIds): array
                 'research' => ['status' => generation_workflow_step_status($row['research_status'], $row['research_operation_status'], !empty($row['approved_at']), $researchWaiting), 'progress' => $row['research_id'] ? ($researchWaiting ? 100 : ($active && $row['job_stage'] === 'research' ? min(99, $progress * 3) : 100)) : 0, 'result_id' => $row['research_id'] ? (int) $row['research_id'] : null],
                 'draft' => ['status' => generation_workflow_step_status($row['draft_status'], $row['draft_operation_status']), 'progress' => $row['draft_id'] ? ($active && $row['job_stage'] === 'draft' ? min(99, $progress) : 100) : 0, 'result_id' => $row['draft_id'] ? (int) $row['draft_id'] : null, 'version' => $row['draft_version'] ? (int) $row['draft_version'] : null],
                 'quality' => ['status' => $qualityIsCurrent ? generation_workflow_step_status($row['quality_status'], $row['quality_operation_status'], $qualityPassed, $qualityWaiting) : 'not_started', 'progress' => $qualityIsCurrent && $row['quality_id'] ? ($active && $row['job_stage'] === 'quality_check' ? min(99, $progress) : 100) : 0, 'result_id' => $qualityIsCurrent && $row['quality_id'] ? (int) $row['quality_id'] : null, 'version' => $qualityIsCurrent && $row['check_number'] ? (int) $row['check_number'] : null],
-                'images' => ['status' => $imageManual ? 'manual_review' : ($imageReady ? 'completed' : ($active && $row['job_stage'] === 'images' ? 'running' : 'not_started')), 'progress' => (int) $row['image_total'] > 0 ? (int) floor(100 * (int) $row['image_completed'] / (int) $row['image_total']) : 0, 'completed' => (int) $row['image_completed'], 'total' => (int) $row['image_total']],
+                'images' => ['status' => $imageManual ? 'manual_review' : ($imageReady ? 'completed' : ($active && $row['job_stage'] === 'images' ? 'running' : 'not_started')), 'progress' => is_array($coverage) && count($coverage['required_slots']) > 0 ? (int) floor(100 * count($coverage['filled_slots']) / count($coverage['required_slots'])) : 0, 'completed' => is_array($coverage) ? count($coverage['filled_slots']) : 0, 'total' => is_array($coverage) ? count($coverage['required_slots']) : 0, 'coverage' => $coverage],
             ],
             'wait_reason' => (string) ($row['wait_reason'] ?? ''), 'error' => (string) ($row['error_message'] ?? ''),
             'available_at' => $availableAt, 'next_retry_at' => $availableAt,
@@ -800,8 +853,7 @@ function generation_workflow_statuses(mixed $rawTopicIds): array
             'latest_action' => $row['batch_action'] ? (string) $row['batch_action'] : null,
             'latest_outcome' => $row['outcome'] ? (string) $row['outcome'] : null,
             'latest_stage' => $row['job_stage'] ? (string) $row['job_stage'] : null,
-            'retryable' => in_array((string) ($row['job_status'] ?? ''), ['rate_limited', 'cancelled'], true)
-                || ((string) ($row['job_status'] ?? '') === 'failed' && ((string) ($draftValidation['repair_scope'] ?? '') === 'titles' || (string) ($row['outcome'] ?? '') !== 'validation_contract')),
+            'retryable' => generation_batch_item_is_retryable($row, $draftValidation),
             'repair_scope' => (string) ($draftValidation['repair_scope'] ?? ''),
             'repair' => $draftValidation,
             'progress' => $row['job_id'] ? $progress : ($qualityPassed && $imageReady ? 100 : 0),
@@ -973,7 +1025,8 @@ function generation_batch_update_item(int $itemId, array $changes): void
         'status', 'stage', 'progress_percent', 'research_operation_id', 'research_package_id',
         'draft_operation_id', 'draft_version_id', 'quality_operation_id', 'quality_check_id',
         'post_id', 'retry_count', 'auto_repair_count', 'available_at', 'next_retry_at', 'quota_dimension', 'quota_model', 'wait_reason', 'error_message', 'completed_at',
-        'lease_token', 'lease_expires_at', 'requested_stage', 'outcome',
+        'lease_token', 'lease_expires_at', 'requested_stage', 'outcome', 'convergence_active',
+        'paused_from_status', 'paused_at',
     ];
     $sets = ['updated_at = CURRENT_TIMESTAMP'];
     $params = [':id' => $itemId];
@@ -984,9 +1037,155 @@ function generation_batch_update_item(int $itemId, array $changes): void
         $sets[] = $key . ' = :' . $key;
         $params[':' . $key] = $value;
     }
+    $current = bueno_database()->prepare('SELECT status FROM generation_batch_items WHERE id=:id');
+    $current->execute([':id' => $itemId]);
+    $currentStatus = (string) ($current->fetchColumn() ?: '');
+    $leaseOnly = array_diff(array_keys($changes), ['lease_token', 'lease_expires_at']) === [];
+    if ($currentStatus === 'paused_by_operator' && !$leaseOnly) {
+        throw new GenerationBatchItemPausedException('Element batcha został wstrzymany przez operatora.');
+    }
     bueno_database()->prepare(
         'UPDATE generation_batch_items SET ' . implode(', ', $sets) . ' WHERE id = :id'
     )->execute($params);
+}
+
+/** Pause one active item without discarding its latest pipeline checkpoint. */
+function generation_batch_pause_item(int $itemId, string $actor = 'operator'): array
+{
+    $item = generation_batch_find_item($itemId);
+    if (!is_array($item) || !in_array((string) $item['status'], GENERATION_BATCH_ACTIVE_STATUSES, true)) {
+        throw new DomainException('Można wstrzymać wyłącznie aktywny element batcha.');
+    }
+    $database = bueno_database();
+    $database->beginTransaction();
+    try {
+        $update = $database->prepare('UPDATE generation_batch_items SET
+            paused_from_status=status,status="paused_by_operator",outcome="manual_ready_to_resume",
+            wait_reason="Wstrzymany przez operatora.",error_message="",available_at=CURRENT_TIMESTAMP,next_retry_at=NULL,
+            quota_dimension="",quota_model="",lease_token=NULL,lease_expires_at=NULL,paused_at=CURRENT_TIMESTAMP,
+            completed_at=NULL,updated_at=CURRENT_TIMESTAMP
+            WHERE id=:id AND status IN ("queued","research","draft","auto_repair","quality_check","images","rate_limited","auto_retry_scheduled")');
+        $update->execute([':id' => $itemId]);
+        if ($update->rowCount() !== 1) {
+            throw new DomainException('Można wstrzymać wyłącznie aktywny element batcha.');
+        }
+        generation_batch_audit((int) $item['batch_id'], $itemId, 'item_paused_by_operator', $actor, [
+            'previous_status' => (string) $item['status'], 'stage' => (string) $item['stage'],
+            'checkpoint_preserved' => true,
+        ]);
+        $database->commit();
+    } catch (Throwable $exception) {
+        if ($database->inTransaction()) $database->rollBack();
+        throw $exception;
+    }
+    generation_batch_refresh_status((int) $item['batch_id']);
+    return generation_batch_find_item($itemId) ?? [];
+}
+
+/** Back up generated artifacts and return one RSS-backed article to a clean
+ * baseline. Real Gemini quota events stay immutable; the per-article budget is reset. */
+function reset_topic_for_fresh_pipeline(int $topicId, string $actor = 'admin'): array
+{
+    $topic = find_editorial_topic($topicId);
+    $postId = (int) ($topic['primary_post_id'] ?? 0);
+    if (!is_array($topic) || $postId <= 0) throw new InvalidArgumentException('Temat nie ma artykułu do wyzerowania.');
+    $post = find_post($postId, true);
+    if (!is_array($post)) throw new InvalidArgumentException('Nie znaleziono artykułu do wyzerowania.');
+    if (in_array((string) ($post['status'] ?? ''), ['published', 'scheduled'], true) || (int) ($post['is_published'] ?? 0) === 1) {
+        throw new DomainException('Opublikowanego lub zaplanowanego artykułu nie można wyzerować tym przyciskiem.');
+    }
+    $database = bueno_database();
+    $activeMarks = implode(',', array_fill(0, count(GENERATION_BATCH_ACTIVE_STATUSES), '?'));
+    $active = $database->prepare('SELECT COUNT(*) FROM generation_batch_items WHERE topic_id=? AND status IN (' . $activeMarks . ')');
+    $active->execute([$topicId, ...GENERATION_BATCH_ACTIVE_STATUSES]);
+    if ((int) $active->fetchColumn() > 0) throw new DomainException('Najpierw wstrzymaj generowanie przyciskiem pauzy, a następnie użyj resetu.');
+
+    $backupDirectory = app_path('data/backups');
+    if (!is_dir($backupDirectory) && !mkdir($backupDirectory, 0755, true) && !is_dir($backupDirectory)) throw new RuntimeException('Nie można utworzyć katalogu backupu.');
+    $fetch = static function (string $table, string $where, array $parameters) use ($database): array {
+        $statement = $database->prepare('SELECT * FROM ' . $table . ' WHERE ' . $where);
+        $statement->execute($parameters);
+        return $statement->fetchAll();
+    };
+    $items = $fetch('generation_batch_items', 'topic_id=:topic OR post_id=:post', [':topic'=>$topicId, ':post'=>$postId]);
+    $itemIds = array_map('intval', array_column($items, 'id'));
+    $backup = ['contract'=>'fresh_pipeline_reset_v1','created_at'=>gmdate('c'),'topic_id'=>$topicId,'post_id'=>$postId,
+        'posts'=>$fetch('posts','id=:id',[':id'=>$postId]),
+        'research_packages'=>$fetch('research_packages','post_id=:id',[':id'=>$postId]),
+        'narrative_plans'=>$fetch('narrative_plans','article_id=:id',[':id'=>$postId]),
+        'article_draft_versions'=>$fetch('article_draft_versions','post_id=:id',[':id'=>$postId]),
+        'quality_check_runs'=>$fetch('quality_check_runs','post_id=:id',[':id'=>$postId]),
+        'final_multimodal_qc_runs'=>$fetch('final_multimodal_qc_runs','post_id=:id',[':id'=>$postId]),
+        'thumbnail_versions'=>$fetch('thumbnail_versions','post_id=:id',[':id'=>$postId]),
+        'article_feedback_operations'=>$fetch('article_feedback_operations','post_id=:id',[':id'=>$postId]),
+        'article_proposal_audit'=>$fetch('article_proposal_audit','post_id=:id',[':id'=>$postId]),
+        'article_images'=>$fetch('article_images','post_id=:id',[':id'=>$postId]),
+        'article_related_context_blocks'=>$fetch('article_related_context_blocks','post_id=:id',[':id'=>$postId]),
+        'article_image_vision_audit'=>$fetch('article_image_vision_audit','post_id=:id',[':id'=>$postId]),
+        'generation_operations'=>$fetch('generation_operations','post_id=:id',[':id'=>$postId]),
+        'article_generation_budget'=>$fetch('article_generation_budget','article_id=:id',[':id'=>$postId]),
+        'generation_batch_items'=>$items,
+        'gemini_quota_events'=>$fetch('gemini_quota_events','topic_id=:topic',[':topic'=>$topicId]),
+        'quota_history_policy'=>'preserved_for_real_provider_accounting'];
+    if ($itemIds !== []) {
+        $marks = implode(',', array_fill(0, count($itemIds), '?'));
+        $backup['generation_batch_audit'] = $fetch('generation_batch_audit', 'item_id IN (' . $marks . ')', $itemIds);
+    } else $backup['generation_batch_audit'] = [];
+    $backupPath = $backupDirectory . '/fresh-pipeline-topic-' . $topicId . '-' . gmdate('Ymd-His') . '-' . bin2hex(random_bytes(3)) . '.json';
+    $encoded = json_encode($backup, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    if (file_put_contents($backupPath, $encoded, LOCK_EX) === false) throw new RuntimeException('Nie udało się zapisać backupu resetu.');
+
+    $database->beginTransaction();
+    try {
+        if ($itemIds !== []) {
+            $marks = implode(',', array_fill(0, count($itemIds), '?'));
+            $database->prepare('DELETE FROM generation_batch_audit WHERE item_id IN (' . $marks . ')')->execute($itemIds);
+        }
+        $database->prepare('DELETE FROM generation_batch_items WHERE topic_id=:topic OR post_id=:post')->execute([':topic'=>$topicId, ':post'=>$postId]);
+        foreach (['final_multimodal_qc_runs','thumbnail_versions','quality_check_runs','article_feedback_operations','article_proposal_audit','article_related_context_blocks','article_image_vision_audit','article_draft_versions','research_packages','article_images','generation_operations'] as $table) {
+            $database->prepare('DELETE FROM ' . $table . ' WHERE post_id=:post')->execute([':post'=>$postId]);
+        }
+        $database->prepare('DELETE FROM narrative_plans WHERE article_id=:post')->execute([':post'=>$postId]);
+        $database->prepare('DELETE FROM article_generation_budget WHERE article_id=:post')->execute([':post'=>$postId]);
+        $database->prepare('INSERT INTO post_status_history (post_id,previous_status,new_status,reason,actor) VALUES (:post,:previous,"idea","Reset do świeżego pipeline; backup zapisany przed usunięciem artefaktów.",:actor)')->execute([':post'=>$postId,':previous'=>(string)$post['status'],':actor'=>mb_substr($actor,0,100)]);
+        $database->prepare('UPDATE posts SET title=COALESCE((SELECT title FROM discovered_feed_items WHERE post_id=:post ORDER BY id DESC LIMIT 1),title),excerpt=COALESCE((SELECT summary FROM discovered_feed_items WHERE post_id=:post ORDER BY id DESC LIMIT 1),""),content="",image_path="",content_image_path="",content_images="[]",content_blocks="[]",image_alt="",status="idea",is_published=0,published_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=:post')->execute([':post'=>$postId]);
+        $database->commit();
+    } catch (Throwable $exception) {
+        if ($database->inTransaction()) $database->rollBack();
+        throw $exception;
+    }
+    return ['topic_id'=>$topicId,'post_id'=>$postId,'backup_path'=>$backupPath,'backup_sha256'=>hash_file('sha256',$backupPath),'gemini_budget_used'=>0];
+}
+
+/** Resume an item only when it was explicitly paused by an operator. */
+function resume_generation_batch_item(int $itemId, string $actor = 'operator'): array
+{
+    $item = generation_batch_find_item($itemId);
+    $resumeStage = (string) ($item['stage'] ?? '');
+    if (!is_array($item) || (string) $item['status'] !== 'paused_by_operator'
+        || !in_array((string) $item['paused_from_status'], GENERATION_BATCH_ACTIVE_STATUSES, true)
+        || !in_array($resumeStage, GENERATION_WORKFLOW_STAGES, true)) {
+        throw new DomainException('Wznowić można wyłącznie element wstrzymany przez operatora.');
+    }
+    $database = bueno_database();
+    $database->beginTransaction();
+    try {
+        $database->prepare('UPDATE generation_batch_items SET status=:status,paused_from_status="",paused_at=NULL,
+            outcome="queued",wait_reason="",error_message="",available_at=CURRENT_TIMESTAMP,next_retry_at=NULL,
+            quota_dimension="",quota_model="",lease_token=NULL,lease_expires_at=NULL,completed_at=NULL,updated_at=CURRENT_TIMESTAMP
+            WHERE id=:id AND status="paused_by_operator"')
+            ->execute([':id' => $itemId, ':status' => $resumeStage]);
+        generation_batch_audit((int) $item['batch_id'], $itemId, 'item_resumed_by_operator', $actor, [
+            'resume_stage' => $resumeStage, 'paused_from_status' => (string) $item['paused_from_status'],
+            'checkpoint_preserved' => true,
+        ]);
+        $database->commit();
+    } catch (Throwable $exception) {
+        if ($database->inTransaction()) $database->rollBack();
+        throw $exception;
+    }
+    generation_batch_refresh_status((int) $item['batch_id']);
+    return generation_batch_find_item($itemId) ?? [];
 }
 
 function generation_batch_is_autonomous(array $item): bool
@@ -1034,7 +1233,10 @@ function generation_batch_resume_legacy_item(int $legacyItemId,string $actor='sy
     if($active->fetchColumn()!==false)throw new DomainException('Temat ma już aktywny autonomiczny przebieg.');
     $checkpoint=generation_batch_legacy_checkpoint((int)$legacy['topic_id']);$db=bueno_database();$db->beginTransaction();
     try{
-        $requestKey='legacy-router-resume-'.$legacyItemId;
+        // A reset may remove the migrated item while retaining historical batches.
+        // Keep the migration idempotent through migrated_from_item_id, but never reuse
+        // a request key owned by a historical, now-empty batch.
+        $requestKey='legacy-router-resume-'.$legacyItemId.'-'.bin2hex(random_bytes(8));
         $db->prepare('INSERT INTO generation_batches(batch_key,request_key,action,item_count,created_by,execution_mode,status) VALUES(:key,:request,"generate_all",1,:actor,"api","running")')
             ->execute([':key'=>bin2hex(random_bytes(16)),':request'=>$requestKey,':actor'=>mb_substr($actor,0,100)]);
         $batchId=(int)$db->lastInsertId();
@@ -1329,7 +1531,7 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
     }
     if (generation_automatic_dispatch_paused() && (string) ($item['dispatch_mode'] ?? 'automatic') !== 'operator_manual') {
         bueno_database()->prepare('UPDATE generation_batch_items SET paused_from_status=status,status="paused_by_operator",
-            outcome="manual_ready_to_resume",wait_reason="Wstrzymany â€” uruchom rÄ™cznie.",next_retry_at=NULL,
+            outcome="manual_ready_to_resume",wait_reason="Wstrzymany — uruchom ręcznie.",next_retry_at=NULL,
             quota_dimension="",quota_model="",lease_token=NULL,lease_expires_at=NULL,paused_at=CURRENT_TIMESTAMP,
             completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=:id')->execute([':id' => $itemId]);
         bueno_database()->prepare('UPDATE generation_batches SET status="paused",updated_at=CURRENT_TIMESTAMP WHERE id=:id')
@@ -1389,17 +1591,11 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
                 ]);
             }
             execute_generation_operation($operationId, $transport);
-            // BUDGET INCREMENT — research call
             $articleId = (int) ($item['post_id'] ?? 0);
             if ($articleId > 0) {
-                try {
-                    gemini_article_budget_increment(bueno_database(), $articleId, 'research_package', 'research', (int)($item['retry_count'] ?? 0) + 1, 'success');
-                    $budgetState = gemini_article_budget_state($articleId);
-                    if ((int)($budgetState['convergence_active'] ?? 0) === 1) {
-                        generation_batch_update_item($itemId, ['convergence_active' => 1]);
-                    }
-                } catch (GeminiArticleBudgetException $budgetEx) {
-                    throw $budgetEx;
+                $budgetState = gemini_article_budget_state($articleId);
+                if ((int)($budgetState['convergence_active'] ?? 0) === 1) {
+                    generation_batch_update_item($itemId, ['convergence_active' => 1]);
                 }
             }
             $package = find_research_package_by_operation($operationId);
@@ -1440,31 +1636,27 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
             $operationId = (int) ($item['draft_operation_id'] ?? 0);
             if ($operationId <= 0) {
                 // Generate NarrativePlan
-                $existingPlan = find_narrative_plan_for_topic((int) $item['topic_id']);
+                $existingPlan = find_narrative_plan_for_post((int) $item['post_id'], (int) $item['topic_id']);
                 if ($existingPlan === null) {
-                    $planResult = generate_narrative_plan((int) $item['topic_id'], [], $transport);
-                    $planId = (int) ($planResult['plan_id'] ?? 0);
-                    if ($planId > 0) {
-                        accept_narrative_plan($planId);
+                    $existingPlan = generation_batch_finalize_stored_narrative_plan((int) $item['topic_id'], (int) $item['post_id']);
+                    if ($existingPlan === null) {
+                        $planResult = generate_narrative_plan((int) $item['topic_id'], [], $transport);
+                        $planId = (int) ($planResult['plan_id'] ?? 0);
+                        $existingPlan = $planId > 0 ? find_narrative_plan($planId) : null;
                     }
-                    // Budget increment for narrative plan call
-                    $articleId2 = (int) ($item['post_id'] ?? 0);
-                    if ($articleId2 > 0) {
-                        try {
-                            gemini_article_budget_increment(bueno_database(), $articleId2, 'narrative_plan', 'narrative_plan', 1, 'success');
-                            $budgetState2 = gemini_article_budget_state($articleId2);
-                            if ((int)($budgetState2['convergence_active'] ?? 0) === 1) {
-                                generation_batch_update_item($itemId, ['convergence_active' => 1]);
-                            }
-                        } catch (GeminiArticleBudgetException $budgetEx) {
-                            throw $budgetEx;
-                        }
+                    if ($existingPlan === null) {
+                        throw new RuntimeException('Niespójny NarrativePlan: ukończona operacja nie dała się trwale sfinalizować; wymagane ręczne wznowienie po naprawie artefaktu.');
                     }
-                } else {
+                }
+                if (is_array($existingPlan)) {
                     accept_narrative_plan((int) $existingPlan['id']);
                 }
 
-                $operationId = prepare_article_draft_operation((int) $item['research_package_id'], 'informational');
+                $operationId = prepare_article_draft_operation(
+                    (int) $item['research_package_id'],
+                    'informational',
+                    is_array($existingPlan) ? $existingPlan : null
+                );
                 $draft = find_article_draft_by_operation($operationId);
                 generation_batch_update_item($itemId, [
                     'draft_operation_id' => $operationId, 'draft_version_id' => (int) $draft['id'],
@@ -1476,17 +1668,11 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
                 resume_saved_article_title_repair($operationId, $transport);
             } else {
                 execute_generation_operation($operationId, $transport);
-                // BUDGET INCREMENT — draft call
                 $articleId = (int) ($item['post_id'] ?? 0);
                 if ($articleId > 0) {
-                    try {
-                        gemini_article_budget_increment(bueno_database(), $articleId, 'article_draft', 'draft', (int)($item['retry_count'] ?? 0) + 1, 'success');
-                        $budgetState = gemini_article_budget_state($articleId);
-                        if ((int)($budgetState['convergence_active'] ?? 0) === 1) {
-                            generation_batch_update_item($itemId, ['convergence_active' => 1]);
-                        }
-                    } catch (GeminiArticleBudgetException $budgetEx) {
-                        throw $budgetEx;
+                    $budgetState = gemini_article_budget_state($articleId);
+                    if ((int)($budgetState['convergence_active'] ?? 0) === 1) {
+                        generation_batch_update_item($itemId, ['convergence_active' => 1]);
                     }
                 }
             }
@@ -1535,17 +1721,11 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
                 ]);
             }
             execute_generation_operation($operationId, $transport);
-            // BUDGET INCREMENT — QC call
             $articleId = (int) ($item['post_id'] ?? 0);
             if ($articleId > 0) {
-                try {
-                    gemini_article_budget_increment(bueno_database(), $articleId, 'quality_check', 'quality_check', (int)($item['retry_count'] ?? 0) + 1, 'success');
-                    $budgetState = gemini_article_budget_state($articleId);
-                    if ((int)($budgetState['convergence_active'] ?? 0) === 1) {
-                        generation_batch_update_item($itemId, ['convergence_active' => 1]);
-                    }
-                } catch (GeminiArticleBudgetException $budgetEx) {
-                    throw $budgetEx;
+                $budgetState = gemini_article_budget_state($articleId);
+                if ((int)($budgetState['convergence_active'] ?? 0) === 1) {
+                    generation_batch_update_item($itemId, ['convergence_active' => 1]);
                 }
             }
             $check = find_quality_check_by_operation($operationId);
@@ -1647,10 +1827,16 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
                     'wait_reason' => 'Kontrola jakości zaliczona.', 'completed_at' => gmdate('Y-m-d H:i:s'),
                 ] : [
                     'status' => 'images', 'stage' => 'images', 'progress_percent' => 85,
+                    'wait_reason' => 'Kontrola jakości zaliczona; przygotowuję grafiki.',
+                    'error_message' => '', 'next_retry_at' => null,
                 ]);
                 generation_batch_audit((int) $item['batch_id'], $itemId, 'quality_passed', 'worker', ['quality_check_id' => (int) $check['id']]);
             }
         } elseif ($stage === 'images') {
+            generation_batch_update_item($itemId, [
+                'status' => 'images', 'stage' => 'images', 'error_message' => '',
+                'wait_reason' => 'Przygotowuję grafiki zgodnie z zatwierdzonym szkicem.',
+            ]);
             if ((bool) app_config('ai_image_generation_enabled')) {
                 throw new RuntimeException('Batch odmawia uruchomienia, gdy generator obrazów AI jest włączony.');
             }
@@ -1660,12 +1846,33 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
                 throw new RuntimeException('Szkic nie zawiera zwalidowanego planu legalnych ilustracji.');
             }
             $postId = (int) $item['post_id'];
+            $narrativePlan = find_narrative_plan_for_post($postId, (int) $item['topic_id']);
+            if (!is_array($narrativePlan)) {
+                $narrativePlan = generation_batch_finalize_stored_narrative_plan((int) $item['topic_id'], $postId);
+            }
+            if (!is_array($narrativePlan)) {
+                throw new RuntimeException('Niespójny NarrativePlan: P06 nie może rozpocząć recovery grafik bez trwałego, zwalidowanego planu; wymagane ręczne wznowienie po naprawie artefaktu.');
+            }
+            $visualPlan = article_final_visual_plan_for_post($postId, (int) $item['topic_id']);
+            if (!is_array($visualPlan)) {
+                $finalPlanOperationId = prepare_article_final_visual_plan_operation($postId, (int) $item['topic_id']);
+                execute_generation_operation($finalPlanOperationId, $transport);
+                $visualPlan = article_final_visual_plan_for_post($postId, (int) $item['topic_id']);
+            }
+            if (!is_array($visualPlan)) throw new RuntimeException('FinalVisualPlan nie został ukończony dla locked core text.');
+            $visualPlan = article_image_effective_visual_plan($postId, (int) $item['topic_id'], $narrativePlan);
+            $heroSlot = (array) ($visualPlan['hero_slot'] ?? []);
+            if (($heroSlot['role'] ?? '') !== 'hero' || empty($heroSlot['required'])
+                || empty($heroSlot['must_be_direct']) || (array) ($heroSlot['search_queries_direct'] ?? []) === []) {
+                throw new RuntimeException('Niespójny NarrativePlan: P06 wymaga hero zgodnego z kontraktem direct-coverage; wymagane ręczne wznowienie po naprawie planu.');
+            }
             $existingSlots = [];
             foreach (list_article_images($postId) as $existingImage) {
                 $existingSlots[(string) $existingImage['role'] . ':' . (string) $existingImage['section_id']] = true;
             }
             $plannedCount = 0;
-            foreach ([(array) $draftJson['illustration_plan']['hero'], ...(array) $draftJson['illustration_plan']['inline']] as $plannedImage) {
+            $finalIllustrationPlan = narrative_visual_plan_to_illustration_plan($visualPlan);
+            foreach ([(array) $finalIllustrationPlan['hero'], ...(array) $finalIllustrationPlan['inline']] as $plannedImage) {
                 $slot = (string) $plannedImage['role'] . ':' . (string) $plannedImage['section_id'];
                 if (!isset($existingSlots[$slot])) {
                     persist_article_image($postId, $plannedImage);
@@ -1677,64 +1884,191 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
             // it before marking the item ready, otherwise the proposal preview
             // keeps rendering the original RSS idea instead of the Gemini draft.
             promote_article_draft_to_post((int) $item['draft_version_id']);
+            $directVisionBudget = article_image_direct_vision_budget_plan($postId, (int) $item['topic_id']);
             $imageSummary = (bool) app_config('source_image_mock')
-                ? fulfill_article_source_images($postId, static fn (string $query): array => [], static fn (array $image): array => $image)
-                : fulfill_article_source_images($postId);
+                ? fulfill_article_source_images($postId, static fn (string $query): array => [], static fn (array $image): array => $image, null, 'direct', (int) $directVisionBudget['direct_vision_limit'])
+                : fulfill_article_source_images($postId, null, null, null, 'direct', (int) $directVisionBudget['direct_vision_limit']);
+            $imageSummary['direct_vision_budget'] = $directVisionBudget;
+            $imageSummary['pending_related_hero_resume'] = article_image_resume_pending_related_hero(
+                $postId,
+                (int) $item['topic_id']
+            );
+            $recovery = null;
+            if (((int) $imageSummary['missing'] + (int) $imageSummary['manual_review']) > 0
+                && find_narrative_plan_for_post($postId, (int) $item['topic_id']) !== null) {
+                try {
+                    $recovery = article_image_execute_shortage_recovery(
+                        $postId,
+                        (int) $item['topic_id'],
+                        (bool) app_config('source_image_mock')
+                            ? static fn (string $query): array => []
+                            : article_image_default_searcher(),
+                        $transport
+                    );
+                    $recovery = article_image_apply_shortage_recovery((int) $recovery['operation_id'], null, null, $transport);
+                } catch (ArticleRecoveryPreflightException $exception) {
+                    $recovery = [
+                        'status' => 'refused_pretransport',
+                        'reason_code' => $exception->reasonCode,
+                        'message' => $exception->getMessage(),
+                        'provider_error' => false,
+                        'transport_attempted' => false,
+                    ];
+                    generation_batch_audit((int) $item['batch_id'], $itemId, 'recovery_preflight_refused', 'worker', $recovery);
+                }
+            }
             if (generation_batch_is_autonomous($item)) {
                 repair_report_append($itemId, 'image_plan', 'source_image_waterfall', ['summary' => $imageSummary,
-                    'waterfall' => ['primary_source', 'institutional_repository', 'topic_bc_queries', 'local_fallback']]);
+                    'recovery' => $recovery,
+                    'waterfall' => ['primary_source', 'institutional_repository', 'topic_bc_queries', 'related_recovery']]);
             }
-            $requiresReview = ((int) $imageSummary['missing'] + (int) $imageSummary['manual_review']) > 0;
-            $localFallback = [];
-            if ($requiresReview && generation_batch_is_autonomous($item)) {
-                $localFallback = salvage_local_editorial_images($postId);
-                $requiresReview = false;
-                repair_report_append($itemId, 'image_plan', 'local_editorial_illustration', ['assets' => $localFallback, 'waterfall' => ['primary_source', 'institutional_repository', 'topic_bc_queries', 'local_fallback']]);
+            $coverage = article_image_coverage_state($postId, (int) $item['topic_id']);
+            $replan = null;
+            $replanEligibility = article_image_recovery_replan_retry_state(
+                $postId, (int) $item['topic_id'], $coverage,
+                gemini_article_budget_state($postId), true
+            );
+            if (!empty($replanEligibility['eligible'])) {
+                try {
+                    $replanOperationId = prepare_article_image_recovery_replan_operation($postId, (int) $item['topic_id']);
+                    execute_generation_operation($replanOperationId, $transport);
+                    $replan = article_image_apply_recovery_replan($replanOperationId);
+                    $afterReplanBudget = gemini_article_budget_state($postId);
+                    $remainingAfterReplan = max(0, (int) ($afterReplanBudget['max_calls'] ?? 30) - (int) ($afterReplanBudget['used_calls'] ?? 0));
+                    $visionLimit = min(
+                        2 * count((array) ($coverage['missing_slots'] ?? [])),
+                        max(0, $remainingAfterReplan - (int) $replanEligibility['closure_reserve'])
+                    );
+                    $replan['retrieval'] = $visionLimit > 0
+                        ? ((bool) app_config('source_image_mock')
+                            ? fulfill_article_source_images($postId, static fn (string $query): array => [], static fn (array $image): array => $image, null, 'semantic', $visionLimit, 2)
+                            : fulfill_article_source_images($postId, null, null, null, 'semantic', $visionLimit, 2))
+                        : ['vision_call_limit'=>0,'missing'=>count((array) ($coverage['missing_slots'] ?? []))];
+                    $replan['vision_candidate_limit_per_missing_slot'] = 2;
+                    $replan['closure_reserve'] = (int) $replanEligibility['closure_reserve'];
+                } catch (ArticleRecoveryPreflightException $exception) {
+                    $replan = ['status'=>'refused_pretransport','reason_code'=>$exception->reasonCode,'provider_calls'=>0];
+                }
+                $coverage = article_image_coverage_state($postId, (int) $item['topic_id']);
             }
+            $wwClosure = ['revalidation'=>null,'retrieval'=>null];
+            if (empty($coverage['coverage_complete'])) {
+                $closureReserve = article_layout_reusable_operation_id($postId) !== null ? 1 : 2;
+                $remainingForImages = max(0, (int) (gemini_article_budget_state($postId)['max_calls'] ?? 30)
+                    - (int) (gemini_article_budget_state($postId)['used_calls'] ?? 0) - $closureReserve);
+                if ($remainingForImages > 0) {
+                    $wwClosure['revalidation'] = article_image_revalidate_downloaded_contextual_candidates(
+                        $postId, (int) $item['topic_id'], min(count((array) ($coverage['missing_slots'] ?? [])), $remainingForImages)
+                    );
+                    $coverage = article_image_coverage_state($postId, (int) $item['topic_id']);
+                    $remainingForImages = max(0, (int) (gemini_article_budget_state($postId)['max_calls'] ?? 30)
+                        - (int) (gemini_article_budget_state($postId)['used_calls'] ?? 0) - $closureReserve);
+                    if ($remainingForImages > 0 && empty($coverage['coverage_complete'])) {
+                        $wwClosure['retrieval'] = fulfill_article_source_images(
+                            $postId, null, null, null, 'contextual',
+                            min($remainingForImages, max(1, count((array) ($coverage['missing_slots'] ?? [])))), 1
+                        );
+                        $coverage = article_image_coverage_state($postId, (int) $item['topic_id']);
+                    }
+                }
+            }
+            $requiresReview = empty($coverage['coverage_complete']);
+            $heroRecoveryFailed = !(bool) app_config('source_image_mock')
+                && empty($coverage['hero_is_allowed']);
+            $layoutOperationId = null;
+            $finalQcOperationId = null;
+            $finalQcResult = null;
+            $finalQcReadiness = 'manual_review';
+            if (generation_batch_image_coverage_allows_finalization($coverage)) {
+                $layoutOperationId = article_layout_reusable_operation_id($postId);
+                if ($layoutOperationId === null) {
+                    $layoutOperationId = prepare_article_layout_plan_operation($postId, (int) $item['topic_id']);
+                    execute_generation_operation($layoutOperationId, $transport);
+                } else {
+                    refresh_article_image_rendering($postId);
+                }
+                $finalQcOperationId = prepare_final_multimodal_qc_operation($postId, (int) $item['topic_id'], (int) $item['draft_version_id']);
+                execute_generation_operation($finalQcOperationId, $transport);
+                $finalQcResult = complete_final_multimodal_qc_operation($finalQcOperationId);
+                $finalQcReadiness = final_multimodal_qc_readiness($postId);
+            }
+            $finalQcPassed = is_array($finalQcResult)
+                && in_array((string) ($finalQcResult['decision'] ?? ''), ['PASS', 'PASS_WITH_MINOR_NOTES'], true)
+                && $finalQcReadiness === 'ready_for_manual_publish';
+            $finalQcRequiredReview = !$requiresReview && !$finalQcPassed;
             $imageWaitReason = $requiresReview
                 ? 'Gotowa propozycja jest dostępna. Brakujące lub niezweryfikowane ilustracje oznaczono jako wymagające uwagi; publikacja pozostaje zablokowana.'
                 : 'Legalne ilustracje źródłowe zostały użyte automatycznie; gotowa propozycja jest dostępna.';
             generation_batch_update_item($itemId, [
-                'status' => (string) ($item['requested_stage'] ?? '') === 'images' ? 'completed'
-                    : (generation_batch_is_autonomous($item) ? ($localFallback !== [] || (int) ($item['auto_repair_count'] ?? 0) > 0 || (string) ($item['outcome'] ?? '') === 'safe_composer_validated' ? 'ready_with_notes' : 'ready_for_preview') : 'ready'),
-                'stage' => (string) ($item['requested_stage'] ?? '') === 'images' ? 'images' : 'ready',
-                'outcome' => $requiresReview ? 'completed_with_warnings' : 'completed', 'progress_percent' => 100,
-                'wait_reason' => $imageWaitReason,
+                'status' => ($heroRecoveryFailed || $requiresReview || $finalQcRequiredReview) ? 'manual_review' : ((string) ($item['requested_stage'] ?? '') === 'images' ? 'completed'
+                    : (generation_batch_is_autonomous($item) ? 'ready_for_preview' : 'ready')),
+                'stage' => ($heroRecoveryFailed || $requiresReview || $finalQcRequiredReview) ? 'images' : ((string) ($item['requested_stage'] ?? '') === 'images' ? 'images' : 'ready'),
+                'outcome' => $heroRecoveryFailed ? 'hero_recovery_manual_review' : ($requiresReview ? 'completed_with_warnings' : ($finalQcRequiredReview ? 'final_multimodal_qc_manual_review' : 'final_multimodal_qc_passed')), 'progress_percent' => 100,
+                'wait_reason' => $heroRecoveryFailed ? 'Hero nie osiągnął poziomu direct_ok, broader_direct_ok ani controlled_related_supported po bounded recovery; wymagany ręczny przegląd.' : $imageWaitReason,
                 'completed_at' => gmdate('Y-m-d H:i:s'),
             ]);
-            generation_batch_audit((int) $item['batch_id'], $itemId, $requiresReview ? 'item_ready_with_image_warnings' : 'item_ready', 'worker', [
+            generation_batch_audit((int) $item['batch_id'], $itemId, ($requiresReview || $finalQcRequiredReview) ? 'item_manual_review' : 'item_ready', 'worker', [
                 'draft_version_id' => (int) $item['draft_version_id'], 'published' => false,
                 'planned_legal_images' => $plannedCount, 'source_image_summary' => $imageSummary,
-                'ai_image_generation_calls' => 0, 'local_editorial_fallbacks' => $localFallback,
+                'coverage' => $coverage, 'layout_operation_id' => $layoutOperationId, 'final_multimodal_qc_operation_id' => $finalQcOperationId,
+                'final_multimodal_qc' => $finalQcResult, 'final_multimodal_qc_readiness' => $finalQcReadiness,
+                'recovery_replan' => $replan,
+                'ww_closure' => $wwClosure,
+                'ai_image_generation_calls' => 0,
             ]);
         }
+    } catch (GenerationBatchItemPausedException $exception) {
+        $paused = generation_batch_find_item($itemId);
+        if (is_array($paused) && (string) $paused['status'] === 'paused_by_operator') {
+            generation_batch_audit((int) $paused['batch_id'], $itemId, 'worker_observed_item_pause', 'worker', [
+                'stage' => (string) $paused['stage'], 'checkpoint_preserved' => true,
+            ]);
+            return;
+        }
+        throw $exception;
     } catch (Throwable $exception) {
+        $paused = generation_batch_find_item($itemId);
+        if (is_array($paused) && (string) $paused['status'] === 'paused_by_operator') {
+            generation_batch_audit((int) $paused['batch_id'], $itemId, 'worker_observed_item_pause', 'worker', [
+                'stage' => (string) $paused['stage'], 'checkpoint_preserved' => true,
+            ]);
+            return;
+        }
         $message = mb_substr($exception->getMessage(), 0, 2000);
         $classification = generation_error_classification($exception);
-        if ($exception instanceof GeminiArticleBudgetException && generation_batch_is_autonomous($item)) {
+        $budgetNow = gemini_article_budget_state((int) $item['post_id']);
+        $budgetExhausted = (bool) ($budgetNow['is_exhausted'] ?? false)
+            || (int) ($budgetNow['used_calls'] ?? 0) >= (int) ($budgetNow['max_calls'] ?? 30);
+        if (generation_batch_is_autonomous($item)
+            && ($exception instanceof GeminiArticleBudgetException || $budgetExhausted)) {
             $budgetDiagnostics = gemini_budget_exhaustion_diagnostics((int) $item['post_id']);
             generation_batch_update_item($itemId, [
                 'status'=>'manual_review','stage'=>$stage,'outcome'=>'budget_exhausted','progress_percent'=>90,
-                'wait_reason'=>'Budzet 20 wywołań Gemini wyczerpany; artykuł wymaga przeglądu redakcyjnego.',
+                'wait_reason'=>'Budżet 30 wywołań Gemini wyczerpany; artykuł wymaga przeglądu redakcyjnego.',
                 'available_at'=>gmdate('Y-m-d H:i:s'),'next_retry_at'=>null,'quota_dimension'=>'','quota_model'=>'','completed_at'=>null,
             ]);
             repair_report_append($itemId, 'final_package', 'manual_review', [
-                'live_requests_used'=>$exception->usedCalls,'request_cap'=>20,'publication_recommended'=>false,
+                'live_requests_used'=>(int) ($budgetNow['used_calls'] ?? 0),'request_cap'=>(int) ($budgetNow['max_calls'] ?? 30),'publication_recommended'=>false,
                 'stage_at_exhaustion'=>$stage,'convergence_active'=>(bool)($item['convergence_active']??false),
+                'trigger_error'=>$message,
                 'budget'=>$budgetDiagnostics['budget'],
                 'artifacts'=>$budgetDiagnostics['artifacts'],
                 'images'=>$budgetDiagnostics['images'],
             ]);
             generation_batch_audit((int)$item['batch_id'],$itemId,'gemini_article_budget_exhausted','worker',[
-                'live_requests_used'=>$exception->usedCalls,'request_cap'=>20,'next'=>'manual_review',
+                'live_requests_used'=>(int) ($budgetNow['used_calls'] ?? 0),'request_cap'=>(int) ($budgetNow['max_calls'] ?? 30),'next'=>'manual_review',
                 'stage_at_exhaustion'=>$stage,
+                'trigger_error'=>$message,
                 'convergence_active'=>(bool)($item['convergence_active']??false),
                 'diagnostics'=>$budgetDiagnostics,
             ]);
             return;
         }
         if ($exception instanceof GeminiQuotaWaitException) {
-            $retryAt = gmdate('Y-m-d H:i:s', strtotime($exception->nextRetryAt));
+            // Preserve provider retry-after while keeping the UI contract observable
+            // across a whole status read (a one-second retry can otherwise expire
+            // before the workflow payload is assembled).
+            $retryAt = gmdate('Y-m-d H:i:s', max(strtotime($exception->nextRetryAt), time() + 2));
             generation_batch_update_item($itemId, [
                 'status' => generation_batch_is_autonomous($item) ? 'auto_retry_scheduled' : 'rate_limited',
                 'outcome' => 'quota_retry_scheduled',
@@ -1757,7 +2091,7 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
             generation_batch_update_item($itemId, [
                 'status' => 'auto_repair', 'stage' => 'quality_check', 'outcome' => 'safe_composer_queued',
                 'progress_percent' => 94,
-                'wait_reason' => 'Finalne QC modelowe zwrÃ³ciÅ‚o nieprawidÅ‚owy kontrakt; wykonujÄ™ deterministyczny post-QC gate bez kolejnego requestu.',
+                'wait_reason' => 'Finalne QC modelowe zwróciło nieprawidłowy kontrakt; wykonuję deterministyczny post-QC gate bez kolejnego requestu.',
                 'available_at' => gmdate('Y-m-d H:i:s'), 'next_retry_at' => null,
                 'quota_dimension' => '', 'quota_model' => '', 'completed_at' => null,
             ]);
@@ -1765,18 +2099,14 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
                 'model_qc_status' => 'invalid_contract', 'live_requests_used' => 15,
                 'model_qc_passed' => false, 'next' => 'source_bounded_safe_composer',
                 'publication_recommended' => false,
-            ], ['Finalne modelowe QC nie dostarczyÅ‚o poprawnego kontraktu; gotowoÅ›Ä‡ zostanie oparta na bramkach deterministycznych.']);
+            ], ['Finalne modelowe QC nie dostarczyło poprawnego kontraktu; gotowość zostanie oparta na bramkach deterministycznych.']);
             generation_batch_audit((int) $item['batch_id'], $itemId, 'final_qc_contract_salvage', 'worker', [
                 'live_requests_used' => 15, 'model_qc_passed' => false,
                 'decision_basis' => 'deterministic_preflight_and_post_qc_gate',
             ]);
             return;
         }
-        $rateLimited = str_contains(mb_strtolower($message), 'limit free tier')
-            || str_contains($message, '429') || str_contains(mb_strtolower($message), 'rate limit')
-            || str_contains(mb_strtolower($message), 'timeout') || str_contains(mb_strtolower($message), 'timed out')
-            || str_contains(mb_strtolower($message), 'temporarily unavailable');
-        if ($rateLimited) {
+        if ((bool) ($classification['retryable'] ?? false)) {
             $retry = (int) $item['retry_count'] + 1;
             preg_match('/Retry-After:\s*(\d+)/i', $message, $retryAfterMatch);
             $retryAfter = isset($retryAfterMatch[1]) ? (int) $retryAfterMatch[1] : 0;
@@ -1792,25 +2122,23 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
             generation_batch_audit((int) $item['batch_id'], $itemId, generation_batch_is_autonomous($item) ? 'auto_retry_scheduled' : 'rate_limited', 'worker', ['delay_seconds' => $delay]);
         } else {
             $contractError = str_starts_with($message, 'Nieprawidłowa odpowiedź Gemini API:');
+            $visualPlanContractMismatch = $stage === 'draft'
+                && (str_starts_with($message, 'VisualPlan ') || str_starts_with($message, 'NarrativePlan '));
             $display = $contractError
-                ? 'Błąd formatu odpowiedzi / wymaga poprawy kontraktu lub nowej operacji po aktualizacji.'
-                : $message;
-            if (generation_batch_is_autonomous($item)) {
-                $delay = max(60, (int) app_config('batch_rate_limit_backoff_seconds'));
-                generation_batch_update_item($itemId, ['status' => 'auto_retry_scheduled', 'outcome' => $contractError ? 'validation_retry_scheduled' : 'infrastructure_retry_scheduled',
-                    'available_at' => gmdate('Y-m-d H:i:s', time() + $delay),
-                    'wait_reason' => $contractError ? 'Walidacja kontraktu wymaga naprawy bieżącego etapu.' : 'Automatyczne wznowienie operacji po błędzie infrastruktury.',
-                    'error_message' => $message]);
-                generation_batch_audit((int) $item['batch_id'], $itemId, 'auto_retry_scheduled', 'worker', ['error' => $message, 'classification' => $contractError ? 'validation_contract' : $classification['class']]);
-            } else {
-                generation_batch_update_item($itemId, [
-                    'status' => 'failed', 'outcome' => $contractError ? 'validation_contract' : 'failed',
-                    'wait_reason' => $display, 'error_message' => $message,
-                ]);
-                generation_batch_audit((int) $item['batch_id'], $itemId, 'item_failed', 'worker', [
-                    'error' => $message, 'classification' => $contractError ? 'validation_contract' : $classification['class'],
-                ]);
+                ? 'Błąd formatu odpowiedzi Gemini wymaga ręcznego wznowienia po poprawie kontraktu.'
+                : 'Nieponawialny błąd Gemini wymaga ręcznego wznowienia po usunięciu przyczyny.';
+            if ($visualPlanContractMismatch) {
+                $display = 'Niespójny kontrakt VisualPlan został zatrzymany przed wywołaniem Gemini; wymagana naprawa artefaktu.';
             }
+            generation_batch_update_item($itemId, [
+                'status' => 'failed', 'outcome' => $visualPlanContractMismatch ? 'visual_plan_contract_mismatch' : ($contractError ? 'validation_contract' : 'non_retryable_provider_error'),
+                'available_at' => gmdate('Y-m-d H:i:s'), 'next_retry_at' => null,
+                'wait_reason' => $display, 'error_message' => $message,
+            ]);
+            generation_batch_audit((int) $item['batch_id'], $itemId, $visualPlanContractMismatch ? 'item_failed_visual_plan_contract_mismatch' : 'item_failed_non_retryable_provider_error', 'worker', [
+                'error' => $message, 'classification' => $visualPlanContractMismatch ? 'visual_plan_contract_mismatch' : ($contractError ? 'validation_contract' : $classification['class']),
+                'manual_resume_required' => true,
+            ]);
         }
     } finally {
         generation_batch_update_item($itemId, ['lease_token' => null, 'lease_expires_at' => null]);
@@ -1848,10 +2176,36 @@ function cancel_generation_batch_item(int $itemId, string $actor = 'admin'): voi
 function retry_generation_batch_item(int $itemId, string $actor = 'admin'): void
 {
     $item = generation_batch_find_item($itemId);
-    if (!is_array($item) || !in_array($item['status'], ['failed', 'rate_limited', 'auto_retry_scheduled', 'cancelled'], true)) {
-        throw new RuntimeException('Ponowić można wyłącznie element nieudany, oczekujący na limit albo anulowany.');
+    $imageReviewRetry = is_array($item)
+        && in_array((string) ($item['status'] ?? ''), ['manual_review', 'waiting_review'], true)
+        && (string) ($item['stage'] ?? '') === 'images';
+    if (!is_array($item) || (!in_array($item['status'], ['failed', 'rate_limited', 'auto_retry_scheduled', 'cancelled'], true) && !$imageReviewRetry)) {
+        throw new RuntimeException('Ponowić można wyłącznie element nieudany, oczekujący na limit, anulowany albo etap grafik wymagający decyzji.');
     }
     if ((string) ($item['outcome'] ?? '') === 'validation_contract') {
+        $operationId = (int) ($item['draft_operation_id'] ?? 0);
+        $operation = $operationId > 0 ? find_generation_operation($operationId) : null;
+        $storedOutput = is_array($operation) ? trim((string) ($operation['output_json'] ?? '')) : '';
+        if ((string) ($item['stage'] ?? '') === 'draft' && is_array($operation)
+            && (string) ($operation['operation_type'] ?? '') === 'article_draft' && $storedOutput !== '') {
+            complete_generation_operation($operationId, $storedOutput, (string) ($operation['execution_mode'] ?? 'api'), [
+                'response_id' => (string) ($operation['provider_response_id'] ?? ''),
+                'usage' => ['stored_validation_contract_replay' => true, 'provider_calls' => 0],
+            ]);
+            $draftOnly = (string) ($item['requested_stage'] ?? '') === 'draft';
+            generation_batch_update_item($itemId, $draftOnly ? [
+                'status'=>'completed','stage'=>'draft','progress_percent'=>100,'outcome'=>'completed',
+                'wait_reason'=>'Szkic ukończony po lokalnej rewalidacji kontraktu.','error_message'=>'','completed_at'=>gmdate('Y-m-d H:i:s'),
+            ] : [
+                'status'=>'quality_check','stage'=>'quality_check','progress_percent'=>65,'outcome'=>'queued',
+                'wait_reason'=>'','error_message'=>'','completed_at'=>null,'available_at'=>gmdate('Y-m-d H:i:s'),
+            ]);
+            generation_batch_audit((int) $item['batch_id'], $itemId, 'stored_validation_contract_replayed', $actor, [
+                'stage'=>'draft','operation_id'=>$operationId,'provider_calls'=>0,
+            ]);
+            generation_batch_refresh_status((int) $item['batch_id']);
+            return;
+        }
         throw new RuntimeException('Błąd formatu odpowiedzi wymaga nowej operacji QC po aktualizacji kontraktu.');
     }
     $reset = (string) $item['stage'] === 'quality_check' ? ['quality_operation_id' => null, 'quality_check_id' => null] : [];
@@ -1872,6 +2226,55 @@ function retry_generation_batch_item(int $itemId, string $actor = 'admin'): void
     generation_batch_refresh_status((int) $item['batch_id']);
 }
 
+/** Start an operator retry without reusing an exhausted image-attempt budget. */
+function retry_generation_batch_item_from_ui(int $itemId, string $actor = 'admin'): array
+{
+    $item = generation_batch_find_item($itemId);
+    if (!is_array($item)) throw new RuntimeException('Nie znaleziono elementu batcha.');
+
+    $narrativePlanFailure = (string) ($item['status'] ?? '') === 'failed'
+        && (string) ($item['stage'] ?? '') === 'draft'
+        && str_contains((string) (($item['error_message'] ?? '') . ' ' . ($item['wait_reason'] ?? '')), 'NarrativePlan');
+    if ($narrativePlanFailure) {
+        $result = create_generation_workflow_batch(
+            [(int) $item['topic_id']],
+            'generate_all',
+            'retry-narrative-plan-' . $itemId . '-' . bin2hex(random_bytes(8)),
+            $actor
+        );
+        if (!is_array($result['batch'] ?? null)) {
+            $reason = (string) (($result['skipped'][0]['reason'] ?? '') ?: 'Nie udało się utworzyć świeżej próby po błędzie NarrativePlan.');
+            throw new DomainException($reason);
+        }
+        generation_batch_audit((int) $item['batch_id'], $itemId, 'item_retry_superseded_by_new_batch', $actor, [
+            'stage' => 'draft', 'reason' => 'invalid_narrative_plan', 'new_batch_id' => (int) $result['batch']['id'],
+        ]);
+        return $result;
+    }
+
+    $imageReviewRetry = in_array((string) ($item['status'] ?? ''), ['manual_review', 'waiting_review'], true)
+        && (string) ($item['stage'] ?? '') === 'images';
+    if ($imageReviewRetry) {
+        $result = create_generation_workflow_batch(
+            [(int) $item['topic_id']],
+            'images',
+            'retry-images-' . $itemId . '-' . bin2hex(random_bytes(8)),
+            $actor
+        );
+        if (!is_array($result['batch'] ?? null)) {
+            $reason = (string) (($result['skipped'][0]['reason'] ?? '') ?: 'Nie udało się utworzyć nowej próby etapu grafik.');
+            throw new DomainException($reason);
+        }
+        generation_batch_audit((int) $item['batch_id'], $itemId, 'item_retry_superseded_by_new_batch', $actor, [
+            'stage' => 'images', 'new_batch_id' => (int) $result['batch']['id'],
+        ]);
+        return $result;
+    }
+
+    retry_generation_batch_item($itemId, $actor);
+    return ['batch' => null, 'skipped' => []];
+}
+
 function retry_generation_batch(int $batchId, string $actor = 'admin'): int
 {
     $count = 0;
@@ -1887,7 +2290,9 @@ function retry_generation_batch(int $batchId, string $actor = 'admin'): int
 
 function generation_batch_launch_worker(): void
 {
-    if (getenv('CMS_BATCH_NO_SPAWN') === '1') return;
+    if (getenv('CMS_BATCH_NO_SPAWN') === '1') {
+        return;
+    }
     if (!generation_batch_has_due_items()) return;
     $database = bueno_database();
     $token = bin2hex(random_bytes(16));
@@ -1905,14 +2310,20 @@ function generation_batch_launch_worker(): void
     if (!$acquired) return;
     $php = function_exists('content_studio_php_cli') ? content_studio_php_cli() : PHP_BINARY;
     $worker = __DIR__ . DIRECTORY_SEPARATOR . 'generation-batch-worker.php';
+    $logDirectory = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'logs';
+    if (!is_dir($logDirectory) && !mkdir($logDirectory, 0700, true) && !is_dir($logDirectory)) {
+        throw new RuntimeException('Nie można utworzyć katalogu logów workera batch.');
+    }
+    $log = $logDirectory . DIRECTORY_SEPARATOR . 'generation-batch-worker.log';
     for ($slot = 0; $slot < (int) app_config('batch_worker_concurrency'); $slot++) {
         if (PHP_OS_FAMILY === 'Windows') {
-            $handle = popen('start "" /B ' . escapeshellarg($php) . ' ' . escapeshellarg($worker) . ' --drain --guard=' . escapeshellarg($token) . ' > NUL 2>&1', 'r');
+            $handle = popen('start "" /B ' . escapeshellarg($php) . ' ' . escapeshellarg($worker)
+                . ' --drain --guard=' . escapeshellarg($token) . ' >> ' . escapeshellarg($log) . ' 2>&1', 'r');
             if ($handle === false) throw new RuntimeException('Nie udało się uruchomić workera batch.');
             pclose($handle);
             continue;
         }
-        exec(escapeshellarg($php) . ' ' . escapeshellarg($worker) . ' --drain --guard=' . escapeshellarg($token) . ' > /dev/null 2>&1 &', $output, $exitCode);
+        exec(escapeshellarg($php) . ' ' . escapeshellarg($worker) . ' --drain --guard=' . escapeshellarg($token) . ' >> ' . escapeshellarg($log) . ' 2>&1 &', $output, $exitCode);
         if ($exitCode !== 0) throw new RuntimeException('Nie udało się uruchomić workera batch.');
     }
 }

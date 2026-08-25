@@ -50,6 +50,8 @@
         var remaining = secondsUntil(job);
         var labels = { queued: 'W kolejce', research: 'Ponowny research', draft: 'Aktywne przetwarzanie', auto_repair: 'Automatyczna poprawka', quality_check: 'Aktywne przetwarzanie', images: 'Aktywne przetwarzanie', rate_limited: 'Limit API', auto_retry_scheduled: 'Automatyczne wznowienie zaplanowane', ready_for_preview: 'Gotowe do podglądu', ready_with_notes: 'Gotowe z notatkami', auto_rejected: 'Automatycznie odrzucony', waiting_review: 'Wymaga decyzji', manual_review: 'Wymaga decyzji', failed: job.retryable ? 'Błąd ponawialny' : 'Błąd trwały', completed: 'Ukończono', ready: 'Gotowe', cancelled: 'Anulowano' };
         labels.paused_by_operator = 'Wstrzymany — uruchom ręcznie';
+        var imageWarnings = job.outcome === 'completed_with_warnings';
+        if (imageWarnings) labels[job.status] = 'Wymaga uwagi — grafiki';
         var reconciledLimit = job.action === 'generate_all' && job.outcome === 'auto_repair_limit' && job.status === 'waiting_review';
         if (reconciledLimit) labels.waiting_review = 'Wznawiam automatyczne przygotowanie';
         var recoveringSource = job.reason === 'Ponawiam weryfikację źródła.';
@@ -129,9 +131,30 @@
         if (!topic.workflow.ready && badge) badge.remove();
         var labels = workflowLabel(topic);
         card.querySelectorAll('.topic-workflow-path li').forEach(function (item, index) { item.textContent = labels[index]; item.classList.toggle('is-done', labels[index].includes('✓')); });
-        card.querySelectorAll('.topic-card-actions button').forEach(function (button) {
+        card.querySelectorAll('.topic-card-actions button[data-workflow-action]').forEach(function (button) {
             var state = topic.actions[button.value]; button.disabled = !state.enabled; button.title = state.enabled ? button.textContent : state.reason;
         });
+        var pauseButton = card.querySelector('.topic-pause-item');
+        var resumeItemButton = card.querySelector('.topic-resume-item');
+        if (topic.job && (!pauseButton || !resumeItemButton)) {
+            var generateAll = card.querySelector('.topic-generate-all');
+            if (generateAll) {
+                if (!pauseButton) {
+                    pauseButton = document.createElement('button'); pauseButton.type = 'button';
+                    pauseButton.className = 'topic-item-control topic-pause-item'; pauseButton.title = 'Wstrzymaj generowanie tego tematu';
+                    pauseButton.setAttribute('aria-label', 'Wstrzymaj generowanie tego tematu'); pauseButton.innerHTML = '<span aria-hidden="true">⏸️</span>';
+                    generateAll.after(pauseButton);
+                }
+                if (!resumeItemButton) {
+                    resumeItemButton = document.createElement('button'); resumeItemButton.type = 'button';
+                    resumeItemButton.className = 'topic-item-control topic-resume-item'; resumeItemButton.title = 'Wznów generowanie tego tematu';
+                    resumeItemButton.setAttribute('aria-label', 'Wznów generowanie tego tematu'); resumeItemButton.innerHTML = '<span aria-hidden="true">▶️</span>';
+                    pauseButton.after(resumeItemButton);
+                }
+            }
+        }
+        if (pauseButton) { pauseButton.dataset.pauseItem = String(topic.job ? topic.job.id : ''); pauseButton.hidden = !topic.job || !activeStatuses.includes(topic.job.status); }
+        if (resumeItemButton) { resumeItemButton.dataset.resumeItem = String(topic.job ? topic.job.id : ''); resumeItemButton.hidden = !topic.job || topic.job.status !== 'paused_by_operator'; }
         var jobBox = card.querySelector('.topic-job-status');
         if (topic.job && !jobBox) {
             jobBox = document.createElement('div'); jobBox.className = 'topic-job-status';
@@ -140,12 +163,19 @@
         }
         if (topic.job && jobBox) {
             var presentation = jobPresentation(topic.job);
-            jobBox.querySelector('strong').textContent = presentation.label + ' · ' + topic.job.stage + ' · ' + topic.job.progress + '%';
+            var imageCoverageLabel = topic.job.stage === 'images' && Number(topic.job.image_total || 0) > 0
+                ? 'Grafiki: ' + Number(topic.job.image_completed || 0) + '/' + Number(topic.job.image_total) + (activeStatuses.includes(topic.job.status) ? ' · wyszukiwanie trwa' : ' · wyszukiwanie zakończone')
+                : null;
+            jobBox.querySelector('strong').textContent = imageCoverageLabel || (presentation.label + ' · ' + topic.job.stage + ' · ' + topic.job.progress + '%');
             jobBox.querySelector('progress').value = topic.job.progress;
             jobBox.querySelector('span').textContent = presentation.message;
             jobBox.classList.toggle('is-error', topic.job.status === 'failed');
             var retryButton = jobBox.querySelector('.topic-retry');
-            if (topic.job.technical_error && topic.job.technical_error !== topic.job.reason && !jobBox.querySelector('details')) { const details = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = 'Szczegóły techniczne'; const code = document.createElement('code'); code.textContent = topic.job.technical_error; details.append(summary, code); jobBox.appendChild(details); }
+            var technicalDetails = jobBox.querySelector('details');
+            var technicalError = topic.job.technical_error && topic.job.technical_error !== topic.job.reason ? topic.job.technical_error : '';
+            if (technicalError && !technicalDetails) { technicalDetails = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = 'Szczegóły techniczne'; const code = document.createElement('code'); technicalDetails.append(summary, code); jobBox.appendChild(technicalDetails); }
+            if (technicalDetails && technicalError) technicalDetails.querySelector('code').textContent = technicalError;
+            if (technicalDetails && !technicalError) technicalDetails.remove();
             if (topic.job.retryable && !retryButton) { retryButton = document.createElement('button'); retryButton.type = 'button'; retryButton.className = 'topic-retry'; jobBox.appendChild(retryButton); }
             if (retryButton) { retryButton.textContent = topic.job.repair_scope === 'titles' ? 'Popraw tytuł' : 'Ponów etap'; retryButton.dataset.retryItem = String(topic.job.id); retryButton.hidden = !topic.job.retryable; }
             var resumeButton = jobBox.querySelector('.topic-resume-legacy');
@@ -245,6 +275,34 @@
     showReady.addEventListener('change', persistVisibility);
     showAction.addEventListener('change', persistVisibility);
     document.addEventListener('click', async function (event) {
+        var resetFresh = event.target.closest('[data-reset-topic]');
+        if (resetFresh) {
+            var resetTopicId = Number(resetFresh.dataset.resetTopic);
+            if (!window.confirm('Zapisać backup i wyczyścić wygenerowany research, szkic, QC, grafiki oraz bieżący budżet tego artykułu? Dane RSS i realna historia limitu dostawcy zostaną zachowane.')) return;
+            resetFresh.disabled = true;
+            var resetData = new FormData(); resetData.set('csrf', csrf); resetData.set('action', 'reset_fresh_pipeline'); resetData.set('topic_id', String(resetTopicId));
+            try {
+                var resetResponse = await fetch(api, { method: 'POST', body: resetData, credentials: 'same-origin' });
+                var resetPayload = await resetResponse.json(); if (!resetResponse.ok) throw new Error(resetPayload.error || 'Nie udało się wyzerować artykułu.');
+                cardMessage(resetTopicId, 'Zapisano backup i wyzerowano artykuł. Możesz użyć „Wygeneruj całość”.', false); refresh();
+            } catch (error) { cardMessage(resetTopicId, error.message, true); resetFresh.disabled = false; }
+            return;
+        }
+        var itemControl = event.target.closest('[data-pause-item], [data-resume-item]');
+        if (itemControl) {
+            var itemId = itemControl.dataset.pauseItem || itemControl.dataset.resumeItem;
+            var action = itemControl.dataset.pauseItem ? 'pause_item' : 'resume_item';
+            var itemCard = itemControl.closest('.topic-control-card'); var itemTopicId = Number(itemCard.dataset.topicId);
+            itemControl.disabled = true;
+            var itemData = new FormData(); itemData.set('csrf', csrf); itemData.set('action', action); itemData.set('item_id', itemId);
+            try {
+                var itemResponse = await fetch(api, { method: 'POST', body: itemData, credentials: 'same-origin' });
+                var itemPayload = await itemResponse.json(); if (!itemResponse.ok) throw new Error(itemPayload.error || 'Nie udało się zmienić stanu generowania.');
+                cardMessage(itemTopicId, action === 'pause_item' ? 'Wstrzymano generowanie tego tematu.' : 'Wznowiono generowanie tego tematu.', false);
+                refresh();
+            } catch (error) { cardMessage(itemTopicId, error.message, true); itemControl.disabled = false; }
+            return;
+        }
         var retry = event.target.closest('[data-retry-item]'); if (!retry) return;
         retry.disabled = true; var data = new FormData(); data.set('csrf', csrf); data.set('action', 'retry_item'); data.set('item_id', retry.dataset.retryItem);
         var retryCard = retry.closest('.topic-control-card'); var retryTopicId = Number(retryCard.dataset.topicId);

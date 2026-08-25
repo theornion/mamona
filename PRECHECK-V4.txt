@@ -1,0 +1,35 @@
+MAMONA V4.5 TRI-TIER PARALLEL PRECHECK
+
+KILO:
+1. Developer: Reload Window.
+2. Primary: mamona-coordinator.
+3. Primary model: OpenAI / GPT-5.6 Sol Pro / Low.
+4. `kilo.cmd agent list` ma pokazać:
+   - mamona-executor
+   - mamona-quick-worker
+   - mamona-diagnoser
+   - mamona-architect
+   - mamona-worker
+   - mamona-reviewer
+   - mamona-heavy-coder
+   - checkpoint-writer
+
+OLLAMA MODEL IDS:
+- mamona-coder30-128k
+- mamona-qwen14-64k
+- mamona-qwen9-64k
+- nomic-embed-text
+
+ROUTING SMOKE:
+A. Poproś coordinatora o jedno execution-only `php -v` -> musi użyć 9B.
+B. Poproś o bounded diagnosis jednego symbolu -> musi użyć 14B.
+C. Nie odpalaj 30B tylko do smoke.
+
+PARALLEL SMOKE:
+Daj coordinatorowi dwa niezależne read-only taski:
+- 14B: znajdź jedną wskazaną definicję funkcji;
+- 9B: wykonaj `php -v`.
+Coordinator ma wysłać oba Task calls zanim poczeka na którykolwiek wynik.
+
+HEAVY RULE:
+Jeżeli `mamona-heavy-coder` jest aktywny, nie powinno być aktywnego 14B/9B childa.

@@ -691,6 +691,35 @@ body:not(.admin-page) .article-illustration {
     clear: none;
 }
 
+/* Each layout section owns its floats: prose may wrap a side image inside the
+   section, but the following section always starts in a clean flow context. */
+body:not(.admin-page) .article-layout__section {
+    display: flow-root;
+}
+
+body:not(.admin-page) .article-layout__section .article-section p {
+    line-height: 1.72;
+}
+
+body:not(.admin-page) .article-layout__section .article-section p + p {
+    margin-top: 1.2rem;
+}
+
+body:not(.admin-page) .article-layout__section .article-section strong {
+    color: inherit;
+    font-weight: 750;
+}
+
+body:not(.admin-page) .article-layout__section .article-section ul {
+    margin: 1.1rem 0 1.4rem;
+    padding-left: 1.35rem;
+    line-height: 1.65;
+}
+
+body:not(.admin-page) .article-layout__section .article-section li + li {
+    margin-top: 0.55rem;
+}
+
 /* Standard inline illustration: centered within the reading column.
    Hero, breakout, floated variants and gallery items keep their own layouts. */
 body:not(.admin-page) .article-illustration--full:not(.article-illustration--hero) {
@@ -987,12 +1016,48 @@ body:not(.admin-page) :where(.cat-slide, .burger-slide) {
         margin-left: auto;
     }
     body:not(.admin-page) .article-section > :where(.article-illustration--left, .article-illustration--right) { margin-top: 1.5rem; }
+    body:not(.admin-page) :where(
+        .article-layout__image--side,
+        .article-illustration--left,
+        .article-illustration--right
+    ) {
+        float: none !important;
+        width: 100% !important;
+        max-width: none !important;
+        margin: 1.5rem auto !important;
+    }
+    body:not(.admin-page) .article-layout__image--side > :where(.article-illustration--left, .article-illustration--right) {
+        margin: 0 !important;
+    }
 }
 
 @media screen and (min-width: 981px) {
+    body:not(.admin-page) .article-layout__image--side {
+        width: min(50%, 34rem);
+        margin-top: 0.45rem;
+        margin-bottom: 1.5rem;
+    }
+
+    body:not(.admin-page) .article-layout__image--side-left {
+        float: left;
+        margin-right: 2rem;
+    }
+
+    body:not(.admin-page) .article-layout__image--side-right {
+        float: right;
+        margin-left: 2rem;
+    }
+
+    body:not(.admin-page) .article-layout__image--side > :where(.article-illustration--left, .article-illustration--right) {
+        float: none;
+        width: 100%;
+        max-width: none;
+        margin: 0;
+    }
+
     body:not(.admin-page) :where(.article-illustration--left, .article-illustration--right) {
-        width: 38%;
-        max-width: 28rem;
+        width: min(50%, 34rem);
+        max-width: 34rem;
         margin-bottom: 1.4rem;
         shape-outside: margin-box;
     }

@@ -11,7 +11,7 @@ check(strpos($page, 'topic-card-selector') < strpos($page, 'editorial-status'), 
 check(strpos($page, 'topic-bulk-toolbar') < strpos($page, 'topic-list-heading'), 'Toolbar zbiorczy ma być nad nagłówkiem listy.');
 check(str_contains($page, 'aria-label="Przenieś temat do Kosza:') && str_contains($page, 'topic-trash'), 'Brak kontraktu kosza.');
 foreach (['research','draft','quality','images','generate_all'] as $action) check(str_contains($page, 'value="'.$action.'"'), 'Brak akcji '.$action);
-check(str_contains($page, 'toggle_automatic_dispatch') && str_contains($page, 'dispatcher_state'), 'Brak rÄ™cznego przycisku pauza/play automatycznego dispatchera.');
+check(str_contains($page, 'toggle_automatic_dispatch') && str_contains($page, 'dispatcher_state'), 'Brak ręcznego przycisku pauza/play automatycznego dispatchera.');
 check(str_contains($js, 'paused_by_operator') && str_contains($js, 'Wstrzymany — uruchom ręcznie'), 'UI nie pokazuje stanu wstrzymanego bez countdownu.');
 check(str_contains($js, 'selected = new Set()') && str_contains($js, 'topic-select-visible') && str_contains($js, 'topic-select-top'), 'Brak selekcji zbiorczej.');
 check(str_contains($page, 'topic-clear-selection') && str_contains($page, 'Zaznaczono:') && str_contains($page, 'data-selected="false"'), 'Brak jawnego, wspólnego stanu wyboru.');
@@ -22,6 +22,9 @@ check(str_contains($js, 'hiddenSelected') && str_contains($js, 'ukrytych przez')
 check(str_contains($css, 'width:44px') && str_contains($css, 'width:24px!important') && str_contains($css, '.topic-control-card.is-selected'), 'Checkbox nie ma wymaganego rozmiaru lub karta nie ma stanu zaznaczenia.');
 check(str_contains($js, 'payload.skipped') && str_contains($service, "'skipped'"), 'Brak raportu pominięć dla mieszanego wyboru.');
 check(str_contains($api, 'admin_valid_csrf') && str_contains($service, 'request_key') && str_contains($service, 'generation_batch_audit'), 'Brak zabezpieczeń kontraktu.');
+check(str_contains($api, "\$action === 'pause_item'") && str_contains($api, 'generation_batch_pause_item') && str_contains($api, "\$action === 'resume_item'") && str_contains($api, 'resume_generation_batch_item'), 'Brak routingu API pauzy/wznowienia pojedynczego tematu.');
+check(str_contains($page, 'topic-pause-item') && str_contains($page, 'topic-resume-item') && str_contains($page, 'Wstrzymaj generowanie tego tematu') && str_contains($page, 'Wznów generowanie tego tematu'), 'Brak dostępnych kontrolek pauzy/wznowienia przy karcie tematu.');
+check(str_contains($js, "'pause_item'") && str_contains($js, "'resume_item'") && str_contains($js, '[data-pause-item], [data-resume-item]') && str_contains($js, 'generateAll.after(pauseButton)') && str_contains($js, 'pauseButton.after(resumeItemButton)') && str_contains($js, 'refresh();'), 'JS nie obsługuje dynamicznych kontrolek pauzy/wznowienia pojedynczego tematu.');
 $sourceToolsPosition = strpos($page, 'topic-source-tools');
 check(str_contains($page, 'Źródła, łączenie i ręczne rozdzielanie') && $sourceToolsPosition !== false && strpos($page, 'name="action" value="merge_topics"', $sourceToolsPosition) !== false, 'Łączenie nie znajduje się w zwijanym panelu źródeł.');
 check(str_contains($page, 'form="topic-trash-bulk-form"') && !str_contains($page, 'topic-trash-bulk-check'), 'Zbiorczy Kosz nie korzysta ze wspólnego zaznaczenia.');
@@ -57,4 +60,5 @@ check(str_contains($css, '.topic-card-heading>h3') && str_contains($css, '.admin
 check(str_contains($css, '#topic-search') && str_contains($css, 'min-height:44px') && str_contains($css, 'label[for="topic-search"]'), 'Wyszukiwarka nie ma spójnej wysokości, typografii lub wyśrodkowanej etykiety.');
 check(str_contains($css, '.topic-card-actions button:not(.topic-generate-all)') && str_contains($css, ':disabled'), 'Brak lokalnej hierarchii secondary/primary przycisków karty.');
 check(str_contains($css, '.topic-control-card[hidden]{display:none!important}'), 'CSS nadpisuje atrybut hidden i pozostawia odfiltrowane karty na ekranie.');
+check(str_contains($js, "'Grafiki: '") && str_contains($js, "' · wyszukiwanie zakończone'"), 'UI nadal myli ukończenie fazy images z pełnym coverage.');
 echo "TOPIC_WORKFLOW_UI_SMOKE_OK\n";

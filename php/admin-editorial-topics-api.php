@@ -65,9 +65,22 @@ try {
         topics_api_json(['ok' => true, ...$result], is_array($result['batch']) ? 202 : 200);
     }
     if ($action === 'retry_item') {
-        retry_generation_batch_item(filter_input(INPUT_POST, 'item_id', FILTER_VALIDATE_INT) ?: 0, 'admin');
+        $result = retry_generation_batch_item_from_ui(filter_input(INPUT_POST, 'item_id', FILTER_VALIDATE_INT) ?: 0, 'admin');
         generation_batch_launch_worker();
-        topics_api_json(['ok' => true]);
+        topics_api_json(['ok' => true, ...$result], 202);
+    }
+    if ($action === 'pause_item') {
+        $result = generation_batch_pause_item(filter_input(INPUT_POST, 'item_id', FILTER_VALIDATE_INT) ?: 0, 'admin');
+        topics_api_json(['ok' => true, 'item' => $result]);
+    }
+    if ($action === 'resume_item') {
+        $result = resume_generation_batch_item(filter_input(INPUT_POST, 'item_id', FILTER_VALIDATE_INT) ?: 0, 'admin');
+        generation_batch_launch_worker();
+        topics_api_json(['ok' => true, 'item' => $result], 202);
+    }
+    if ($action === 'reset_fresh_pipeline') {
+        $result = reset_topic_for_fresh_pipeline(filter_input(INPUT_POST, 'topic_id', FILTER_VALIDATE_INT) ?: 0, 'admin-api');
+        topics_api_json(['ok'=>true, 'reset'=>$result]);
     }
     if ($action === 'resume_legacy') {
         $result=generation_batch_resume_legacy_item(filter_input(INPUT_POST,'item_id',FILTER_VALIDATE_INT)?:0,'admin');

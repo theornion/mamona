@@ -13,3 +13,15 @@ php/contact-secrets.php
 /images/posts/thumbnails/
 /images/posts/editorial-fallback/
 /logs/
+/_handoff/
+/backups/
+/subagent-exports/
+/.kilo/node_modules/
+/analysis/
+/data/logs/
+/images/posts/
+/qa/**/*.png
+/qa/**/*.log
+/qa/**/*.json
+/P2-*-full.json
+/P3-*-full.json
