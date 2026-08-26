@@ -998,9 +998,9 @@ function assert_post_quality_allows_publication(int $postId): void
     if (!$coverage['hero_present']) {
         throw new RuntimeException('Publikacja zablokowana: brak prawidłowego hero.');
     }
-    if (empty($coverage['publication_floor_met'])) {
-        throw new RuntimeException('Publikacja zablokowana: floor wynosi ' . (int) ($coverage['publication_visual_floor'] ?? count($coverage['required_slots']))
-            . ' prawidłowych grafik, znaleziono ' . count($coverage['filled_slots']) . '.');
+    if (empty($coverage['coverage_complete'])) {
+        throw new RuntimeException('Publikacja zablokowana: wymagane jest pełne coverage ' . count($coverage['filled_slots'])
+            . '/' . count($coverage['required_slots']) . ' grafik z FinalVisualPlan.');
     }
     $draftJson = json_decode((string) ($draft['draft_json'] ?? '{}'), true) ?: [];
     $contentLength = article_draft_main_content_length($draftJson);
@@ -1018,14 +1018,7 @@ function assert_post_quality_allows_publication(int $postId): void
         throw new RuntimeException('Publikacja zablokowana: artykuł zawiera ' . $fallbackCount . ' grafikę/fallback, która nie może być publikowana.');
     }
 
-    /* P2-D: enforce minimum valid image count against planned visual slots. */
-    $plan = find_narrative_plan_for_post($postId);
-    if (is_array($plan)) {
-        $requiredSlots = max(1, min(6, (int) ($plan['visual_slots_planned'] ?? 1)));
-    } else {
-        /* Fallback: at least hero is required for any completed article. */
-        $requiredSlots = 1;
-    }
+    /* Enforce actual files for every canonical FinalVisualPlan slot. */
     $validStmt = bueno_database()->prepare(
         'SELECT local_path FROM article_images' .
         ' WHERE post_id = :post_id AND status = "downloaded" AND is_fallback = 0' .
@@ -1037,10 +1030,10 @@ function assert_post_quality_allows_publication(int $postId): void
         static fn (array $image): bool => trim((string) ($image['local_path'] ?? '')) !== ''
             && is_file(app_path((string) $image['local_path']))
     ));
-    $publicationSlots = (int) ($coverage['publication_visual_floor'] ?? $requiredSlots);
-    if ($validCount < $publicationSlots) {
+    $requiredSlots = count((array) ($coverage['required_slots'] ?? []));
+    if ($validCount < $requiredSlots) {
         throw new RuntimeException(
-            'Publikacja zablokowana: artykuł ma target ' . $requiredSlots . ', floor ' . $publicationSlots . ' prawidłowych grafik; znaleziono ' . $validCount . '.'
+            'Publikacja zablokowana: FinalVisualPlan wymaga ' . $requiredSlots . ' prawidłowych grafik; znaleziono ' . $validCount . '.'
         );
     }
 

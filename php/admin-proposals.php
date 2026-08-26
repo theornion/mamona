@@ -129,6 +129,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 record_proposal_audit($postId, $draftId, 'image_accepted', ['image_id' => $imageId]);
                 $notice = 'Obraz zaakceptowano.';
+            } elseif ($action === 'image_manual_accept_rejected') {
+                $auditId = (int) ($_POST['vision_audit_id'] ?? 0);
+                $imageId = article_image_manual_accept_rejected_candidate($postId, $auditId);
+                record_proposal_audit($postId, $draftId, 'image_manual_accept_rejected', [
+                    'image_id' => $imageId, 'vision_audit_id' => $auditId, 'acceptance_source' => 'operator_manual',
+                ]);
+                $notice = 'Ręczna akceptacja została zapisana z zachowaniem audytu Vision i danych praw.';
             } elseif ($action === 'image_upload') {
                 upload_proposal_image((int) ($_POST['image_id'] ?? 0), $_FILES['image_file'] ?? [], $_POST);
                 $notice = 'Ręczny obraz zapisano wraz z licencją i atrybucją.';
@@ -157,7 +164,8 @@ $displayVersions = array_values(array_filter($versions, static function (array $
     if (!in_array((string) $version['status'], ['completed', 'frozen'], true)) return false;
     return article_draft_main_content_length(proposal_json_decode((string) ($version['draft_json'] ?? ''))) > 0;
 }));
-$images = $post ? list_article_images((int) $post['id']) : [];
+$images = $post ? article_image_required_records((int) $post['id']) : [];
+$rejectedImageReview = $post ? article_image_rejected_review_candidates((int) $post['id']) : ['items' => [], 'reviewable_count' => 0, 'hard_rejected_count' => 0];
 $proposalLayoutAudit = [];
 $proposalPreviewHtml = $selected && $post
     ? render_article_blocks_with_layout(
@@ -270,6 +278,22 @@ admin_page_open($proposalPageTitle, $proposalQueue === 'action' ? 'action-requir
                     <details><summary>Ręczny upload / podmiana</summary><form method="post" enctype="multipart/form-data" class="proposal-upload"><input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>"><input type="hidden" name="action" value="image_upload"><input type="hidden" name="draft_id" value="<?php echo $draftId; ?>"><input type="hidden" name="image_id" value="<?php echo (int) $image['id']; ?>"><input type="file" name="image_file" accept="image/jpeg,image/png,image/webp" required><input name="author" placeholder="Autor" required><input name="source_page_url" type="url" placeholder="URL źródła" required><input name="license" placeholder="Licencja" required><input name="license_url" type="url" placeholder="URL licencji" required><input name="attribution" placeholder="Atrybucja" required><input name="alt" placeholder="Tekst alternatywny" required><input name="caption" placeholder="Podpis"><button>Wgraj z metadanymi</button></form></details>
                 </article><?php endforeach; ?>
             </div></section>
+
+            <section class="proposal-images"><h2>Odrzucone kandydatury Vision</h2>
+                <p>Widoczne są wyłącznie kandydatury z zachowanym źródłem i prawami. Blokady prawne, techniczne oraz obrazy mylące nie mają ręcznego obejścia.</p>
+                <?php if ((int) $rejectedImageReview['hard_rejected_count'] > 0): ?><p><strong>Odrzucone technicznie lub prawnie:</strong> <?php echo (int) $rejectedImageReview['hard_rejected_count']; ?></p><?php endif; ?>
+                <?php if ($rejectedImageReview['items'] === []): ?><p>Brak legalnych kandydatur odrzuconych przez Vision do przeglądu.</p><?php else: ?><div class="proposal-image-grid">
+                    <?php foreach ($rejectedImageReview['items'] as $review): $candidate = (array) $review['candidate']; $assessment = (array) $review['assessment']; $slot = (array) $review['slot']; ?>
+                    <article class="proposal-image-card">
+                        <?php if (str_starts_with((string) ($candidate['source_file_url'] ?? ''), 'https://')): ?><img src="<?php echo escape_html((string) $candidate['source_file_url']); ?>" alt="<?php echo escape_html((string) ($candidate['title'] ?? 'Odrzucona kandydatura')); ?>"><?php else: ?><div class="proposal-image-placeholder">Podgląd źródła niedostępny</div><?php endif; ?>
+                        <h3><?php echo escape_html((string) ($slot['slot_id'] ?? '')); ?> · <?php echo escape_html((string) ($slot['role'] ?? '')); ?></h3>
+                        <p><?php echo escape_html((string) ($assessment['reason'] ?? 'Odrzucone przez Vision.')); ?></p>
+                        <p><strong>Relacja:</strong> <?php echo escape_html((string) ($assessment['relationship_level'] ?? 'unrelated')); ?><br><strong>Źródło tematu:</strong> <?php echo escape_html((string) ($candidate['provider'] ?? '')); ?><br><strong>Autor:</strong> <?php echo escape_html((string) ($candidate['author'] ?? '')); ?><br><strong>Licencja:</strong> <?php echo escape_html((string) ($candidate['license'] ?? '')); ?></p>
+                        <p><a href="<?php echo escape_html((string) ($candidate['source_page_url'] ?? '')); ?>" rel="noopener">Strona źródłowa</a></p>
+                        <?php if (!empty($review['manual_eligible'])): ?><form method="post"><input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>"><input type="hidden" name="action" value="image_manual_accept_rejected"><input type="hidden" name="draft_id" value="<?php echo $draftId; ?>"><input type="hidden" name="vision_audit_id" value="<?php echo (int) $review['audit']['id']; ?>"><button>Zaakceptuj ręcznie</button></form><?php else: ?><p><strong>Ręczna akceptacja niedostępna.</strong> Kandydat nie jest bezpośrednio związany z wymaganym slotem albo ma blokadę semantyczną.</p><?php endif; ?>
+                    </article><?php endforeach; ?>
+                </div><?php endif; ?>
+            </section>
 
             <section class="proposal-research"><h2>Źródła twierdzeń i research</h2><p><strong>Decyzja polityki:</strong> <?php echo escape_html((string) ($researchPolicy['decision'] ?? 'brak')); ?> — <?php echo escape_html((string) ($researchPolicy['reason'] ?? 'Brak oceny.')); ?></p><?php if (!empty($researchPolicy['manual_single_source_allowed'])): ?><p>Dozwolone: jawne „kontynuuj z jednym zweryfikowanym źródłem”. Decyzja zostanie zapisana w audycie.</p><?php endif; ?><ul><?php foreach ((array) ($researchInput['numbered_sources'] ?? []) as $source): ?><li><a href="<?php echo escape_html((string) ($source['url'] ?? '')); ?>" rel="noopener"><?php echo escape_html((string) ($source['title'] ?? $source['source_id'] ?? 'Źródło')); ?></a> (<?php echo escape_html((string) ($source['source_kind'] ?? 'discovery')); ?><?php echo empty($source['peer_reviewed']) ? ', bez potwierdzonego peer review' : ', peer reviewed'; ?>)</li><?php endforeach; ?></ul><details><summary>Twierdzenia i przypisania</summary><pre><?php echo escape_html((string) json_encode($research['claims'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)); ?></pre></details></section>
 

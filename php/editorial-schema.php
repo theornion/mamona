@@ -51,6 +51,7 @@ const NARRATIVE_VISUAL_PLAN_MIGRATION = '20260811_046_narrative_visual_plan';
 const ARTICLE_RELATED_CONTEXT_BLOCKS_MIGRATION = '20260811_047_article_related_context_blocks';
 const FINAL_MULTIMODAL_QC_MIGRATION = '20260811_048_final_multimodal_qc';
 const ARTICLE_IMAGE_VISION_AUDIT_MIGRATION = '20260811_049_article_image_vision_audit';
+const ARTICLE_IMAGE_REJECTED_REVIEW_MIGRATION = '20260825_050_article_image_rejected_review';
 
 function database_table_columns(PDO $database, string $table): array
 {
@@ -1775,6 +1776,18 @@ function run_schema_migrations(PDO $database): void
                 ON article_image_vision_audit(post_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS article_image_vision_audit_topic_idx
                 ON article_image_vision_audit(topic_id, created_at DESC);');
+        }
+    );
+    apply_schema_migration(
+        $database,
+        ARTICLE_IMAGE_REJECTED_REVIEW_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing(
+                $database,
+                'article_images',
+                'acceptance_source',
+                'TEXT NOT NULL DEFAULT "automatic"'
+            );
         }
     );
 }

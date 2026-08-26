@@ -541,11 +541,11 @@ function complete_generation_operation(
     } elseif ($operation['operation_type'] === 'quality_check') {
         $specialValidation = validate_quality_check_output($operation, $output);
     } elseif ($operation['operation_type'] === 'image_recovery_replan') {
-        if (!function_exists('article_image_validate_recovery_replan')) {
+        if (!function_exists('article_image_recovery_replan_analysis')) {
             throw new LogicException('Recovery replan validator is unavailable.');
         }
         $replanInput = json_decode((string) ($operation['input_json'] ?? '{}'), true) ?: [];
-        $specialValidation = article_image_validate_recovery_replan($replanInput, $output);
+        $specialValidation = article_image_recovery_replan_analysis($replanInput, $output);
     } elseif ($operation['operation_type'] === 'final_visual_plan') {
         $finalPlanInput = json_decode((string) ($operation['input_json'] ?? '{}'), true) ?: [];
         $specialValidation = article_final_visual_plan_validate($finalPlanInput, $output);
@@ -567,10 +567,16 @@ function complete_generation_operation(
                  completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
              WHERE id = :id'
         );
+        $usage = is_array($providerMetadata['usage'] ?? null) ? $providerMetadata['usage'] : [];
+        if ($operation['operation_type'] === 'image_recovery_replan' && is_array($specialValidation)) {
+            $usage['recovery_replan_validation'] = array_intersect_key($specialValidation, array_flip([
+                'valid', 'expected_slot_ids', 'missing_slot_ids', 'duplicate_slot_ids', 'unexpected_slot_ids', 'invalid_slots',
+            ]));
+        }
         $statement->execute([
             ':output_json' => generation_json($output),
             ':provider_response_id' => mb_substr(trim((string) ($providerMetadata['response_id'] ?? '')), 0, 200),
-            ':usage_json' => generation_json(is_array($providerMetadata['usage'] ?? null) ? $providerMetadata['usage'] : []),
+            ':usage_json' => generation_json($usage),
             ':id' => $operationId,
         ]);
         if ($operation['operation_type'] === 'research_package' && $specialValidation !== null) {

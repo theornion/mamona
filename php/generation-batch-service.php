@@ -805,7 +805,7 @@ function generation_workflow_statuses(mixed $rawTopicIds): array
         $qualityIsCurrent = (int) ($row['quality_draft_id'] ?? 0) === (int) ($row['draft_id'] ?? 0);
         $qualityPassed = $qualityIsCurrent && (int) ($row['passed'] ?? 0) === 1 && $hardBlocks === [];
         $coverage = !empty($row['post_id']) ? article_image_coverage_state((int) $row['post_id'], (int) $row['topic_id']) : null;
-        $imageReady = is_array($coverage) && !empty($coverage['publication_floor_met']);
+        $imageReady = is_array($coverage) && !empty($coverage['coverage_complete']);
         $imageManual = (int) $row['image_manual'] > 0 || (int) $row['image_pending'] > 0;
         $proposalReviewable = in_array((string) ($row['draft_status'] ?? ''), ['completed', 'frozen'], true)
             && $qualityIsCurrent && ($row['quality_status'] ?? '') === 'completed';

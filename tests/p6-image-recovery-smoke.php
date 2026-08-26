@@ -181,10 +181,10 @@ p6_assert(empty(article_image_recovery_replan_eligibility([
     'publication_visual_floor'=>3,'filled_slots'=>[['slot_id'=>'inline-intro']],
     'missing_slots'=>[['slot_id'=>'hero'],['slot_id'=>'inline-1'],['slot_id'=>'inline-2']],
 ], ['used_calls'=>14,'max_calls'=>30], true, 1)['eligible']), 'A second recovery replan is blocked deterministically.');
-p6_assert(empty(article_image_recovery_replan_eligibility([
+p6_assert(!empty(article_image_recovery_replan_eligibility([
     'publication_visual_floor'=>3,'filled_slots'=>[['slot_id'=>'a'],['slot_id'=>'b'],['slot_id'=>'c']],
     'missing_slots'=>[['slot_id'=>'d']],
-], ['used_calls'=>14,'max_calls'=>30], true, 0)['eligible']), 'Recovery replan stays closed when publication floor is already met.');
+], ['used_calls'=>14,'max_calls'=>30], true, 0)['eligible']), 'Recovery replan remains available until all required slots are filled.');
 $replannedQueries = article_image_semantic_queries([
     'search_queries'=>['revised direct microscopy query'],
     'search_queries_related'=>['source-backed neural imaging context'],
@@ -205,6 +205,19 @@ $controlledRelatedReplan = ['slots'=>[[
 ]]];
 p6_assert(article_image_validate_recovery_replan($replanInput, $controlledRelatedReplan) === $controlledRelatedReplan,
     'Confirmed direct exhaustion allows a controlled-related hero replan contract.');
+$replanMapping = article_image_recovery_replan_analysis(['missing_slots'=>[
+    ['slot_id'=>'hero-main','role'=>'hero','direct_exhaustion'=>['confirmed'=>true]],
+    ['slot_id'=>'inline-1','role'=>'inline'],
+]], ['slots'=>[
+    $controlledRelatedReplan['slots'][0],
+    $controlledRelatedReplan['slots'][0],
+    array_replace($controlledRelatedReplan['slots'][0], ['slot_id'=>'extra-slot']),
+]]);
+p6_assert($replanMapping['missing_slot_ids'] === ['inline-1']
+    && $replanMapping['duplicate_slot_ids'] === ['hero-main']
+    && $replanMapping['unexpected_slot_ids'] === ['extra-slot']
+    && $replanMapping['valid_slots'] === [],
+    'Recovery replan mapping reports missing, duplicate, and unexpected slot ids without accepting conflicts.');
 foreach (['unsupported','random','fallback','apparatus','related_context'] as $forbiddenRelationship) {
     try {
         article_image_validate_recovery_replan($replanInput, ['slots'=>[array_replace(
@@ -285,6 +298,39 @@ p6_assert(($originQueries[0]['query'] ?? '') === 'new_query_B'
     && ($originQueries[0]['query_origin'] ?? '') === 'recovery_replan',
     'Next retrieval consumes and traces the recovery-replan query.');
 
+// A structurally valid but semantically incomplete replan must persist its
+// diagnostics and leave the image stage able to use the conflict-free slot.
+$partialSlot = array_replace($replanOutput['slots'][0], [
+    'revised_visual_need'=>'Partially replanned neural imaging evidence',
+    'search_queries_direct'=>['partial_query_C', 'partial_broader_query_C'],
+]);
+$partialOutput = ['slots'=>[
+    $partialSlot,
+    array_replace($partialSlot, ['slot_id'=>'extra-slot']),
+]];
+$db->prepare('INSERT INTO generation_operations (operation_key,post_id,topic_id,operation_type,execution_mode,status,prompt_text,input_json,output_schema_json,input_hash,provider,model) VALUES ("v2-partial-replan-fixture",:post,:topic,"image_recovery_replan","api","prepared","fixture",:input,:schema,"fixture","gemini","fixture")')
+    ->execute([':post'=>$postId, ':topic'=>$topicId, ':input'=>generation_json($replanFixtureInput), ':schema'=>generation_json(article_image_recovery_replan_schema())]);
+$partialOperationId = (int) $db->lastInsertId();
+complete_generation_operation($partialOperationId, generation_json($partialOutput), 'api', ['usage'=>['fixture'=>true]]);
+$partialApply = article_image_apply_recovery_replan($partialOperationId);
+$partialOperation = find_generation_operation($partialOperationId);
+$partialUsage = json_decode((string) ($partialOperation['usage_json'] ?? '{}'), true) ?: [];
+$partialEffective = article_image_effective_visual_plan($postId, $topicId);
+$partialEffectiveInline = (array) ($partialEffective['inline_slots'][0] ?? []);
+p6_assert(($partialOperation['status'] ?? '') === 'completed'
+    && ($partialApply['status'] ?? '') === 'partial_fallback'
+    && (($partialUsage['recovery_replan_validation']['unexpected_slot_ids'] ?? []) === ['extra-slot'])
+    && ($partialEffectiveInline['search_queries_direct'][0] ?? '') === 'partial_query_C',
+    'Invalid replan is audited, applies only its valid slot, and continues the graphics flow.');
+$db->prepare('INSERT INTO generation_operations (operation_key,post_id,topic_id,operation_type,execution_mode,status,prompt_text,input_json,output_schema_json,input_hash,provider,model) VALUES ("v2-empty-replan-fixture",:post,:topic,"image_recovery_replan","api","prepared","fixture",:input,:schema,"fixture","gemini","fixture")')
+    ->execute([':post'=>$postId, ':topic'=>$topicId, ':input'=>generation_json($replanFixtureInput), ':schema'=>generation_json(article_image_recovery_replan_schema())]);
+$emptyOperationId = (int) $db->lastInsertId();
+complete_generation_operation($emptyOperationId, generation_json(['slots'=>[]]), 'api', ['usage'=>['fixture'=>true]]);
+$emptyApply = article_image_apply_recovery_replan($emptyOperationId);
+p6_assert(($emptyApply['status'] ?? '') === 'canonical_fallback'
+    && (($emptyApply['validation']['missing_slot_ids'] ?? []) === ['fact-1']),
+    'Empty recovery replan reaches canonical fallback instead of terminal failure.');
+
 // Same slot + candidate identity + exact bytes reuses a completed Vision reject.
 $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=', true);
 $visionCandidate = ['provider'=>'fixture','provider_id'=>'vision-x','source_page_url'=>'https://example.test/vision-x',
@@ -309,4 +355,49 @@ $reusedReject = article_image_gemini_vision_assess($postId, $visionCandidate, $v
 p6_assert($visionTransports === 0 && $reusedReject['decision'] === 'reject'
     && (int) (gemini_article_budget_state($postId)['used_calls'] ?? 0) === $budgetBeforeReuse,
     'Completed Vision reject is reused with zero new transport calls and zero budget consumption.');
+
+// A legal, direct-but-rejected candidate is reviewable only by an operator;
+// the injected downloader keeps this local smoke test free of provider calls.
+$manualCandidate = ['provider'=>'fixture','provider_id'=>'manual-direct','title'=>'Direct fixture image',
+    'source_page_url'=>'https://example.test/manual-page','source_file_url'=>'https://example.test/manual.jpg',
+    'author'=>'Fixture author','license'=>'cc-by','license_url'=>'https://creativecommons.org/licenses/by/4.0/',
+    'attribution'=>'Fixture author / CC BY','width'=>1600,'height'=>900,
+    'third_party_warning'=>false,'identifiable_people'=>false,'trademarks_logos'=>false];
+$manualReject = ['semantic_relevance'=>4,'editorial_fit'=>4,'hero_fit'=>4,'depicts_required_subject'=>true,
+    'misleading'=>false,'inappropriate'=>false,'decision'=>'reject','reason'=>'Borderline fixture needs operator decision.',
+    'relationship_level'=>'direct'];
+article_image_vision_audit_record([
+    ':call_key'=>'v2-vision-manual-review', ':generation_operation_id'=>null, ':post_id'=>$postId, ':topic_id'=>$topicId,
+    ':budget_before'=>0, ':budget_after'=>1, ':operation_type'=>ARTICLE_IMAGE_GEMINI_OPERATION_TYPE, ':model'=>'fixture',
+    ':slot_identifier'=>'article', ':candidate_identifier'=>'manual-direct',
+    ':source_page_identifier'=>$manualCandidate['source_page_url'], ':source_file_identifier'=>$manualCandidate['source_file_url'],
+    ':outbound_prompt'=>'fixture', ':image_sha256'=>'fixture-manual', ':image_mime'=>'image/jpeg',
+    ':provider_response_json'=>generation_json(['_candidate'=>$manualCandidate]), ':provider_response_text'=>generation_json($manualReject),
+    ':status'=>'completed', ':error_message'=>'',
+]);
+$review = article_image_rejected_review_candidates($postId, $topicId);
+$manualReview = array_values(array_filter($review['items'], static fn (array $item): bool => (string) ($item['audit']['candidate_identifier'] ?? '') === 'manual-direct'))[0] ?? null;
+p6_assert(is_array($manualReview) && !empty($manualReview['manual_eligible']), 'Legal direct Vision reject appears in the operator review gallery.');
+$manualImageId = article_image_manual_accept_rejected_candidate($postId, (int) $manualReview['audit']['id'], null, null, null,
+    static fn (array $selected): array => [...$selected, 'status'=>'downloaded', 'local_path'=>'', 'downloaded_at'=>gmdate(DATE_ATOM), 'mime'=>'image/jpeg', 'sha256'=>'fixture-manual']);
+$manualImage = array_values(array_filter(list_article_images($postId), static fn (array $image): bool => (int) $image['id'] === $manualImageId))[0] ?? [];
+$manualCoverage = article_image_coverage_state($postId, $topicId, false);
+p6_assert((string) ($manualImage['acceptance_source'] ?? '') === 'operator_manual'
+    && (json_decode((string) ($manualImage['multimodal_assessment_json'] ?? '{}'), true)['vision_rejected_before_manual_accept'] ?? false),
+    'Manual acceptance preserves the Vision rejection and records operator_manual.');
+p6_assert(!array_filter((array) $manualCoverage['missing_slots'], static fn (array $slot): bool => (string) ($slot['slot_id'] ?? '') === 'article'),
+    'Manual acceptance fills its canonical coverage slot.');
+$blockedCandidate = [...$manualCandidate, 'provider_id'=>'manual-rights-blocked', 'license'=>'all-rights-reserved'];
+article_image_vision_audit_record([
+    ':call_key'=>'v2-vision-rights-blocked', ':generation_operation_id'=>null, ':post_id'=>$postId, ':topic_id'=>$topicId,
+    ':budget_before'=>0, ':budget_after'=>1, ':operation_type'=>ARTICLE_IMAGE_GEMINI_OPERATION_TYPE, ':model'=>'fixture',
+    ':slot_identifier'=>'article', ':candidate_identifier'=>'manual-rights-blocked',
+    ':source_page_identifier'=>$blockedCandidate['source_page_url'], ':source_file_identifier'=>$blockedCandidate['source_file_url'],
+    ':outbound_prompt'=>'fixture', ':image_sha256'=>'fixture-rights', ':image_mime'=>'image/jpeg',
+    ':provider_response_json'=>generation_json(['_candidate'=>$blockedCandidate]), ':provider_response_text'=>generation_json($manualReject),
+    ':status'=>'completed', ':error_message'=>'',
+]);
+$rightsReview = article_image_rejected_review_candidates($postId, $topicId);
+p6_assert(!array_filter($rightsReview['items'], static fn (array $item): bool => (string) ($item['audit']['candidate_identifier'] ?? '') === 'manual-rights-blocked'),
+    'Rights-rejected candidate never enters the manual-accept gallery.');
 echo "P6_IMAGE_RECOVERY_SMOKE_OK\n";

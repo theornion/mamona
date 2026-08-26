@@ -1294,6 +1294,17 @@ function article_image_vision_audit_record(array $record): void
     )')->execute($record);
 }
 
+/** Keep the rights and source evidence needed for later human review with the Vision audit. */
+function article_image_review_candidate_snapshot(array $candidate): array
+{
+    return array_intersect_key($candidate, array_flip([
+        'provider', 'provider_id', 'title', 'description', 'source_page_url', 'source_file_url',
+        'author', 'license', 'license_url', 'attribution', 'rights_statement_raw', 'width', 'height',
+        'asset_type', 'download_type', 'is_original_download', 'third_party_warning',
+        'identifiable_people', 'trademarks_logos', 'license_normalized', 'rights_manifest',
+    ]));
+}
+
 function article_image_vision_slot_identifier(array $plannedImage): string
 {
     return trim((string) ($plannedImage['slot_id'] ?? ''))
@@ -1490,6 +1501,7 @@ function article_image_gemini_vision_assess(
             'final_local_reject_reason'=>(string) ($image['final_local_reject_reason'] ?? ''),
             'source_file_url'=>(string) ($candidate['source_file_url'] ?? ''),
         ];
+        $responseAuditJson['_candidate'] = article_image_review_candidate_snapshot($candidate);
         $budgetAfter = gemini_article_budget_state($articleId);
         article_image_vision_audit_record([
             ':call_key' => $callKey, ':generation_operation_id' => null, ':post_id' => $articleId,
@@ -1907,14 +1919,14 @@ function persist_article_image(int $postId, array $image, string $query = ''): i
             license_url, attribution, alt, caption, layout, status,
             width, height, downloaded_at, relationship, search_audit_json, rights_manifest_json,
             has_transparency, watermark_status, is_fallback,
-            multimodal_assessment_json, multimodal_accepted
+            multimodal_assessment_json, multimodal_accepted, acceptance_source
          ) VALUES (
             :post_id, :role, :section_id, :visual_intent, :expected_content, :search_queries_json,
             :source_page_url, :source_file_url, :local_path, :author, :license,
             :license_url, :attribution, :alt, :caption, :layout, :status,
             :width, :height, :downloaded_at, :relationship, :search_audit_json, :rights_manifest_json,
             :has_transparency, :watermark_status, :is_fallback,
-            :multimodal_assessment_json, :multimodal_accepted
+            :multimodal_assessment_json, :multimodal_accepted, :acceptance_source
          )
          ON CONFLICT(post_id, role, section_id) DO UPDATE SET
             visual_intent = excluded.visual_intent,
@@ -1942,6 +1954,7 @@ function persist_article_image(int $postId, array $image, string $query = ''): i
             is_fallback = excluded.is_fallback,
             multimodal_assessment_json = excluded.multimodal_assessment_json,
             multimodal_accepted = excluded.multimodal_accepted,
+            acceptance_source = excluded.acceptance_source,
             updated_at = CURRENT_TIMESTAMP'
     );
     $queries = (array) ($image['search_queries'] ?? []);
@@ -1978,6 +1991,8 @@ function persist_article_image(int $postId, array $image, string $query = ''): i
         ':is_fallback' => !empty($image['is_fallback']) ? 1 : 0,
         ':multimodal_assessment_json' => generation_json((array) ($image['multimodal_assessment'] ?? [])),
         ':multimodal_accepted' => !empty($image['multimodal_accepted']) ? 1 : 0,
+        ':acceptance_source' => (string) ($image['acceptance_source'] ?? '') === 'operator_manual'
+            ? 'operator_manual' : 'automatic',
     ]);
 
     $idStatement = bueno_database()->prepare(
@@ -2001,6 +2016,140 @@ function list_article_images(int $postId): array
     $statement->execute([':post_id' => $postId]);
 
     return $statement->fetchAll();
+}
+
+/** Preview only the canonical FinalVisualPlan slots; stale image rows stay auditable. */
+function article_image_required_records(int $postId, ?int $topicId = null): array
+{
+    $coverage = article_image_coverage_state($postId, $topicId);
+    $required = [];
+    foreach ((array) ($coverage['required_slots'] ?? []) as $slot) {
+        $required[(string) ($slot['role'] ?? '') . ':' . (string) ($slot['section_anchor'] ?? '')] = true;
+    }
+    $images = list_article_images($postId);
+    if ($required === []) return $images;
+    return array_values(array_filter($images, static fn (array $image): bool => isset(
+        $required[(string) ($image['role'] ?? '') . ':' . (string) ($image['section_id'] ?? '')]
+    )));
+}
+
+/** Resolve a retained candidate snapshot, or the existing local provider cache for older audits. */
+function article_image_review_candidate_from_audit(array $audit): ?array
+{
+    $response = json_decode((string) ($audit['provider_response_json'] ?? '{}'), true);
+    $candidate = is_array($response) ? (array) ($response['_candidate'] ?? []) : [];
+    if ($candidate === []) {
+        $statement = bueno_database()->query('SELECT response_json FROM image_provider_cache ORDER BY updated_at DESC LIMIT 100');
+        $wanted = [(string) ($audit['candidate_identifier'] ?? ''), (string) ($audit['source_page_identifier'] ?? ''), (string) ($audit['source_file_identifier'] ?? '')];
+        $find = static function (mixed $value) use (&$find, $wanted): ?array {
+            if (!is_array($value)) return null;
+            $identity = [(string) ($value['provider_id'] ?? ''), (string) ($value['source_page_url'] ?? ''), (string) ($value['source_file_url'] ?? '')];
+            if (array_filter($identity) !== [] && array_intersect($wanted, $identity) !== []) return $value;
+            foreach ($value as $child) {
+                $found = $find($child);
+                if ($found !== null) return $found;
+            }
+            return null;
+        };
+        foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $cached) {
+            $candidate = $find(json_decode((string) $cached, true));
+            if ($candidate !== null) break;
+        }
+    }
+    if (!is_array($candidate) || $candidate === []) return null;
+    try {
+        return validate_source_image_candidate($candidate);
+    } catch (InvalidArgumentException) {
+        return null;
+    }
+}
+
+/** Existing Vision rejects which remain source- and rights-verifiable for operator review. */
+function article_image_rejected_review_candidates(int $postId, ?int $topicId = null): array
+{
+    $coverage = article_image_coverage_state($postId, $topicId, false);
+    $missing = array_fill_keys(array_column((array) ($coverage['missing_slots'] ?? []), 'slot_id'), true);
+    $effective = article_image_effective_visual_plan($postId, $topicId);
+    $slots = [];
+    foreach ([($effective['hero_slot'] ?? null), ...(array) ($effective['inline_slots'] ?? [])] as $slot) {
+        if (is_array($slot) && !empty($slot['required']) && trim((string) ($slot['slot_id'] ?? '')) !== '') {
+            $slots[(string) $slot['slot_id']] = $slot;
+        }
+    }
+    $statement = bueno_database()->prepare(
+        'SELECT * FROM article_image_vision_audit WHERE post_id=:post AND status="completed" ORDER BY id DESC'
+    );
+    $statement->execute([':post' => $postId]);
+    $items = [];
+    $hardRejected = 0;
+    foreach ($statement->fetchAll() as $audit) {
+        $assessment = json_decode((string) ($audit['provider_response_text'] ?? ''), true);
+        $slotId = (string) ($audit['slot_identifier'] ?? '');
+        if (!is_array($assessment) || (string) ($assessment['decision'] ?? '') !== 'reject' || !isset($slots[$slotId])) continue;
+        $candidate = article_image_review_candidate_from_audit($audit);
+        if ($candidate === null || !article_image_license_is_auto_safe((string) ($candidate['license'] ?? ''))) {
+            $hardRejected++;
+            continue;
+        }
+        $relationship = (string) ($assessment['relationship_level'] ?? 'unrelated');
+        $manualEligible = isset($missing[$slotId])
+            && in_array($relationship, ['direct', 'broader_direct'], true)
+            && empty($assessment['misleading'])
+            && empty($assessment['inappropriate']);
+        $items[] = ['audit' => $audit, 'assessment' => $assessment, 'candidate' => $candidate,
+            'slot' => $slots[$slotId], 'manual_eligible' => $manualEligible];
+    }
+    return ['items' => $items, 'reviewable_count' => count(array_filter($items,
+        static fn (array $item): bool => !empty($item['manual_eligible']))), 'hard_rejected_count' => $hardRejected];
+}
+
+/** Operator-only acceptance of a legal, technically valid, directly related Vision reject. */
+function article_image_manual_accept_rejected_candidate(
+    int $postId,
+    int $auditId,
+    ?callable $transport = null,
+    ?callable $resolver = null,
+    ?string $directory = null,
+    ?callable $downloader = null
+): int {
+    $review = article_image_rejected_review_candidates($postId);
+    $item = null;
+    foreach ($review['items'] as $candidate) {
+        if ((int) ($candidate['audit']['id'] ?? 0) === $auditId) { $item = $candidate; break; }
+    }
+    if (!is_array($item) || empty($item['manual_eligible'])) {
+        throw new RuntimeException('Ten kandydat nie kwalifikuje się do ręcznej akceptacji. Blokady prawne, techniczne i mylące obrazy pozostają bez obejścia.');
+    }
+    $slot = (array) $item['slot'];
+    $assessment = (array) $item['assessment'];
+    $assessment['acceptance_source'] = 'operator_manual';
+    $assessment['vision_rejected_before_manual_accept'] = true;
+    $level = (string) ($assessment['relationship_level'] ?? 'direct');
+    $selected = array_merge((array) $item['candidate'], [
+        'role' => (string) ($slot['role'] ?? 'inline'),
+        'section_id' => (string) ($slot['section_anchor'] ?? 'article'),
+        'visual_intent' => (string) ($slot['visual_need'] ?? $slot['expected_content'] ?? 'Ilustracja artykułu'),
+        'expected_content' => (string) ($slot['expected_content'] ?? $slot['visual_need'] ?? 'Ilustracja artykułu'),
+        'search_queries' => (array) ($slot['search_queries_direct'] ?? $slot['search_queries'] ?? []),
+        'layout' => (string) ($slot['layout'] ?? 'full'),
+        'alt' => trim((string) ($assessment['suggested_caption'] ?? '')) ?: (string) ($item['candidate']['title'] ?? 'Ilustracja źródłowa'),
+        'caption' => trim((string) ($assessment['suggested_caption'] ?? '')) ?: (string) ($item['candidate']['title'] ?? 'Ilustracja źródłowa'),
+        'relationship' => 'exact_subject',
+        'status' => 'selected',
+    ]);
+    $downloader ??= static fn (array $image): array => download_source_image($image, $transport, $resolver, $directory);
+    $downloaded = $downloader($selected);
+    $downloaded['multimodal_assessment'] = $assessment;
+    $downloaded['multimodal_accepted'] = 1;
+    $downloaded['acceptance_source'] = 'operator_manual';
+    $downloaded['search_audit'] = [[
+        'result' => 'selected', 'decision' => 'operator_manual_vision_reject',
+        'level' => $level === 'broader_direct' ? 'broader_direct' : 'exact_direct',
+        'audit_id' => $auditId,
+    ]];
+    $imageId = persist_article_image($postId, $downloaded);
+    refresh_article_image_rendering($postId);
+    return $imageId;
 }
 
 const ARTICLE_RELATED_CONTEXT_TYPES = ['sidebar', 'context', 'explainer', 'comparison', 'why_it_matters', 'related_background'];
@@ -2147,7 +2296,7 @@ function refresh_article_image_rendering(int $postId): void
     if ($post === null) {
         throw new RuntimeException('Nie znaleziono posta do odświeżenia obrazów.');
     }
-    $images = list_article_images($postId);
+    $images = article_image_required_records($postId);
     $blocks = json_decode((string) ($post['content_blocks'] ?? '[]'), true);
     $blocks = is_array($blocks) ? $blocks : [];
     $layoutAudit = [];
@@ -2821,8 +2970,20 @@ function article_image_recovery_replan_states(int $postId, ?int $topicId = null)
         try {
             $input = json_decode((string) ($operation['input_json'] ?? '{}'), true) ?: [];
             $output = json_decode((string) ($operation['output_json'] ?? '{}'), true) ?: [];
-            $states[] = ['status'=>'current_contract','operation'=>$operation,
-                'output'=>article_image_validate_recovery_replan($input, $output),'reason'=>''];
+            $analysis = article_image_recovery_replan_analysis($input, $output);
+            if ($analysis['valid']) {
+                $states[] = ['status'=>'current_contract','operation'=>$operation,'output'=>$output,'reason'=>''];
+            } elseif ($analysis['valid_slots'] !== []) {
+                $states[] = ['status'=>'partial_contract','operation'=>$operation,
+                    'output'=>['slots'=>$analysis['valid_slots']],'reason'=>generation_json(array_intersect_key($analysis, array_flip([
+                        'missing_slot_ids', 'duplicate_slot_ids', 'unexpected_slot_ids', 'invalid_slots',
+                    ])))];
+            } else {
+                $states[] = ['status'=>'stale_replan_contract','operation'=>$operation,'output'=>[],
+                    'reason'=>generation_json(array_intersect_key($analysis, array_flip([
+                        'missing_slot_ids', 'duplicate_slot_ids', 'unexpected_slot_ids', 'invalid_slots',
+                    ])))];
+            }
         } catch (Throwable $exception) {
             $states[] = ['status'=>'stale_replan_contract','operation'=>$operation,'output'=>[],
                 'reason'=>$exception->getMessage()];
@@ -2997,7 +3158,7 @@ function article_image_effective_visual_plan(int $postId, ?int $topicId = null, 
             ? []
             : (is_array($plan) ? (json_decode((string) ($plan['visual_plan_json'] ?? '{}'), true) ?: []) : []);
     }
-    foreach (article_image_valid_recovery_replans($postId, $topicId) as $replan) {
+    foreach (article_image_effective_recovery_replans($postId, $topicId) as $replan) {
         $visual = article_image_overlay_recovery_replan(
             $visual,
             (array) $replan['output'],
@@ -3151,11 +3312,12 @@ function article_image_recovery_replan_eligibility(array $coverage, array $budge
     $found = count((array) ($coverage['filled_slots'] ?? []));
     $remaining = max(0, (int) ($budget['max_calls'] ?? 30) - (int) ($budget['used_calls'] ?? 0));
     $missing = count((array) ($coverage['missing_slots'] ?? [])) + (int) ($coverage['visual_deficit'] ?? 0);
+    $required = max((int) ($coverage['visual_target'] ?? 0), count((array) ($coverage['required_slots'] ?? [])), $found + $missing);
     $closureReserve = 2;
     $safeThreshold = 1 + $closureReserve + ($missing > 0 ? 1 : 0);
-    $eligible = $found < $floor && $normalPathsExhausted && $priorReplans === 0 && $remaining >= $safeThreshold;
+    $eligible = $found < $required && $normalPathsExhausted && $priorReplans === 0 && $remaining >= $safeThreshold;
     return [
-        'eligible'=>$eligible,'found'=>$found,'floor'=>$floor,'missing'=>$missing,'remaining_budget'=>$remaining,
+        'eligible'=>$eligible,'found'=>$found,'floor'=>$floor,'required'=>$required,'missing'=>$missing,'remaining_budget'=>$remaining,
         'safe_recovery_threshold'=>$safeThreshold,'closure_reserve'=>$closureReserve,'max_replans'=>1,
         'vision_candidate_limit_per_missing_slot'=>2,
     ];
@@ -3194,13 +3356,15 @@ function article_image_recovery_replan_input(int $postId, int $topicId): array
         'research_abc'=>array_intersect_key($researchPackage, array_flip(['primary_story','context_topics','curiosity_topics','claims'])),
         'current_coverage'=>$coverage,'attempted_queries'=>$attempted,'candidate_reject_summary'=>$rejectSummary,
         'vision_rejection_reasons'=>$visionReasons,'budget'=>$budget,'replan_policy'=>$eligibility,
-        'instruction'=>'Replan only missing visual slots. Preserve locked core text. Make hero represent the concrete primary story A, not the general field. Broaden direct queries first; related recovery must name an allowed source-backed relationship.',
+        'instruction'=>'Replan only missing visual slots. Return exactly one slots[] entry for every current missing slot, copying each canonical slot_id verbatim: '
+            . implode(', ', array_values(array_filter(array_map(static fn (array $slot): string => (string) ($slot['slot_id'] ?? ''), (array) ($base['missing_slots'] ?? [])))))
+            . '. Do not omit, duplicate, rename, or add slot_ids. Preserve locked core text. Make hero represent the concrete primary story A, not the general field. Broaden direct queries first; related recovery must name an allowed source-backed relationship.',
     ];
 }
 
 function article_image_recovery_replan_schema(): array
 {
-    return ['type'=>'object','properties'=>['slots'=>['type'=>'array','minItems'=>1,'items'=>['type'=>'object','properties'=>[
+    return ['type'=>'object','properties'=>['slots'=>['type'=>'array','minItems'=>0,'items'=>['type'=>'object','properties'=>[
         'slot_id'=>['type'=>'string','minLength'=>1],'revised_visual_need'=>['type'=>'string','minLength'=>20,'maxLength'=>500],
         'search_queries_direct'=>['type'=>'array','minItems'=>2,'maxItems'=>6,'items'=>['type'=>'string','minLength'=>3]],
         'search_queries_related'=>['type'=>'array','minItems'=>1,'maxItems'=>6,'items'=>['type'=>'string','minLength'=>3]],
@@ -3229,26 +3393,78 @@ function article_image_recovery_replan_mock_generation_value(array $operation): 
     return ['slots' => $slots];
 }
 
-function article_image_validate_recovery_replan(array $input, array $output): array
+function article_image_recovery_replan_analysis(array $input, array $output): array
 {
-    $missing = [];
-    foreach ((array) ($input['missing_slots'] ?? []) as $slot) $missing[(string) ($slot['slot_id'] ?? '')] = $slot;
-    $seen = [];
+    $expected = [];
+    foreach ((array) ($input['missing_slots'] ?? []) as $slot) {
+        $slotId = trim((string) ($slot['slot_id'] ?? ''));
+        if ($slotId !== '') $expected[$slotId] = $slot;
+    }
+    $actual = [];
     foreach ((array) ($output['slots'] ?? []) as $slot) {
         $slotId = (string) ($slot['slot_id'] ?? '');
-        if (!isset($missing[$slotId]) || isset($seen[$slotId])) throw new InvalidArgumentException('Recovery replan references a non-missing or duplicate slot.');
+        $actual[$slotId][] = $slot;
+    }
+    $duplicateIds = [];
+    $unexpectedIds = [];
+    foreach ($actual as $slotId => $changes) {
+        if (!isset($expected[$slotId])) $unexpectedIds[] = $slotId;
+        if (count($changes) > 1) $duplicateIds[] = $slotId;
+    }
+    $missingIds = array_values(array_diff(array_keys($expected), array_keys($actual)));
+    $invalidSlots = [];
+    $validSlots = [];
+    foreach ($expected as $slotId => $missing) {
+        if (!isset($actual[$slotId]) || count($actual[$slotId]) !== 1) continue;
+        $slot = $actual[$slotId][0];
         $relationship = (string) ($slot['allowed_relationship'] ?? '');
         if (!in_array($relationship, ['direct','broader_direct','controlled_related'], true)) {
-            throw new InvalidArgumentException('Recovery replan selected a forbidden hero relationship.');
+            $invalidSlots[$slotId] = 'forbidden_relationship';
+            continue;
         }
-        if ((string) ($missing[$slotId]['role'] ?? '') === 'hero'
+        if ((string) ($missing['role'] ?? '') === 'hero'
             && $relationship === 'controlled_related'
-            && empty($missing[$slotId]['direct_exhaustion']['confirmed'])) {
-            throw new InvalidArgumentException('Controlled related hero requires confirmed direct exhaustion.');
+            && empty($missing['direct_exhaustion']['confirmed'])) {
+            $invalidSlots[$slotId] = 'controlled_related_hero_without_direct_exhaustion';
+            continue;
         }
-        $seen[$slotId] = true;
+        $validSlots[] = $slot;
     }
-    if ($seen === [] || count($seen) !== count($missing)) throw new InvalidArgumentException('Recovery replan must revise every missing slot exactly once.');
+    sort($missingIds); sort($duplicateIds); sort($unexpectedIds); ksort($invalidSlots);
+    return [
+        'valid' => $missingIds === [] && $duplicateIds === [] && $unexpectedIds === [] && $invalidSlots === [],
+        'expected_slot_ids' => array_keys($expected),
+        'missing_slot_ids' => $missingIds,
+        'duplicate_slot_ids' => $duplicateIds,
+        'unexpected_slot_ids' => $unexpectedIds,
+        'invalid_slots' => $invalidSlots,
+        'valid_slots' => $validSlots,
+    ];
+}
+
+function article_image_effective_recovery_replans(int $postId, ?int $topicId = null): array
+{
+    return array_values(array_filter(
+        article_image_recovery_replan_states($postId, $topicId),
+        static fn (array $state): bool => in_array((string) ($state['status'] ?? ''), ['current_contract', 'partial_contract'], true)
+    ));
+}
+
+function article_image_validate_recovery_replan(array $input, array $output): array
+{
+    $analysis = article_image_recovery_replan_analysis($input, $output);
+    if ($analysis['duplicate_slot_ids'] !== []) {
+        throw new InvalidArgumentException('Recovery replan duplicate slot_id: ' . implode(', ', $analysis['duplicate_slot_ids']) . '.');
+    }
+    if ($analysis['unexpected_slot_ids'] !== []) {
+        throw new InvalidArgumentException('Recovery replan unexpected slot_id: ' . implode(', ', $analysis['unexpected_slot_ids']) . '.');
+    }
+    if ($analysis['missing_slot_ids'] !== []) {
+        throw new InvalidArgumentException('Recovery replan missing slot_id: ' . implode(', ', $analysis['missing_slot_ids']) . '.');
+    }
+    if ($analysis['invalid_slots'] !== []) {
+        throw new InvalidArgumentException('Recovery replan invalid slot policy: ' . implode(', ', array_keys($analysis['invalid_slots'])) . '.');
+    }
     return $output;
 }
 
@@ -3272,13 +3488,20 @@ function complete_article_image_recovery_replan_operation(int $operationId): arr
 function article_image_apply_recovery_replan(int $operationId): array
 {
     $operation = find_generation_operation($operationId);
-    $output = complete_article_image_recovery_replan_operation($operationId);
+    if (!is_array($operation) || (string) ($operation['operation_type'] ?? '') !== 'image_recovery_replan' || (string) ($operation['status'] ?? '') !== 'completed') {
+        throw new RuntimeException('Recovery replan operation is not completed.');
+    }
+    $input = json_decode((string) ($operation['input_json'] ?? '{}'), true) ?: [];
+    $output = json_decode((string) ($operation['output_json'] ?? '{}'), true) ?: [];
+    $analysis = article_image_recovery_replan_analysis($input, $output);
     $postId = (int) ($operation['post_id'] ?? 0); $topicId = (int) ($operation['topic_id'] ?? 0);
     $plan = find_narrative_plan_for_post($postId, $topicId);
     if (!is_array($plan)) throw new RuntimeException('Recovery replan lost its NarrativePlan.');
     $visual = article_image_effective_visual_plan($postId, $topicId, $plan);
+    $validOutput = ['slots' => $analysis['valid_slots']];
+    $visual = article_image_overlay_recovery_replan($visual, $validOutput, $operationId);
     $revised = [];
-    foreach ((array) $output['slots'] as $change) {
+    foreach ($analysis['valid_slots'] as $change) {
         $slotId = (string) $change['slot_id'];
         foreach (['hero_slot','inline_slots'] as $group) {
             if ($group === 'hero_slot') $indexes = [null]; else $indexes = array_keys((array) ($visual[$group] ?? []));
@@ -3296,7 +3519,13 @@ function article_image_apply_recovery_replan(int $operationId): array
             }
         }
     }
-    return ['operation_id'=>$operationId,'revised_slot_ids'=>$revised,'max_replans'=>1];
+    return [
+        'operation_id'=>$operationId,
+        'status'=>$analysis['valid'] ? 'applied' : ($revised === [] ? 'canonical_fallback' : 'partial_fallback'),
+        'revised_slot_ids'=>$revised,
+        'validation'=>$analysis,
+        'max_replans'=>1,
+    ];
 }
 
 /**

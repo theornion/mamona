@@ -29,10 +29,16 @@ if ($draftId > 0) {
     $draft = proposal_json_decode((string) $draftRecord['draft_json']);
     $post['title'] = trim((string) ($draft['title'] ?? $post['title']));
     $post['excerpt'] = mb_substr(trim((string) ($draft['brief'] ?? '')), 0, 500);
+}
+
+$previewBlocks = $draftId > 0
+    ? article_draft_content_blocks($draft)
+    : (json_decode((string) ($post['content_blocks'] ?? '[]'), true) ?: []);
+if ($previewBlocks !== []) {
     $layoutAudit = [];
     $post['rendered_content_override'] = render_article_blocks_with_layout(
-        article_draft_content_blocks($draft),
-        list_article_images($postId),
+        $previewBlocks,
+        article_image_required_records($postId),
         article_layout_plan_for_post($postId, $layoutAudit),
         article_related_context_blocks_for_post($postId),
         $layoutAudit
