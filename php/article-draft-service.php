@@ -274,7 +274,8 @@ function article_title_surface_error(string $title): ?string
         && $letters !== mb_strtolower($letters)) {
         return 'Tytuł nie może być zapisany wersalikami.';
     }
-    if (preg_match('/\b(?:the|this|these|why|scientists|study|researchers)\b/i', $title) === 1) {
+    $englishMarkers = preg_match_all('/\b(?:the|this|these|why|scientists|study|researchers|new|research|from|university|introduces|could|change|blood|treated)\b/i', $title);
+    if ($englishMarkers === false || $englishMarkers >= 2) {
         return 'Tytuł nie jest napisany naturalnym językiem polskim.';
     }
 
@@ -1480,6 +1481,34 @@ function article_draft_normalize_narrative_visual_slot_identity(array $narrative
     unset($hero, $inline);
 }
 
+/** Remove only surplus provider copies before strict schema validation. */
+function article_draft_trim_excess_inline_visual_slots(array $narrativePlan, array &$draft): bool
+{
+    $actualPlan =& $draft['illustration_plan'];
+    if (!is_array($actualPlan) || !is_array($actualPlan['inline'] ?? null)) return false;
+    $contract = narrative_plan_draft_illustration_contract($narrativePlan);
+    $expected = array_values((array) ($contract['illustration_plan']['inline'] ?? []));
+    $actual = array_values($actualPlan['inline']);
+    if (count($actual) <= count($expected)) return false;
+    $selected = [];
+    $used = [];
+    foreach ($expected as $expectedSlot) {
+        foreach ($actual as $index => $actualSlot) {
+            if (isset($used[$index]) || !is_array($actualSlot)) continue;
+            if ((string) ($actualSlot['slot_id'] ?? '') === (string) ($expectedSlot['slot_id'] ?? '')
+                || ((string) ($actualSlot['role'] ?? '') === 'inline'
+                    && (string) ($actualSlot['section_id'] ?? '') === (string) ($expectedSlot['section_id'] ?? ''))) {
+                $selected[] = $actualSlot;
+                $used[$index] = true;
+                break;
+            }
+        }
+    }
+    if (count($selected) !== count($expected)) return false;
+    $actualPlan['inline'] = $selected;
+    return true;
+}
+
 function article_draft_assert_brief_contract(string $value): string
 {
     $brief = trim(preg_replace('/\s+/u', ' ', strip_tags($value)) ?? '');
@@ -1529,10 +1558,12 @@ function validate_article_draft_output(array $operation, array &$draft): array
     }
     $seoWarning = article_draft_normalize_seo_description($draft);
     $narrativePlan = is_array($input['narrative_plan'] ?? null) ? $input['narrative_plan'] : null;
-    $visualSlotCount = 1 + count((array) (($draft['illustration_plan'] ?? [])['inline'] ?? []));
+    $inlineVisualSlotRepair = false;
     if ($narrativePlan !== null) {
+        $inlineVisualSlotRepair = article_draft_trim_excess_inline_visual_slots($narrativePlan, $draft);
         article_draft_normalize_narrative_visual_slot_identity($narrativePlan, $draft);
     }
+    $visualSlotCount = 1 + count((array) (($draft['illustration_plan'] ?? [])['inline'] ?? []));
     if ($narrativePlan === null) {
     validate_article_illustration_plan(
             (array) ($draft['illustration_plan'] ?? []),
@@ -1703,6 +1734,7 @@ function validate_article_draft_output(array $operation, array &$draft): array
         'selected_title_score' => $titleValidation['selected_score'],
         'supported_title_tokens' => $titleValidation['supported_title_tokens'],
         'narrative_plan_contract' => $narrativePlanEvidence,
+        'inline_visual_slot_repair' => $inlineVisualSlotRepair,
         ...$visualTargetState,
         'warnings' => $seoWarning === null ? [] : [$seoWarning],
     ];

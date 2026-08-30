@@ -37,8 +37,8 @@ image_pipeline_assert(article_inline_image_target_count(0) === 0, 'Pusty tekst m
 image_pipeline_assert(article_inline_image_target_count(2000) === 2, 'Dla 2000 znaków oczekiwano 2 ilustracji inline.');
 image_pipeline_assert(article_inline_image_target_count(3000) === 3, 'Dla 3000 znaków oczekiwano 3 ilustracji inline.');
 image_pipeline_assert(article_inline_image_target_count(3200) === 3, 'Dla 3200 znaków oczekiwano 3 ilustracji inline i hero osobno.');
-image_pipeline_assert(article_inline_image_target_count(4000) === 4, 'Dla 4000 znaków oczekiwano 4 ilustracji inline.');
-image_pipeline_assert(article_inline_image_target_count(5000) === 5, 'Dla 5000 znaków oczekiwano 5 ilustracji inline.');
+image_pipeline_assert(article_inline_image_target_count(4000) === 3, 'Dla 4000 znaków obowiązuje limit 3 ilustracji inline.');
+image_pipeline_assert(article_inline_image_target_count(5000) === 3, 'Dla 5000 znaków obowiązuje limit 3 ilustracji inline.');
 image_pipeline_assert(article_image_license_is_auto_safe('CC0 1.0'), 'CC0 nie zostało zaakceptowane.');
 image_pipeline_assert(article_image_license_is_auto_safe('CC BY 4.0'), 'CC BY nie zostało zaakceptowane.');
 image_pipeline_assert(article_image_license_is_auto_safe('by-4.0'), 'Zapis licencji CC BY z Openverse nie został zaakceptowany.');

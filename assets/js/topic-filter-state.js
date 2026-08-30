@@ -7,7 +7,7 @@
     'use strict';
     function matches(queueState, showReady, showAction) {
         if (queueState === 'ready') return Boolean(showReady);
-        if (queueState === 'action') return Boolean(showAction);
+        if (queueState === 'action') return showAction !== false;
         return true;
     }
     function counts(queueStates) {

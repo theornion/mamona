@@ -114,9 +114,7 @@ try {
     );
     $postIds = [$first['post_id'], $second['post_id']];
     $topicId = $first['topic_id'];
-    if ($second['topic_id'] !== $topicId) {
-        manual_merge_topics($second['topic_id'], $topicId, 'research-smoke');
-    }
+    research_smoke_assert($second['topic_id'] === $topicId, 'Zwykłe automatyczne grupowanie nie połączyło zgodnych źródeł.');
     research_smoke_assert(count(topic_feed_items($topicId)) === 2, 'Temat nie zawiera dwóch źródeł.');
 
     update_generation_mode('manual');

@@ -265,7 +265,7 @@
     function persistVisibility() {
         var url = new URL(window.location.href);
         showReady.checked ? url.searchParams.set('show_ready', '1') : url.searchParams.delete('show_ready');
-        showAction.checked ? url.searchParams.set('show_action', '1') : url.searchParams.delete('show_action');
+        showAction.checked ? url.searchParams.delete('show_action') : url.searchParams.set('show_action', '0');
         window.history.replaceState(null, '', url.pathname + (url.searchParams.toString() ? '?' + url.searchParams.toString() : '') + url.hash);
         document.querySelectorAll('[name="return_show_ready"]').forEach(function (input) { input.value = showReady.checked ? '1' : '0'; });
         document.querySelectorAll('[name="return_show_action"]').forEach(function (input) { input.value = showAction.checked ? '1' : '0'; });

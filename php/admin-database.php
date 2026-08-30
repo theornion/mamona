@@ -1670,17 +1670,18 @@ HTML;
         1
     ) ?? $template;
 
+    $articleDetailScript = '<script defer src="../assets/js/article-detail-lightbox.js?v=cms-detail-inline-20260827"></script>';
     if ($galleryLink !== '') {
         $template = preg_replace(
             '/<script defer src="\.\.\/assets\/js\/news-feed\.js\?v=[^"]+"><\/script>/',
-            '<script defer src="../assets/js/cat-gallery.js?v=cms-core-20260721"></script>',
+            '<script defer src="../assets/js/cat-gallery.js?v=cms-core-20260721"></script>' . $articleDetailScript,
             $template,
             1
         ) ?? $template;
     } else {
         $template = preg_replace(
             '/\s*<script defer src="\.\.\/assets\/js\/news-feed\.js\?v=[^"]+"><\/script>/',
-            '',
+            "\n    " . $articleDetailScript,
             $template,
             1
         ) ?? $template;

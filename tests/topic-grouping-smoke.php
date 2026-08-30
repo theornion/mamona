@@ -41,6 +41,8 @@ function test_feed_item(array $source, string $title, string $url, string $token
 }
 
 $database = bueno_database();
+$candidateTable = $database->query("SELECT name FROM sqlite_master WHERE type='table' AND name='topic_grouping_candidates'")->fetchColumn();
+topic_assert($candidateTable === false, 'Usunięta kolejka sugerowanego łączenia nadal istnieje w bazie.');
 $token = bin2hex(random_bytes(6));
 $sourceIds = [];
 $postIds = [];
@@ -115,14 +117,6 @@ try {
     topic_assert((int) $topicA['topic_id'] !== (int) $topicUnrelated['topic_id'], 'Niezwiązane aktualizacje tej samej firmy zostały połączone.');
     topic_assert(count(topic_feed_items((int) $topicA['topic_id'])) === 3, 'Temat nie zawiera wszystkich potwierdzających źródeł.');
 
-    manual_merge_topics((int) $topicUnrelated['topic_id'], (int) $topicA['topic_id'], 'test');
-    $membership->execute([':feed_item_id' => $itemUnrelated]);
-    topic_assert((int) $membership->fetchColumn() === (int) $topicA['topic_id'], 'Ręczne połączenie nie zadziałało.');
-    $splitTopicId = manual_split_feed_item($itemUnrelated, 'test');
-    topic_assert($splitTopicId !== (int) $topicA['topic_id'], 'Nie można było cofnąć błędnego grupowania.');
-
-    $unrelatedPost = find_post($postIds[array_search($itemUnrelated, $itemIds, true)], true);
-    topic_assert($unrelatedPost['status'] === 'idea', 'Rozdzielony wpis nie wrócił do kolejki pomysłów.');
     $splitPrimaryTopicId = manual_split_feed_item($itemA, 'test');
     topic_assert($splitPrimaryTopicId !== (int) $topicA['topic_id'], 'Nie można rozdzielić głównego wpisu tematu.');
     $remainingTopic = find_editorial_topic((int) $topicA['topic_id']);

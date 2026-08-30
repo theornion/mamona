@@ -35,7 +35,10 @@ $researchInput = ['numbered_sources' => [['source_id' => 'S1', 'title' => 'Fixtu
 $researchOutput = [
     'claims' => [['claim_id' => 'C1']],
     'primary_story' => ['id'=>'A','title'=>'Główna historia fixture','claim_ids'=>['C1']],
-    'context_topics' => [],
+    'context_topics' => [[
+        'id'=>'B1','title'=>'Kontekst wizualny fixture','claim_ids'=>['C1'],
+        'suggested_visual_queries'=>['source-backed context anatomy'],
+    ]],
     'curiosity_topics' => [],
     'source_claims' => ['C1'],
     'source_map' => [['claim_id'=>'C1','source_ids'=>['S1']]],
@@ -69,6 +72,12 @@ narrative_contract_version_assert(($newInput['visual_plan_contract_version'] ?? 
 narrative_contract_version_assert((string) ($newOperation['status'] ?? '') === 'prepared', 'Contract upgrade must prepare one new NarrativePlan operation.');
 $mockPlan = narrative_plan_mock_generation_value($newOperation);
 validate_generation_value($mockPlan, narrative_plan_schema(['S1'], ['C1']));
+$visualSchema = narrative_plan_schema(['S1'], ['C1'])['properties']['visual_plan']['properties'];
+narrative_contract_version_assert(
+    ($visualSchema['inline_slots']['maxItems'] ?? 0) === 3
+    && (narrative_plan_schema(['S1'], ['C1'])['properties']['visual_slots_planned']['maximum'] ?? 0) === 4,
+    'NarrativePlan schema must cap the preliminary plan at the production visual floor.'
+);
 $mockValidation = validate_narrative_plan_output($newOperation, $mockPlan);
 narrative_contract_version_assert(is_array($mockValidation) && ($mockValidation['valid'] ?? false) === true, 'V2 NarrativePlan mock does not satisfy source-backed selection and visual floor.');
 narrative_contract_version_assert((int) ($mockValidation['target_length'] ?? 0) === 6500, 'V2 NarrativePlan mock does not use the longform target.');
@@ -90,6 +99,23 @@ narrative_contract_version_assert(
     'A donor with one canonical direct query did not restore the visual floor deterministically.'
 );
 narrative_contract_version_assert(validate_narrative_plan_output($newOperation, $providerAmbiguity) !== null, 'Normalized provider ambiguity does not satisfy the canonical NarrativePlan contract.');
+$researchBackedFloor = $mockPlan;
+$researchBackedFloor['selected_context_topics'] = [[
+    'id'=>'B1','title'=>'Kontekst wizualny fixture','claim_ids'=>['C1'],
+    'selection_reason'=>'Wybrany kontekst ma źródłowe zapytanie dla wymaganej sekcji.',
+]];
+$researchBackedFloor['sections'][0]['topic_role'] = 'B';
+$researchBackedFloor['visual_plan']['inline_slots'] = array_slice($researchBackedFloor['visual_plan']['inline_slots'], 1);
+$researchFloorSlots = [];
+$addedResearchSlots = narrative_plan_normalize_visual_floor($researchBackedFloor, $newOperation, $researchFloorSlots);
+narrative_contract_version_assert(
+    $addedResearchSlots === ['inline-opening']
+    && $researchFloorSlots === ['inline-opening']
+    && ($researchBackedFloor['visual_plan']['inline_slots'][2]['topic_source'] ?? '') === 'B'
+    && ($researchBackedFloor['visual_plan']['inline_slots'][2]['search_queries_direct'] ?? []) === ['source-backed context anatomy']
+    && validate_narrative_plan_output($newOperation, $researchBackedFloor) !== null,
+    'An explicitly planned B section did not recover its VisualPlan slot from selected source-backed research.'
+);
 $planId = persist_narrative_plan($newOperationId, $mockPlan);
 $otherPostId = create_post($categoryId, 'Colliding topic/post identifier fixture', 'Excerpt', 'Content');
 narrative_contract_version_assert(

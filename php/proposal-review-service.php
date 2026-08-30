@@ -71,7 +71,15 @@ function list_article_proposals_for_review(?int $postId = null, int $limit = 100
     if ($postId !== null) $statement->bindValue(':post_id', $postId, PDO::PARAM_INT);
     $statement->bindValue(':limit', max(1, min(500, $limit)), PDO::PARAM_INT);
     $statement->execute();
-    return $statement->fetchAll();
+    $proposals = $statement->fetchAll();
+    foreach ($proposals as &$proposal) {
+        $coverage = article_image_coverage_state((int) $proposal['post_id'], (int) $proposal['topic_id']);
+        $proposal['image_count'] = count((array) ($coverage['required_slots'] ?? []));
+        $proposal['ready_image_count'] = count((array) ($coverage['filled_slots'] ?? []));
+        $proposal['warning_image_count'] = count((array) ($coverage['missing_slots'] ?? []));
+    }
+    unset($proposal);
+    return $proposals;
 }
 
 /** Backwards-compatible name; publication readiness is evaluated separately. */

@@ -14,15 +14,15 @@ function post_draft_floor_assert(bool $condition, string $message): void
 $deficit = editorial_v2_visual_target_state(9323, 3);
 post_draft_floor_assert($deficit === [
     'final_article_length'=>9323,
-    'visual_target'=>5,
+    'visual_target'=>4,
     'visual_slot_count'=>3,
-    'visual_deficit'=>2,
-    'publication_visual_floor'=>4,
-], '9323 characters with three slots did not persist target=5, deficit=2 and floor=4.');
+    'visual_deficit'=>1,
+    'publication_visual_floor'=>3,
+], '9323 characters with three slots did not persist target=4, deficit=1 and floor=3.');
 
-$complete = editorial_v2_visual_target_state(9323, 5);
-post_draft_floor_assert($complete['visual_target'] === 5 && $complete['visual_deficit'] === 0,
-    'Five slots for 9323 characters still report a deficit.');
+$complete = editorial_v2_visual_target_state(9323, 4);
+post_draft_floor_assert($complete['visual_target'] === 4 && $complete['visual_deficit'] === 0,
+    'Four slots for 9323 characters still report a deficit.');
 
 $sixThousand = editorial_v2_visual_target_state(6000, 3);
 post_draft_floor_assert($sixThousand['visual_target'] === 4 && $sixThousand['visual_deficit'] === 1,
@@ -75,10 +75,10 @@ $db->exec('UPDATE generation_settings SET generation_mode="api" WHERE id=1');
 $finalOperationId = prepare_article_final_visual_plan_operation($postId, $topicId);
 $finalOperation = find_generation_operation($finalOperationId);
 $finalInput = json_decode((string)$finalOperation['input_json'], true) ?: [];
-post_draft_floor_assert((int)$finalInput['final_article_chars'] === 9323 && (int)$finalInput['visual_target_total'] === 5 && (int)$finalInput['publication_floor'] === 4,
-    'FinalVisualPlan input did not derive target=5 and floor=4 from locked 9323-character text.');
+post_draft_floor_assert((int)$finalInput['final_article_chars'] === 9323 && (int)$finalInput['visual_target_total'] === 4 && (int)$finalInput['publication_floor'] === 3,
+    'FinalVisualPlan input did not derive target=4 and floor=3 from locked 9323-character text.');
 $finalPlan = ['hero_slot'=>['slot_id'=>'hero-main','role'=>'hero','section_anchor'=>'article','topic_source'=>'A','visual_need'=>'Final direct hero subject','must_be_direct'=>true,'acceptable_related'=>false,'search_queries_direct'=>['final hero subject'],'search_queries_related'=>[],'required'=>true], 'inline_slots'=>[]];
-foreach ([['s1','A'],['s2','A'],['s3','B'],['s4','C']] as $index=>$placement) $finalPlan['inline_slots'][] = ['slot_id'=>'final-'.$placement[0],'role'=>'inline','section_anchor'=>$placement[0],'topic_source'=>$placement[1],'visual_need'=>'Final visual need for '.$placement[0],'must_be_direct'=>true,'acceptable_related'=>false,'search_queries_direct'=>['final section '.$placement[0]],'search_queries_related'=>[],'required'=>true];
+foreach ([['s1','A'],['s2','A'],['s3','B']] as $index=>$placement) $finalPlan['inline_slots'][] = ['slot_id'=>'final-'.$placement[0],'role'=>'inline','section_anchor'=>$placement[0],'topic_source'=>$placement[1],'visual_need'=>'Final visual need for '.$placement[0],'must_be_direct'=>true,'acceptable_related'=>false,'search_queries_direct'=>['final section '.$placement[0]],'search_queries_related'=>[],'required'=>true];
 execute_generation_operation($finalOperationId, static fn(): array => ['status'=>200,'body'=>generation_json([
     'responseId'=>'local-final-plan-fixture','candidates'=>[['content'=>['parts'=>[['text'=>generation_json($finalPlan)]]],'finishReason'=>'STOP']],
     'usageMetadata'=>['promptTokenCount'=>1,'candidatesTokenCount'=>1,'totalTokenCount'=>2],
@@ -86,7 +86,7 @@ execute_generation_operation($finalOperationId, static fn(): array => ['status'=
 $budget = gemini_article_budget_state($postId);
 post_draft_floor_assert((int)$budget['used_calls'] === 1, 'FinalVisualPlan controlled response was not counted as exactly one Gemini call.');
 $effective = article_image_effective_visual_plan($postId, $topicId);
-post_draft_floor_assert(count((array)$effective['inline_slots']) === 4 && (string)$effective['hero_slot']['slot_id'] === 'hero-main',
+post_draft_floor_assert(count((array)$effective['inline_slots']) === 3 && (string)$effective['hero_slot']['slot_id'] === 'hero-main',
     'V2 image pipeline did not select completed FinalVisualPlan.');
 post_draft_floor_assert(generation_json($effective) !== generation_json($preliminary), 'V2 image pipeline still selected preliminary visual directions.');
 

@@ -227,7 +227,7 @@ function purge_developer_feed_records(string $archivePath, bool $confirmed): arr
     try {
         if ($feedItemIds !== []) {
             $feedPlaceholders = implode(',', array_fill(0, count($feedItemIds), '?'));
-            foreach (['topic_grouping_candidates', 'topic_grouping_history'] as $table) {
+            foreach (['topic_grouping_history'] as $table) {
                 $statement = $database->prepare(
                     'DELETE FROM ' . $table . ' WHERE feed_item_id IN (' . $feedPlaceholders . ')'
                 );

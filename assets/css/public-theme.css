@@ -695,6 +695,16 @@ body:not(.admin-page) .article-illustration {
    section, but the following section always starts in a clean flow context. */
 body:not(.admin-page) .article-layout__section {
     display: flow-root;
+    background: transparent;
+    color: inherit;
+}
+
+/* A detail-inline figure starts with prose, not its section heading: the title
+   owns the full reading column, then the following paragraph wraps the media. */
+body:not(.admin-page) .article-layout__section--detail-inline-heading > h2 {
+    margin: 0 auto 1.25rem;
+    text-align: center;
+    white-space: nowrap;
 }
 
 body:not(.admin-page) .article-layout__section .article-section p {
@@ -735,6 +745,149 @@ body:not(.admin-page) .article-illustration--full:not(.article-illustration--her
     max-width: 100%;
     height: auto;
     object-fit: contain;
+}
+
+/* Detailed diagrams and transparent technical graphics stay inside the dark
+   article flow, while only their image body receives a readable neutral mat. */
+body:not(.admin-page) .article-layout__image--detail-inline {
+    position: relative;
+}
+
+body:not(.admin-page) .article-illustration--detail-inline {
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    clear: none;
+}
+
+body:not(.admin-page) .article-image-media-card {
+    overflow: hidden;
+    border: 1px solid rgba(145, 205, 227, 0.24);
+    border-radius: 0.75rem;
+    background: rgba(9, 24, 42, 0.82);
+}
+
+body:not(.admin-page) .article-image-media-card--neutral {
+    background: rgba(255, 255, 255, 0.5);
+}
+
+body:not(.admin-page) .article-image-zoom {
+    position: relative;
+    display: block;
+    color: inherit;
+    cursor: zoom-in;
+}
+
+body:not(.admin-page) .article-image-zoom img {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    background: transparent !important;
+    object-fit: contain;
+}
+
+body:not(.admin-page) .article-image-zoom__hint {
+    position: absolute;
+    right: 0.65rem;
+    bottom: 0.65rem;
+    padding: 0.28rem 0.52rem;
+    border-radius: 999px;
+    background: rgba(4, 12, 26, 0.82);
+    color: #f4fbff;
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 0.67rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+body:not(.admin-page) .article-illustration--detail-inline figcaption {
+    margin-top: 0.8rem;
+    text-align: left !important;
+}
+
+body:not(.admin-page) .article-illustration--detail-inline .article-image-description,
+body:not(.admin-page) .article-illustration--detail-inline .article-image-disclosure,
+body:not(.admin-page) .article-illustration--detail-inline .article-image-credit {
+    margin: 0;
+    color: #c5d7e1 !important;
+    font-size: 0.82rem;
+    line-height: 1.55;
+    text-align: left !important;
+}
+
+body:not(.admin-page) .article-illustration--detail-inline .article-image-disclosure {
+    margin-top: 0.45rem;
+    color: #9eb5c1 !important;
+}
+
+body:not(.admin-page) .article-image-meta {
+    margin-top: 0.55rem;
+    color: #b6ceda;
+    font-size: 0.75rem;
+}
+
+body:not(.admin-page) .article-image-meta summary {
+    cursor: pointer;
+    color: #8de5f7;
+}
+
+body:not(.admin-page) .article-image-meta p {
+    margin-top: 0.45rem !important;
+}
+
+body:not(.admin-page) .article-detail-lightbox {
+    position: fixed;
+    z-index: 10050;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: clamp(1rem, 4vw, 3rem);
+    background: rgba(1, 6, 15, 0.92);
+}
+
+body:not(.admin-page) .article-detail-lightbox[hidden] {
+    display: none;
+}
+
+body:not(.admin-page) .article-detail-lightbox__panel {
+    position: relative;
+    width: min(94vw, 72rem);
+    max-height: 92vh;
+    overflow: auto;
+    padding: 1rem;
+    border: 1px solid rgba(145, 205, 227, 0.3);
+    border-radius: 0.9rem;
+    background: #09182a;
+}
+
+body:not(.admin-page) .article-detail-lightbox__image {
+    display: block;
+    width: min(100%, 42rem);
+    max-width: 100%;
+    max-height: none;
+    margin: 0 auto;
+    background: #f3f7fa;
+    object-fit: contain;
+}
+
+body:not(.admin-page) .article-detail-lightbox__caption {
+    margin: 0.8rem 0 0;
+    color: #d4e4eb;
+    font-size: 0.88rem;
+    line-height: 1.5;
+}
+
+body:not(.admin-page) .article-detail-lightbox__close {
+    position: sticky;
+    top: 0;
+    float: right;
+    margin: 0 0 0.65rem 0.65rem;
+    border: 1px solid rgba(145, 205, 227, 0.4);
+    border-radius: 999px;
+    background: #102a43;
+    color: #f5fbff;
+    cursor: pointer;
 }
 
 body:not(.admin-page) .article-mini-gallery .article-illustration--full {
@@ -1029,6 +1182,14 @@ body:not(.admin-page) :where(.cat-slide, .burger-slide) {
     body:not(.admin-page) .article-layout__image--side > :where(.article-illustration--left, .article-illustration--right) {
         margin: 0 !important;
     }
+    body:not(.admin-page) .article-layout__image--detail-inline {
+        width: 100% !important;
+        max-width: none !important;
+        margin: 1.5rem auto !important;
+    }
+    body:not(.admin-page) .article-layout__section--detail-inline-heading > h2 {
+        white-space: normal;
+    }
 }
 
 @media screen and (min-width: 981px) {
@@ -1046,6 +1207,22 @@ body:not(.admin-page) :where(.cat-slide, .burger-slide) {
     body:not(.admin-page) .article-layout__image--side-right {
         float: right;
         margin-left: 2rem;
+    }
+
+    body:not(.admin-page) .article-layout__image--detail-inline {
+        width: min(46%, 30rem);
+        margin-top: 0.45rem;
+        margin-bottom: 1.5rem;
+    }
+
+    body:not(.admin-page) .article-layout__image--detail-inline.article-layout__image--side-right {
+        float: right;
+        margin-left: 2rem;
+    }
+
+    body:not(.admin-page) .article-layout__image--detail-inline.article-layout__image--side-left {
+        float: left;
+        margin-right: 2rem;
     }
 
     body:not(.admin-page) .article-layout__image--side > :where(.article-illustration--left, .article-illustration--right) {

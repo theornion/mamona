@@ -27,12 +27,12 @@ const NARRATIVE_PLAN_TARGET_LENGTH_MIN = 5000;
 
 function editorial_v2_required_image_count(int $articleCharacters): int
 {
-    return max(3, min(6, 1 + (int) floor(max(0, $articleCharacters) / 2000)));
+    return max(3, min(4, 1 + (int) floor(max(0, $articleCharacters) / 2000)));
 }
 
 function editorial_v2_publication_image_floor(int $visualTarget): int
 {
-    $visualTarget = max(3, min(6, $visualTarget));
+    $visualTarget = max(3, min(4, $visualTarget));
     return $visualTarget === 3 ? 3 : $visualTarget - 1;
 }
 
@@ -52,7 +52,7 @@ function editorial_v2_visual_target_state(int $articleCharacters, int $currentSl
  * It is part of the operation input hash, so a stricter contract never reuses
  * a completed operation whose output was produced against an older schema.
  */
-const NARRATIVE_PLAN_VISUAL_PLAN_CONTRACT_VERSION = 'editorial-engine-v2-visual-query-min-one';
+const NARRATIVE_PLAN_VISUAL_PLAN_CONTRACT_VERSION = 'editorial-engine-v3-visual-floor-aligned';
 
 function prepare_narrative_plan_operation(int $topicId, int $researchPackageId): int
 {
@@ -96,6 +96,7 @@ function prepare_narrative_plan_operation(int $topicId, int $researchPackageId):
             'Projektuj jeden spójny artykuł o preferowanej długości 6000–8500 znaków, w twardym zakresie 5000–10000.',
             'Zdefiniuj zmienną kolejność dynamicznych sections; nie narzucaj legacy lead/facts/unknowns shape.',
             'VisualPlan jest na tym etapie wyłącznie preliminary visual directions dla A+B+C. Pomaga zaplanować narrację, ale nie jest finalnym źródłem wymaganej liczby grafik; FinalVisualPlan powstanie dopiero po QC i core locku.',
+            'visual_slots_planned musi dokładnie odpowiadać liczbie slotów: jeden hero plus wszystkie inline_slots. Dla target_length 5000–5999 zaplanuj dokładnie 3 sloty, a dla 6000–10000 dokładnie 4 (jeden hero i trzy inline). Każda sekcja z visual_slot_required=true musi mieć odpowiadający inline_slot z tym samym section_anchor i topic_source.',
             'Hero musi reprezentować sedno primary story A: konkretny obiekt, metodę, zjawisko albo mierzoną aktywność opisaną w researchu. Nie zastępuj sedna ogólnym obrazem dziedziny ani dekoracyjnym schematem.',
             'For each visual slot, PREFER 3–5 diverse direct search queries when useful, but provide at least 1.',
         ],
@@ -237,7 +238,7 @@ function narrative_plan_schema(array $sourceIds, array $claimIds): array
                 'maxItems' => 11,
             ],
             'rhythm_notes' => ['type' => 'string', 'minLength' => 20, 'maxLength' => 500],
-            'visual_slots_planned' => ['type' => 'integer', 'minimum' => 3, 'maximum' => 6],
+            'visual_slots_planned' => ['type' => 'integer', 'minimum' => 3, 'maximum' => 4],
             'hero_topic_ref' => ['type' => 'string', 'enum' => ['A']],
             'ending_type' => ['type' => 'string', 'enum' => ['conclusion', 'open_question', 'call_to_action', 'scene_return', 'summary']],
             'supplemental_topics' => [
@@ -253,7 +254,7 @@ function narrative_plan_schema(array $sourceIds, array $claimIds): array
             ],
             'visual_plan' => ['type' => 'object', 'properties' => [
                 'hero_slot' => $heroSlotSchema,
-                'inline_slots' => ['type' => 'array', 'items' => $slotSchema, 'minItems' => 2, 'maxItems' => 5],
+            'inline_slots' => ['type' => 'array', 'items' => $slotSchema, 'minItems' => 2, 'maxItems' => 3],
             ], 'required' => ['hero_slot', 'inline_slots'], 'additionalProperties' => false],
             'expansion_modules' => ['type' => 'array', 'items' => $moduleSchema, 'minItems' => 0, 'maxItems' => 4],
         ],
@@ -386,7 +387,7 @@ function persist_narrative_plan(int $operationId, array $plan): int
         ':sections' => $sectionsJson,
         ':transitions' => $transitionsJson,
         ':rhythm' => mb_substr((string) ($plan['rhythm_notes'] ?? ''), 0, 500),
-        ':visual_slots' => max(1, min(6, (int) ($plan['visual_slots_planned'] ?? 1))),
+        ':visual_slots' => max(1, min(4, (int) ($plan['visual_slots_planned'] ?? 1))),
         ':hero_ref' => 'A',
         ':ending' => mb_substr((string) ($plan['ending_type'] ?? ''), 0, 50),
         ':supplemental' => $supplementalJson,
@@ -414,7 +415,7 @@ function narrative_visual_plan_to_illustration_plan(array $visualPlan): array
     };
     $hero = $project((array)($visualPlan['hero_slot'] ?? []), 'full');
     $inline = [];
-    foreach ((array)($visualPlan['inline_slots'] ?? []) as $index => $slot) $inline[] = $project((array)$slot, ['full','left','right','breakout'][$index % 4]);
+    foreach (array_slice((array)($visualPlan['inline_slots'] ?? []), 0, 3) as $index => $slot) $inline[] = $project((array)$slot, ['full','left','right','breakout'][$index % 4]);
     return ['hero'=>$hero, 'inline'=>$inline];
 }
 
@@ -494,7 +495,7 @@ function narrative_plan_draft_illustration_contract(array $narrativePlan): array
         throw new RuntimeException('NarrativePlan nie zawiera poprawnego VisualPlan dla szkicu.');
     }
     $hero = (array) ($visualPlan['hero_slot'] ?? []);
-    $inline = array_values((array) ($visualPlan['inline_slots'] ?? []));
+    $inline = array_slice(array_values((array) ($visualPlan['inline_slots'] ?? [])), 0, 3);
     if (($hero['role'] ?? '') !== 'hero' || ($hero['section_anchor'] ?? '') !== 'article'
         || empty($hero['required']) || empty($hero['must_be_direct'])
         || (array) ($hero['search_queries_direct'] ?? []) === []) {
@@ -616,7 +617,7 @@ function validate_narrative_plan_output(array $operation, array $output): ?array
     }
 
     $visualSlots = (int) ($output['visual_slots_planned'] ?? 0);
-    if ($visualSlots < 3 || $visualSlots > 6) {
+    if ($visualSlots < 3 || $visualSlots > 4) {
         return null;
     }
 
@@ -731,8 +732,55 @@ function narrative_plan_record_curiosity_omission_normalization(array $operation
         ->execute([':usage'=>generation_json($usage), ':id'=>(int) $operation['id']]);
 }
 
-/** Fill only an explicitly planned visual section omitted from VisualPlan, using existing plan text and queries. */
-function narrative_plan_normalize_visual_floor(array &$output): array
+/** Keep a provider overrun within the fixed one-hero plus three-inline contract. */
+function narrative_plan_normalize_visual_ceiling(array &$output): bool
+{
+    $visual =& $output['visual_plan'];
+    if (!is_array($visual) || !is_array($visual['inline_slots'] ?? null)) return false;
+    $inline = array_values($visual['inline_slots']);
+    if (count($inline) <= 3) return false;
+    $kept = [];
+    $anchors = [];
+    foreach ($inline as $slot) {
+        if (!is_array($slot)) continue;
+        $anchor = trim((string) ($slot['section_anchor'] ?? ''));
+        if ($anchor === '' || isset($anchors[$anchor])) continue;
+        $anchors[$anchor] = true;
+        $kept[] = $slot;
+        if (count($kept) === 3) break;
+    }
+    if (count($kept) !== 3) return false;
+    $visual['inline_slots'] = $kept;
+    $output['visual_slots_planned'] = 4;
+    return true;
+}
+
+/** Return source-backed direct queries for a selected non-primary topic without inventing a visual direction. */
+function narrative_plan_selected_topic_queries(array $operation, array $output, string $topicSource): array
+{
+    if (!in_array($topicSource, ['B', 'C'], true)) return [];
+    $input = json_decode((string) ($operation['input_json'] ?? '{}'), true) ?: [];
+    $research = (array) ($input['research_package'] ?? []);
+    $selectedField = $topicSource === 'B' ? 'selected_context_topics' : 'selected_curiosity_topics';
+    $researchField = $topicSource === 'B' ? 'context_topics' : 'curiosity_topics';
+    $selectedIds = array_fill_keys(array_filter(array_map(
+        static fn (array $topic): string => trim((string) ($topic['id'] ?? '')),
+        (array) ($output[$selectedField] ?? [])
+    )), true);
+    if ($selectedIds === []) return [];
+    foreach ((array) ($research[$researchField] ?? []) as $topic) {
+        if (!isset($selectedIds[(string) ($topic['id'] ?? '')])) continue;
+        $queries = array_values(array_unique(array_filter(array_map(
+            static fn (mixed $query): string => trim((string) $query),
+            (array) ($topic['suggested_visual_queries'] ?? [])
+        ), static fn (string $query): bool => mb_strlen($query) >= 2)));
+        if ($queries !== []) return array_slice($queries, 0, 5);
+    }
+    return [];
+}
+
+/** Fill only an explicitly planned visual section omitted from VisualPlan, using existing plan text and source-backed queries. */
+function narrative_plan_normalize_visual_floor(array &$output, ?array $operation = null, array &$researchQuerySlotIds = []): array
 {
     $visual =& $output['visual_plan'];
     if (!is_array($visual) || !is_array($visual['hero_slot'] ?? null) || !is_array($visual['inline_slots'] ?? null)) return [];
@@ -749,8 +797,9 @@ function narrative_plan_normalize_visual_floor(array &$output): array
             if (empty($section['visual_slot_required']) || $anchor === '' || isset($used[$anchor])) continue;
             $donor = null;
             foreach ($donors as $candidate) if ((string) ($candidate['topic_source'] ?? '') === $topic) { $donor = $candidate; break; }
-            if (!is_array($donor)) continue;
-            $queries = array_slice(array_values(array_unique(array_filter(array_map('strval', (array) ($donor['search_queries_direct'] ?? []))))), 0, 5);
+            $queries = is_array($donor)
+                ? array_slice(array_values(array_unique(array_filter(array_map('strval', (array) ($donor['search_queries_direct'] ?? []))))), 0, 5)
+                : ($operation === null ? [] : narrative_plan_selected_topic_queries($operation, $output, $topic));
             $need = trim((string) ($section['content_brief'] ?? $section['heading'] ?? ''));
             if ($queries === [] || mb_strlen($need) < 10) continue;
             $slotId = 'inline-' . $anchor;
@@ -760,6 +809,7 @@ function narrative_plan_normalize_visual_floor(array &$output): array
                 'search_queries_direct'=>$queries,'search_queries_related'=>[],'required'=>true,
             ];
             $used[$anchor] = true; $actual++; $added[] = $slotId;
+            if (!is_array($donor)) $researchQuerySlotIds[] = $slotId;
         }
     }
     if ($actual >= $target && (int) ($output['visual_slots_planned'] ?? 0) !== $actual) $output['visual_slots_planned'] = $actual;
@@ -867,16 +917,19 @@ function complete_narrative_plan_operation(int $operationId, string $rawResponse
             validate_generation_value($output, $schema);
             $curiosityNormalized = narrative_plan_normalize_curiosity_omission($output);
             $sectionIdsNormalized = narrative_plan_normalize_section_ids($output);
-            $visualFloorNormalized = narrative_plan_normalize_visual_floor($output);
-            if ($curiosityNormalized || $sectionIdsNormalized !== [] || $visualFloorNormalized !== []) {
+            $visualCeilingNormalized = narrative_plan_normalize_visual_ceiling($output);
+            $visualFloorResearchSlotIds = [];
+            $visualFloorNormalized = narrative_plan_normalize_visual_floor($output, $operation, $visualFloorResearchSlotIds);
+            if ($curiosityNormalized || $sectionIdsNormalized !== [] || $visualCeilingNormalized || $visualFloorNormalized !== []) {
                 bueno_database()->prepare('UPDATE generation_operations SET output_json=:output,updated_at=CURRENT_TIMESTAMP WHERE id=:id')
                     ->execute([':output'=>generation_json($output), ':id'=>$operationId]);
             }
             if ($curiosityNormalized) narrative_plan_record_curiosity_omission_normalization($operation);
-            if ($visualFloorNormalized !== []) {
+            if ($visualCeilingNormalized || $visualFloorNormalized !== []) {
                 $currentOperation = find_generation_operation($operationId);
                 $usage = is_array($currentOperation) ? (json_decode((string) ($currentOperation['usage_json'] ?? '{}'), true) ?: []) : [];
-                $usage['visual_floor_normalization'] = ['applied'=>true,'added_slot_ids'=>$visualFloorNormalized,'at'=>gmdate('c')];
+                $usage['visual_floor_normalization'] = ['applied'=>true,'added_slot_ids'=>$visualFloorNormalized,
+                    'research_query_slot_ids'=>$visualFloorResearchSlotIds,'at'=>gmdate('c')];
                 bueno_database()->prepare('UPDATE generation_operations SET usage_json=:usage,updated_at=CURRENT_TIMESTAMP WHERE id=:id')->execute([':usage'=>generation_json($usage),':id'=>$operationId]);
             }
             if ($sectionIdsNormalized !== []) {
@@ -920,7 +973,9 @@ function complete_narrative_plan_operation(int $operationId, string $rawResponse
     validate_generation_value($output, $schema);
     $curiosityNormalized = narrative_plan_normalize_curiosity_omission($output);
     $sectionIdsNormalized = narrative_plan_normalize_section_ids($output);
-    $visualFloorNormalized = narrative_plan_normalize_visual_floor($output);
+    $visualCeilingNormalized = narrative_plan_normalize_visual_ceiling($output);
+    $visualFloorResearchSlotIds = [];
+    $visualFloorNormalized = narrative_plan_normalize_visual_floor($output, $operation, $visualFloorResearchSlotIds);
 
     $specialValidation = validate_narrative_plan_output($operation, $output);
     if ($specialValidation === null) {
@@ -947,7 +1002,8 @@ function complete_narrative_plan_operation(int $operationId, string $rawResponse
                     'applied'=>true,'reason'=>'selected_curiosity_topics_present','canonical_value'=>'','at'=>gmdate('c'),
                 ]] : []),
                 ...($visualFloorNormalized !== [] ? ['visual_floor_normalization'=>[
-                    'applied'=>true,'added_slot_ids'=>$visualFloorNormalized,'at'=>gmdate('c'),
+                    'applied'=>true,'added_slot_ids'=>$visualFloorNormalized,
+                    'research_query_slot_ids'=>$visualFloorResearchSlotIds,'at'=>gmdate('c'),
                 ]] : []),
                 ...($sectionIdsNormalized !== [] ? ['section_id_normalization'=>[
                     'applied'=>true,'mapping'=>$sectionIdsNormalized,'at'=>gmdate('c'),

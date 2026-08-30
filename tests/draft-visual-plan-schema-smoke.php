@@ -117,6 +117,20 @@ $beforeNormalization = serialize($unchangedHeroDraft);
 article_draft_normalize_narrative_visual_slot_identity($hero287Plan, $unchangedHeroDraft);
 visual_plan_schema_assert(serialize($unchangedHeroDraft) === $beforeNormalization, 'Canonical slot został niepotrzebnie zmieniony.');
 
+$overflowDraft = ['illustration_plan' => $validIllustrationPlan];
+$overflowDraft['illustration_plan']['inline'][] = $overflowDraft['illustration_plan']['inline'][1];
+visual_plan_schema_assert(
+    article_draft_trim_excess_inline_visual_slots($plan, $overflowDraft),
+    'Nadmiarowy slot inline nie został naprawiony lokalnie.'
+);
+article_draft_normalize_narrative_visual_slot_identity($plan, $overflowDraft);
+visual_plan_schema_assert(
+    count($overflowDraft['illustration_plan']['inline']) === 3
+    && $overflowDraft['illustration_plan']['inline'] === $validIllustrationPlan['inline'],
+    'Naprawa nadmiarowego slotu nie zachowuje trzech kanonicznych grafik inline.'
+);
+visual_plan_schema_assert(editorial_v2_required_image_count(20000) === 4, 'Limit VisualPlan przekracza hero plus trzy grafiki inline.');
+
 $subsetQueryPlan = $hero287Plan;
 $subsetQueryVisual = json_decode((string) $subsetQueryPlan['visual_plan_json'], true, 128, JSON_THROW_ON_ERROR);
 $subsetQueryVisual['hero_slot']['search_queries_direct'][] = 'solar corona close-up photograph';

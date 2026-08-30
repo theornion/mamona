@@ -155,9 +155,20 @@ try {
     $coreBefore = core_text_lock_state((int)$draft['id']);
     mvp_assert(!empty($coreBefore['core_text_locked']), 'accepted core is frozen and auditable');
 
+    $finalVisualOperation = prepare_article_final_visual_plan_operation($postId, $topicId);
+    $finalVisualValue = article_final_visual_plan_mock_generation_value(find_generation_operation($finalVisualOperation));
+    execute_generation_operation($finalVisualOperation, mvp_transport($finalVisualValue, $audit, 'final_visual_plan'));
+    $visual = article_final_visual_plan_for_post($postId, $topicId);
+    $finalVisualInput = json_decode((string)find_generation_operation($finalVisualOperation)['input_json'], true, 128, JSON_THROW_ON_ERROR);
+    mvp_assert(is_array($visual)
+        && (int)($finalVisualInput['visual_target_total'] ?? 0) === 3
+        && count((array)($visual['inline_slots'] ?? [])) === 2,
+        'FinalVisualPlan derives the active three-slot visual contract from ~5000-character locked core text');
+
     $post = find_post($postId);
     $draftJson = json_decode((string)$draft['draft_json'], true, 128, JSON_THROW_ON_ERROR);
-    update_post($postId, (string)$draftJson['title'], (string)$draftJson['lead']['text'], '<section id="lead"><p>Locked core preview.</p></section><section id="why-important"><p>Why it matters.</p></section>', '', false, '', null, [], 'cover', [], 'draft');
+    $leadPreview = (string)($draftJson['lead']['text'] ?? ($draftJson['sections'][0]['body'] ?? 'Locked core preview.'));
+    update_post($postId, (string)$draftJson['title'], $leadPreview, '<section id="lead"><p>Locked core preview.</p></section><section id="why-important"><p>Why it matters.</p></section>', '', false, '', null, [], 'cover', [], 'draft');
 
     $heroPath = 'images/posts/mvp-e2e-' . bin2hex(random_bytes(5)) . '-hero.png';
     $inlinePath = 'images/posts/mvp-e2e-' . bin2hex(random_bytes(5)) . '-inline.png';
@@ -171,6 +182,7 @@ try {
     foreach (array_slice($inlineSlots, 1) as $slot) persist_article_image($postId, mvp_image($slot, '', 'related_context', 'missing'));
     $coverageBefore = article_image_coverage_state($postId, $topicId, false);
     mvp_assert(!$coverageBefore['coverage_complete'], 'incomplete direct image set remains blocked before P06');
+    $missingBeforeRecovery = count((array)$coverageBefore['missing_slots']);
 
     $candidate = [
         'provider'=>'openverse','provider_id'=>'related-1','source_page_url'=>'https://fixture.example/related',
@@ -217,9 +229,10 @@ try {
             'reader_attention_note'=>'This image supplies context, not the direct subject.','source_claim_ids'=>(array)($module['source_claim_ids'] ?? [])], 'mvp-additive');
     };
     $recoveryResult = article_image_apply_shortage_recovery($recoveryOperation, $downloader, $vision, $additive);
-    mvp_assert(count((array)$recoveryResult['applied']) === 2, 'two missing inline slots recover through two P06/P07 additive modules');
-    mvp_assert((int)$db->query('SELECT COUNT(*) FROM article_related_context_blocks WHERE post_id=' . $postId . ' AND status="approved"')->fetchColumn() === 2,
-        'both related images retain approved source-backed additive context');
+    mvp_assert(count((array)$recoveryResult['applied']) === $missingBeforeRecovery,
+        'every missing inline slot recovers through a P06/P07 additive module');
+    mvp_assert((int)$db->query('SELECT COUNT(*) FROM article_related_context_blocks WHERE post_id=' . $postId . ' AND status="approved"')->fetchColumn() === $missingBeforeRecovery,
+        'every recovered related image retains approved source-backed additive context');
     $coverage = article_image_coverage_state($postId, $topicId, true);
     mvp_assert($coverage['coverage_complete'] && !empty($coverage['hero_is_allowed']), 'all required slots have local nonfallback legally evidenced assets');
     $imageEvidence = $db->query('SELECT local_path,rights_manifest_json,license,source_page_url FROM article_images WHERE post_id=' . $postId . ' AND status="downloaded"')->fetchAll();

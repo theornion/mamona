@@ -9,14 +9,13 @@ function admin_nav_class(string $page, string $active): string
     return $page === $active ? ' class="is-active" aria-current="page"' : '';
 }
 
-$adminNavCounts = ['topics' => 0, 'action-required' => 0, 'proposals' => 0, 'topic-trash' => 0];
+$adminNavCounts = ['topics' => 0, 'proposals' => 0, 'topic-trash' => 0];
 try {
     if (function_exists('bueno_database')) {
         $queueCounts = function_exists('generation_active_topic_queue_counts') ? generation_active_topic_queue_counts() : ['work' => 0, 'action' => 0, 'ready' => 0];
         $adminNavCounts['topics'] = (int) ($queueCounts['work'] ?? 0);
         $adminNavCounts['topic-trash'] = function_exists('count_trashed_editorial_topics') ? count_trashed_editorial_topics() : 0;
         $adminNavCounts['proposals'] = (int) ($queueCounts['ready'] ?? 0);
-        $adminNavCounts['action-required'] = (int) ($queueCounts['action'] ?? 0);
     }
 } catch (Throwable) {
     // Nawigacja pozostaje dostępna także podczas awaryjnej migracji bazy.
@@ -32,9 +31,8 @@ try {
         <section class="admin-nav-group" aria-labelledby="nav-editorial"><h2 id="nav-editorial">Praca redakcyjna</h2><ul class="admin-nav-links">
             <li><a href="admin-content-studio.php"<?php echo admin_nav_class('studio', $adminActive); ?>><span aria-hidden="true">01</span>Studio / RSS</a></li>
             <li><a href="admin-editorial-topics.php"<?php echo admin_nav_class('topics', $adminActive); ?>><span aria-hidden="true">02</span>Tematy <strong class="admin-nav-count" data-nav-queue-count="work"><?php echo $adminNavCounts['topics']; ?></strong></a></li>
-            <li><a href="admin-proposals.php?queue=action"<?php echo admin_nav_class('action-required', $adminActive); ?>><span aria-hidden="true">03</span>Wymagające akcji <strong class="admin-nav-count" data-nav-queue-count="action"><?php echo $adminNavCounts['action-required']; ?></strong></a></li>
-            <li><a href="admin-proposals.php"<?php echo admin_nav_class('proposals', $adminActive); ?>><span aria-hidden="true">04</span>Gotowe propozycje <strong class="admin-nav-count" data-nav-queue-count="ready"><?php echo $adminNavCounts['proposals']; ?></strong></a></li>
-            <li><a href="admin-topic-trash.php"<?php echo admin_nav_class('topic-trash', $adminActive); ?>><span aria-hidden="true">05</span>Kosz <strong class="admin-nav-count"><?php echo $adminNavCounts['topic-trash']; ?></strong></a></li>
+            <li><a href="admin-proposals.php"<?php echo admin_nav_class('proposals', $adminActive); ?>><span aria-hidden="true">03</span>Gotowe propozycje <strong class="admin-nav-count" data-nav-queue-count="ready"><?php echo $adminNavCounts['proposals']; ?></strong></a></li>
+            <li><a href="admin-topic-trash.php"<?php echo admin_nav_class('topic-trash', $adminActive); ?>><span aria-hidden="true">04</span>Kosz <strong class="admin-nav-count"><?php echo $adminNavCounts['topic-trash']; ?></strong></a></li>
         </ul></section>
         <section class="admin-nav-group" aria-labelledby="nav-tools"><h2 id="nav-tools">Narzędzia zaawansowane</h2><ul class="admin-nav-links">
             <li><a href="admin-generation.php"<?php echo admin_nav_class('generation', $adminActive); ?>>Operacje API / Diagnostyka</a></li>

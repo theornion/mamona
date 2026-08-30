@@ -139,10 +139,14 @@ try {
     $unmappedVisualPlan = json_decode((string) $unmappedPlan['visual_plan_json'], true, 128, JSON_THROW_ON_ERROR);
     $unmappedVisualPlan['inline_slots'][0]['section_anchor'] = 'body';
     $unmappedPlan['visual_plan_json'] = generation_json($unmappedVisualPlan);
-    batch_expect(static fn () => narrative_plan_draft_illustration_contract($unmappedPlan), 'bez mapowania rendererowego');
+    $dynamicAnchorContract = narrative_plan_draft_illustration_contract($unmappedPlan);
+    batch_assert(
+        ($dynamicAnchorContract['illustration_plan']['inline'][0]['section_id'] ?? '') === 'body',
+        'VisualPlan z dynamicznym identyfikatorem sekcji nie zachował anchoru w kontrakcie szkicu.'
+    );
 
-    /* D3-D7: batch-level closure gate.  Start from the already locked fixture,
-       supply four local, direct, accepted assets, then exercise P08/P09 through
+    /* D3-D7: batch-level closure gate. Start from the locked fixture,
+       supply local, direct, accepted assets for the active final plan, then exercise P08/P09 through
        the same images-stage worker path used by a real batch. */
     $fixtureImageDirectory = app_path('images/posts');
     if (!is_dir($fixtureImageDirectory) && !mkdir($fixtureImageDirectory, 0775, true) && !is_dir($fixtureImageDirectory)) {
@@ -171,11 +175,21 @@ try {
             ':post'=>$postIds[0], ':id'=>(int)$fixtureImage['id'],
         ]);
     }
-    $floorOnlyImageId = (int) $database->query('SELECT id FROM article_images WHERE post_id=' . (int) $postIds[0] . ' AND role="inline" ORDER BY id DESC LIMIT 1')->fetchColumn();
+    $beforeFloorCoverage = article_image_coverage_state($postIds[0], $topicIds[0]);
+    $floorSlot = (array) end($beforeFloorCoverage['required_slots']);
+    $floorOnlyStatement = $database->prepare(
+        'SELECT id FROM article_images WHERE post_id=:post AND role=:role AND section_id=:section LIMIT 1'
+    );
+    $floorOnlyStatement->execute([
+        ':post' => $postIds[0], ':role' => (string) ($floorSlot['role'] ?? ''),
+        ':section' => (string) ($floorSlot['section_anchor'] ?? ''),
+    ]);
+    $floorOnlyImageId = (int) $floorOnlyStatement->fetchColumn();
+    batch_assert($floorOnlyImageId > 0, 'Fixture nie odnalazł grafiki z aktywnego FinalVisualPlan.');
     $database->prepare('UPDATE article_images SET status="missing", multimodal_accepted=0 WHERE id=:id')->execute([':id'=>$floorOnlyImageId]);
     $floorOnlyCoverage = article_image_coverage_state($postIds[0], $topicIds[0]);
-    batch_assert(!empty($floorOnlyCoverage['publication_floor_met']) && empty($floorOnlyCoverage['coverage_complete']),
-        'Fixture floor-only must reproduce incomplete 3/4 coverage before the final-stage gate.');
+    batch_assert(empty($floorOnlyCoverage['coverage_complete']),
+        'Fixture musi odtworzyć niepełne pokrycie aktywnego FinalVisualPlan przed finalnym gate.');
     $floorOnlyBatch = create_generation_batch([$topicIds[0]], 'floor-only-no-final-qc-' . $token); $batchIds[] = (int) $floorOnlyBatch['id'];
     while (!(($floorOnlyPayload = generation_batch_payload((int)$floorOnlyBatch['id']))['terminal'])) {
         $floorOnlyClaim = generation_batch_claim_items(1); batch_assert(count($floorOnlyClaim) === 1, 'Floor-only worker did not claim the images stage.');
@@ -184,7 +198,33 @@ try {
     batch_assert((int) $database->query('SELECT COUNT(*) FROM generation_operations WHERE post_id=' . (int) $postIds[0] . ' AND operation_type IN ("layout_plan","final_multimodal_qc")')->fetchColumn() === 0,
         'Floor-only incomplete coverage invoked LayoutPlan or Final Multimodal QC.');
     $database->prepare('UPDATE article_images SET status="downloaded", multimodal_accepted=1 WHERE id=:id')->execute([':id'=>$floorOnlyImageId]);
-    batch_assert(article_image_coverage_state($postIds[0], $topicIds[0])['coverage_complete'] === true,
+    $replannedCoverage = article_image_coverage_state($postIds[0], $topicIds[0]);
+    $replannedSlots = [];
+    foreach ((array) $replannedCoverage['required_slots'] as $slot) {
+        $replannedSlots[(string) ($slot['slot_id'] ?? '')] = $slot;
+    }
+    foreach ((array) $replannedCoverage['missing_slots'] as $index => $missingSlot) {
+        $slot = (array) ($replannedSlots[(string) ($missingSlot['slot_id'] ?? '')] ?? []);
+        batch_assert($slot !== [], 'Recovery replan nie zachował definicji brakującego slotu fixture.');
+        $relativePath = 'images/posts/batch-smoke-replanned-' . $token . '-' . $index . '.jpg';
+        $absolutePath = app_path($relativePath);
+        file_put_contents($absolutePath, 'batch-smoke-replanned-image');
+        $fixtureImagePaths[] = $absolutePath;
+        persist_article_image($postIds[0], [
+            'role'=>(string) $slot['role'], 'section_id'=>(string) $slot['section_anchor'],
+            'visual_intent'=>(string) $slot['visual_need'], 'expected_content'=>(string) $slot['visual_need'],
+            'search_queries'=>(array) $slot['search_queries_direct'], 'source_page_url'=>'https://example.test/batch/replanned/' . $index,
+            'source_file_url'=>'https://example.test/batch/replanned/' . $index . '.jpg', 'local_path'=>$relativePath,
+            'author'=>'Batch smoke', 'license'=>'cc0', 'license_url'=>'https://creativecommons.org/publicdomain/zero/1.0/',
+            'attribution'=>'Batch smoke', 'alt'=>(string) $slot['visual_need'], 'caption'=>(string) $slot['visual_need'],
+            'layout'=>'full', 'status'=>'downloaded', 'width'=>1600, 'height'=>900, 'relationship'=>'exact_subject',
+            'rights_manifest'=>['provider'=>'batch-smoke','source_page_url'=>'https://example.test/batch/replanned/' . $index,
+                'source_file_url'=>'https://example.test/batch/replanned/' . $index . '.jpg','license'=>'cc0','attribution'=>'Batch smoke'],
+            'multimodal_assessment'=>['decision'=>'accept'], 'multimodal_accepted'=>true, 'acceptance_source'=>'automatic',
+        ]);
+    }
+    $restoredCoverage = article_image_coverage_state($postIds[0], $topicIds[0]);
+    batch_assert($restoredCoverage['coverage_complete'] === true,
         'Fixture D3 nie uzyskaÅ‚a peÅ‚nego coverage przed P08/P09.');
     batch_assert((int) $database->query('SELECT COUNT(*) FROM generation_operations WHERE post_id=' . (int) $postIds[0] . ' AND operation_type="layout_plan"')->fetchColumn() === 0,
         'Fixture D3 zawieraÅ‚a LayoutPlan przed testem batch.');
@@ -369,6 +409,10 @@ try {
                 'article_draft' => article_draft_mock_generation_value($operation),
                 'quality_check' => quality_check_mock_generation_value(),
                 'image_recovery' => ['recoveries' => []],
+                'image_recovery_replan' => article_image_recovery_replan_mock_generation_value($operation),
+                'final_visual_plan' => article_final_visual_plan_mock_generation_value($operation),
+                'layout_plan' => generation_mock_value(json_decode((string) $operation['output_schema_json'], true, 128, JSON_THROW_ON_ERROR)),
+                'final_multimodal_qc' => final_multimodal_qc_mock_generation_value(),
                 default => throw new RuntimeException('Nieoczekiwany etap testu auto-repair: ' . $operationType),
             };
             $matchesTopic = $onlyTopicId === null || (int) ($operation['topic_id'] ?? 0) === $onlyTopicId;

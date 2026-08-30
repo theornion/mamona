@@ -352,36 +352,6 @@ function move_feed_item_to_topic(
     }
 }
 
-function save_topic_candidate(
-    int $feedItemId,
-    int $topicId,
-    float $confidence,
-    string $explanation,
-    string $status = 'suggested'
-): void {
-    $statement = bueno_database()->prepare(
-        'INSERT INTO topic_grouping_candidates (
-            feed_item_id, candidate_topic_id, confidence, explanation, status
-         ) VALUES (
-            :feed_item_id, :topic_id, :confidence, :explanation, :status
-         )
-         ON CONFLICT(feed_item_id, candidate_topic_id) DO UPDATE SET
-            confidence = excluded.confidence,
-            explanation = excluded.explanation,
-            status = CASE
-                WHEN topic_grouping_candidates.status = "rejected" THEN "rejected"
-                ELSE excluded.status
-            END'
-    );
-    $statement->execute([
-        ':feed_item_id' => $feedItemId,
-        ':topic_id' => $topicId,
-        ':confidence' => $confidence,
-        ':explanation' => $explanation,
-        ':status' => $status,
-    ]);
-}
-
 function group_discovered_feed_item(int $feedItemId): array
 {
     $database = bueno_database();
@@ -458,19 +428,11 @@ function group_discovered_feed_item(int $feedItemId): array
     $canMerge = $best['automatic']
         && !$best['locked']
         && (!$best['same_source'] || $best['confidence'] >= 0.99);
-    save_topic_candidate(
-        $feedItemId,
-        (int) $best['topic_id'],
-        (float) $best['confidence'],
-        (string) $best['explanation'],
-        $canMerge ? 'accepted' : 'suggested'
-    );
     if (!$canMerge) {
         return [
-            'action' => 'suggested',
+            'action' => 'single',
             'confidence' => (float) $best['confidence'],
             'topic_id' => $currentTopicId,
-            'candidate_topic_id' => (int) $best['topic_id'],
         ];
     }
 
@@ -490,9 +452,6 @@ function group_discovered_feed_item(int $feedItemId): array
 
 function run_topic_grouping(): array
 {
-    bueno_database()->exec(
-        'DELETE FROM topic_grouping_candidates WHERE status = "suggested"'
-    );
     $rows = bueno_database()->query(
         'SELECT items.id
          FROM discovered_feed_items AS items
@@ -503,7 +462,7 @@ function run_topic_grouping(): array
            AND (current_topic.id IS NULL OR (current_topic.trashed_at IS NULL AND current_topic.purged_at IS NULL))
          ORDER BY datetime(COALESCE(items.published_at, items.first_detected_at)) ASC, items.id ASC'
     )->fetchAll();
-    $result = ['processed' => 0, 'merged' => 0, 'suggested' => 0, 'single' => 0, 'failed' => 0, 'errors' => []];
+    $result = ['processed' => 0, 'merged' => 0, 'single' => 0, 'failed' => 0, 'errors' => []];
     foreach ($rows as $row) {
         try {
             $grouped = group_discovered_feed_item((int) $row['id']);
@@ -519,23 +478,6 @@ function run_topic_grouping(): array
     }
 
     return $result;
-}
-
-function manual_merge_topics(int $sourceTopicId, int $targetTopicId, string $actor = 'admin'): void
-{
-    if ($sourceTopicId <= 0 || $targetTopicId <= 0 || $sourceTopicId === $targetTopicId) {
-        throw new InvalidArgumentException('Wybierz dwa różne tematy.');
-    }
-    if (find_editorial_topic($sourceTopicId) === null || find_editorial_topic($targetTopicId) === null) {
-        throw new RuntimeException('Nie znaleziono wybranego tematu.');
-    }
-    $items = topic_feed_items($sourceTopicId);
-    foreach ($items as $item) {
-        move_feed_item_to_topic((int) $item['id'], $targetTopicId, 1.0, 'manual', $actor);
-    }
-    bueno_database()->prepare(
-        'UPDATE editorial_topics SET grouping_locked = 1, updated_at = CURRENT_TIMESTAMP WHERE id = :id'
-    )->execute([':id' => $targetTopicId]);
 }
 
 function manual_split_feed_item(int $feedItemId, string $actor = 'admin'): int
@@ -676,66 +618,4 @@ function list_editorial_topics(int $limit = 200, string $filter = 'active'): arr
     $statement->execute();
 
     return $statement->fetchAll();
-}
-
-function list_suggested_topic_matches(int $limit = 100): array
-{
-    $statement = bueno_database()->prepare(
-        'SELECT candidates.*, items.title AS item_title, items.source_name,
-                topics.title AS topic_title
-         FROM topic_grouping_candidates AS candidates
-         INNER JOIN discovered_feed_items AS items ON items.id = candidates.feed_item_id
-         INNER JOIN editorial_topics AS topics ON topics.id = candidates.candidate_topic_id
-         INNER JOIN posts ON posts.id = topics.primary_post_id
-         WHERE candidates.status = "suggested"
-           AND posts.status != "rejected"
-           AND topics.trashed_at IS NULL
-           AND topics.purged_at IS NULL
-         ORDER BY candidates.confidence DESC, candidates.id DESC
-         LIMIT :limit'
-    );
-    $statement->bindValue(':limit', max(1, min(500, $limit)), PDO::PARAM_INT);
-    $statement->execute();
-
-    return $statement->fetchAll();
-}
-
-function reject_topic_candidate(int $candidateId): void
-{
-    $statement = bueno_database()->prepare(
-        'UPDATE topic_grouping_candidates
-         SET status = "rejected", decided_at = CURRENT_TIMESTAMP
-         WHERE id = :id AND status = "suggested"'
-    );
-    $statement->execute([':id' => $candidateId]);
-    if ($statement->rowCount() === 0) {
-        throw new RuntimeException('Nie znaleziono aktywnej sugestii.');
-    }
-}
-
-function accept_topic_candidate(int $candidateId, string $actor = 'admin'): void
-{
-    $statement = bueno_database()->prepare(
-        'SELECT * FROM topic_grouping_candidates
-         WHERE id = :id AND status = "suggested"'
-    );
-    $statement->execute([':id' => $candidateId]);
-    $candidate = $statement->fetch();
-    if (!is_array($candidate)) {
-        throw new RuntimeException('Nie znaleziono aktywnej sugestii.');
-    }
-    move_feed_item_to_topic(
-        (int) $candidate['feed_item_id'],
-        (int) $candidate['candidate_topic_id'],
-        (float) $candidate['confidence'],
-        'manual',
-        $actor
-    );
-    bueno_database()->prepare(
-        'UPDATE topic_grouping_candidates
-         SET status = "accepted", decided_at = CURRENT_TIMESTAMP WHERE id = :id'
-    )->execute([':id' => $candidateId]);
-    bueno_database()->prepare(
-        'UPDATE editorial_topics SET grouping_locked = 1, updated_at = CURRENT_TIMESTAMP WHERE id = :id'
-    )->execute([':id' => (int) $candidate['candidate_topic_id']]);
 }

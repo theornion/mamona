@@ -20,7 +20,7 @@ const MVP_RESET_DYNAMIC_TABLES = [
     'research_packages', 'generation_repair_reports', 'generation_batch_audit',
     'generation_batch_items', 'generation_batches', 'generation_operations',
     'post_generation_runs', 'article_images', 'post_sources', 'post_status_history',
-    'verified_research_sources', 'topic_grouping_candidates', 'topic_grouping_history',
+    'verified_research_sources', 'topic_grouping_history',
     'feed_topic_memberships', 'topic_score_history', 'narrative_plans',
     'article_generation_budget', 'editorial_ingestion_jobs', 'full_auto_reservations',
     'full_auto_runs', 'generation_worker_guard',

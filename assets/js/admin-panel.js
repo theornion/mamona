@@ -49,6 +49,10 @@
 			&& /\/admin-[a-z-]+\.php$/i.test(url.pathname);
 	}
 
+	function requiresDocumentNavigation(url) {
+		return /\/admin-editorial-topics\.php$/i.test(url.pathname);
+	}
+
 	function runInlineScripts(container) {
 		container.querySelectorAll('script').forEach(function (script) {
 			var replacement = document.createElement('script');
@@ -225,7 +229,7 @@
 			return;
 		}
 
-		if (!isAdminRoute(url)) {
+		if (!isAdminRoute(url) || requiresDocumentNavigation(url)) {
 			return;
 		}
 
@@ -242,7 +246,7 @@
 
 		var url = new URL(form.action || window.location.href, window.location.href);
 
-		if (!isAdminRoute(url)) {
+		if (!isAdminRoute(url) || requiresDocumentNavigation(url)) {
 			return;
 		}
 

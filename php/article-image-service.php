@@ -118,7 +118,7 @@ function article_inline_image_target_count(int $characterCount): int
         return 0;
     }
 
-    return max(1, (int) floor(($characterCount + 100) / 1000));
+    return min(3, max(1, (int) floor(($characterCount + 100) / 1000)));
 }
 
 /** Builds a bounded, non-repeating semantic cascade. Model queries remain hints; the search uses real providers. */
@@ -426,7 +426,7 @@ function article_illustration_plan_schema(?int $inlineCount = null, ?array $inli
 {
     $inlineSchema = ['type' => 'array', 'items' => article_planned_image_schema('inline')];
     if ($inlineCount !== null) {
-        if ($inlineCount < 0 || $inlineCount > 20) {
+        if ($inlineCount < 0 || $inlineCount > 3) {
             throw new InvalidArgumentException('Nieprawidłowa liczba ilustracji inline w schemacie.');
         }
         $inlineSchema['minItems'] = $inlineCount;
@@ -586,9 +586,44 @@ function source_image_watermark_preflight(array $candidate): ?string
     return null;
 }
 
+function source_png_has_alpha_channel(string $bytes): bool
+{
+    return strlen($bytes) >= 26
+        && substr($bytes, 0, 8) === "\x89PNG\r\n\x1a\n"
+        && substr($bytes, 12, 4) === 'IHDR'
+        && in_array(ord($bytes[25]), [4, 6], true);
+}
+
+function source_webp_has_alpha_channel(string $bytes): bool
+{
+    if (strlen($bytes) < 20 || substr($bytes, 0, 4) !== 'RIFF' || substr($bytes, 8, 4) !== 'WEBP') return false;
+    $offset = 12;
+    $length = strlen($bytes);
+    while ($offset + 8 <= $length) {
+        $chunk = substr($bytes, $offset, 4);
+        $size = unpack('V', substr($bytes, $offset + 4, 4))[1] ?? 0;
+        $dataOffset = $offset + 8;
+        if ($size < 0 || $dataOffset + $size > $length) return false;
+        if ($chunk === 'VP8X' && $size >= 1) return (ord($bytes[$dataOffset]) & 0x10) !== 0;
+        if ($chunk === 'VP8L' && $size >= 5 && ord($bytes[$dataOffset]) === 0x2F) {
+            $bits = unpack('V', substr($bytes, $dataOffset + 1, 4))[1] ?? 0;
+            return ($bits & 0x10000000) !== 0;
+        }
+        $offset = $dataOffset + $size + ($size % 2);
+    }
+    return false;
+}
+
 function source_image_has_actual_transparency(string $bytes, string $mime): bool
 {
-    if (!in_array($mime, ['image/png','image/webp'], true) || !function_exists('imagecreatefromstring')) return false;
+    if (!in_array($mime, ['image/png','image/webp'], true)) return false;
+    // Some local PHP installations intentionally omit GD. Container alpha is
+    // still a reliable presentation signal for PNG and WebP in that case.
+    if (!function_exists('imagecreatefromstring')) {
+        return $mime === 'image/png'
+            ? source_png_has_alpha_channel($bytes)
+            : source_webp_has_alpha_channel($bytes);
+    }
     $image = @imagecreatefromstring($bytes);
     if ($image === false) return false;
     try {
@@ -1292,6 +1327,24 @@ function article_image_vision_audit_record(array $record): void
         :slot_identifier,:candidate_identifier,:source_page_identifier,:source_file_identifier,:outbound_prompt,
         :image_sha256,:image_mime,:provider_response_json,:provider_response_text,:status,:error_message,CURRENT_TIMESTAMP
     )')->execute($record);
+}
+
+function article_image_has_transparency(array $image): bool
+{
+    if (!empty($image['has_transparency'])) return true;
+    $relativePath = trim(str_replace('\\', '/', (string) ($image['local_path'] ?? '')));
+    $projectRoot = realpath(app_project_root());
+    $absolutePath = realpath(app_path($relativePath));
+    if ($projectRoot === false || $absolutePath === false
+        || !str_starts_with(str_replace('\\', '/', $absolutePath), rtrim(str_replace('\\', '/', $projectRoot), '/') . '/')) {
+        return false;
+    }
+    $bytes = @file_get_contents($absolutePath);
+    if (!is_string($bytes)) return false;
+    $mime = source_png_has_alpha_channel($bytes) || str_starts_with($bytes, "\x89PNG\r\n\x1a\n")
+        ? 'image/png'
+        : (substr($bytes, 0, 4) === 'RIFF' && substr($bytes, 8, 4) === 'WEBP' ? 'image/webp' : '');
+    return $mime !== '' && source_image_has_actual_transparency($bytes, $mime);
 }
 
 /** Keep the rights and source evidence needed for later human review with the Vision audit. */
@@ -3003,8 +3056,8 @@ function article_image_valid_recovery_replans(int $postId, ?int $topicId = null)
 function article_final_visual_plan_schema(array $sectionIds, int $visualTarget): array
 {
     $sectionIds = array_values(array_unique(array_filter(array_map('strval', $sectionIds))));
-    if ($sectionIds === [] || $visualTarget < 3 || $visualTarget > 6) {
-        throw new InvalidArgumentException('FinalVisualPlan wymaga finalnych sekcji i targetu 3–6.');
+    if ($sectionIds === [] || $visualTarget < 3 || $visualTarget > 4) {
+        throw new InvalidArgumentException('FinalVisualPlan wymaga finalnych sekcji i targetu 3–4.');
     }
     $slot = ['type'=>'object','properties'=>[
         'slot_id'=>['type'=>'string','minLength'=>1,'maxLength'=>100],
@@ -4388,6 +4441,29 @@ function validate_article_blocks(array $blocks): void
     }
 }
 
+function article_image_detail_inline_description(array $image): string
+{
+    $descriptor = mb_strtolower(implode(' ', [
+        (string) ($image['caption'] ?? ''),
+        (string) ($image['alt'] ?? ''),
+        (string) ($image['visual_intent'] ?? ''),
+        (string) ($image['source_page_url'] ?? ''),
+    ]));
+    $isAtomicOrbitals = preg_match('/atomic[ _-]?orbitals?|orbitale? atomow|orbital/i', $descriptor) === 1;
+    if ($isAtomicOrbitals) {
+        return 'Wizualizacja orbitali atomowych i stanów elektronowych. Pomaga zobaczyć, jak złożone są oddziaływania elektronów w materiałach kwantowych, o których mowa w sąsiednim akapicie. Nie przedstawia bezpośrednio opisywanego eksperymentu; pokazuje poziom złożoności modelowania wykorzystywanego w badaniach tych materiałów.';
+    }
+
+    $relationship = (string) ($image['relationship'] ?? 'exact_subject');
+    $purpose = match ($relationship) {
+        'related_context' => 'Nie przedstawia bezpośrednio opisywanego wydarzenia, lecz daje kontekst do wyjaśnienia zawartego w sąsiednim akapicie.',
+        'mechanism' => 'Pomaga prześledzić mechanizm omawiany w sąsiednim akapicie.',
+        'analogy_scale' => 'Pomaga czytelnikowi uchwycić skalę lub analogię omawianą w sąsiednim akapicie.',
+        default => 'Pomaga czytelnikowi odnieść szczegóły widoczne na grafice do wyjaśnienia w sąsiednim akapicie.',
+    };
+    return 'Szczegółowa ilustracja uzupełniająca tekst artykułu. ' . $purpose;
+}
+
 function article_image_presentation_layout(array $image): array
 {
     $requested = in_array((string) ($image['layout'] ?? ''), ARTICLE_IMAGE_LAYOUTS, true)
@@ -4398,6 +4474,15 @@ function article_image_presentation_layout(array $image): array
     $containsText = (bool) ($assessment['contains_readable_text'] ?? false);
     $density = strtolower(trim((string) ($assessment['detail_density'] ?? 'high')));
     $type = strtolower(trim((string) ($assessment['visual_type'] ?? 'other')));
+    $width = max(1, (int) ($image['width'] ?? 1));
+    $height = max(1, (int) ($image['height'] ?? 1));
+    $isTall = ($height / $width) >= 1.25;
+    $hasTransparency = article_image_has_transparency($image);
+    $detailInline = $isTall
+        || $hasTransparency
+        || $containsText
+        || in_array($type, ['diagram', 'chart', 'illustration'], true)
+        || ($density === 'high' && $type !== 'photo');
     $sideSafe = ($assessment['safe_for_side_layout'] ?? false) === true
         && !$containsText
         && in_array($type, ['photo', 'illustration'], true)
@@ -4406,9 +4491,14 @@ function article_image_presentation_layout(array $image): array
 
     return [
         'requested_layout' => $requested,
-        'effective_layout' => $sideRequested && !$sideSafe ? 'full' : $requested,
-        'side_layout_allowed' => $sideRequested && $sideSafe,
+        'effective_layout' => $detailInline ? 'detail-inline' : ($sideRequested && !$sideSafe ? 'full' : $requested),
+        'side_layout_allowed' => $detailInline || ($sideRequested && $sideSafe),
+        'side_layout' => $detailInline ? ($requested === 'left' ? 'left' : 'right') : $requested,
         'overridden' => $sideRequested && !$sideSafe,
+        'detail_inline' => $detailInline,
+        'requires_neutral_media_card' => $detailInline && $hasTransparency,
+        'has_transparency' => $hasTransparency,
+        'is_tall' => $isTall,
         'contains_readable_text' => $containsText,
         'detail_density' => $density,
         'visual_type' => $type,
@@ -4464,6 +4554,10 @@ function render_article_image_record(array $image, bool $hero = false): string
     $license = htmlspecialchars((string) $image['license'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $licenseUrl = htmlspecialchars((string) $image['license_url'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $contextNote = htmlspecialchars(article_image_context_note($image), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $detailInline = !empty($presentation['detail_inline']);
+    $editorialDescription = $detailInline
+        ? htmlspecialchars(article_image_detail_inline_description($image), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+        : '';
     $loading = $hero ? ' loading="eager" fetchpriority="high"' : ' loading="lazy"';
     $responsive = article_image_responsive_attributes(
         $path,
@@ -4473,13 +4567,30 @@ function render_article_image_record(array $image, bool $hero = false): string
     $html = '<figure class="article-illustration article-illustration--' . $layout
         . ($hero ? ' article-illustration--hero' : '')
         . (!empty($presentation['overridden']) ? ' article-illustration--side-overridden' : '')
-        . (!empty($image['has_transparency']) ? ' article-illustration--transparent' : '') . '"'
+        . (!empty($presentation['has_transparency']) ? ' article-illustration--transparent' : '')
+        . ($detailInline ? ' article-illustration--detail-inline' : '') . '"'
         . (!empty($presentation['overridden']) ? ' data-requested-layout="' . htmlspecialchars((string) $presentation['requested_layout'], ENT_QUOTES, 'UTF-8') . '"' : '') . '>';
-    $html .= '<img src="../' . htmlspecialchars($path, ENT_QUOTES, 'UTF-8') . '" alt="' . $alt
+    $imageTag = '<img src="../' . htmlspecialchars($path, ENT_QUOTES, 'UTF-8') . '" alt="' . $alt
         . '" width="' . max(1, (int) ($image['width'] ?? 1))
         . '" height="' . max(1, (int) ($image['height'] ?? 1))
         . '" decoding="async"' . $responsive . $loading . '>';
-    if ($caption !== '' || $contextNote !== '' || $attribution !== '') {
+    if ($detailInline) {
+        $zoomLabel = htmlspecialchars('Powiększ ilustrację: ' . (string) ($image['alt'] ?? 'grafika artykułu'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $html .= '<div class="article-image-media-card' . (!empty($presentation['requires_neutral_media_card']) ? ' article-image-media-card--neutral' : '') . '"><a class="article-image-zoom" href="../' . htmlspecialchars($path, ENT_QUOTES, 'UTF-8') . '" data-article-detail-zoom data-article-zoom-caption="' . $editorialDescription . '" aria-label="' . $zoomLabel . '">' . $imageTag . '<span class="article-image-zoom__hint" aria-hidden="true">Powiększ</span></a></div>';
+    } else {
+        $html .= $imageTag;
+    }
+    if ($detailInline) {
+        $html .= '<figcaption><p class="article-image-description">' . $editorialDescription . '</p>';
+        if ($contextNote !== '') $html .= '<p class="article-image-disclosure">' . $contextNote . '</p>';
+        if ($attribution !== '') {
+            $html .= '<details class="article-image-meta"><summary>Źródło i licencja</summary><p class="article-image-credit">' . $attribution;
+            if ($source !== '') $html .= ' · <a href="' . $source . '" rel="noopener noreferrer">źródło</a>';
+            if ($license !== '') $html .= ' · ' . ($licenseUrl !== '' ? '<a href="' . $licenseUrl . '" rel="license noopener noreferrer">' . $license . '</a>' : $license);
+            $html .= '</p></details>';
+        }
+        $html .= '</figcaption>';
+    } elseif ($caption !== '' || $contextNote !== '' || $attribution !== '') {
         $html .= '<figcaption>' . ($caption !== '' ? '<span class="article-image-caption">' . $caption . '</span>' : '');
         if ($contextNote !== '') {
             $html .= '<small class="article-image-context-note">' . $contextNote . '</small>';
@@ -4574,7 +4685,7 @@ function article_image_responsive_attributes(string $relativePath, int $width, s
         }
     }
     $candidates[] = '../' . htmlspecialchars($relativePath, ENT_QUOTES, 'UTF-8') . ' ' . $width . 'w';
-    $sizes = in_array($layout, ['left', 'right'], true)
+    $sizes = in_array($layout, ['left', 'right', 'detail-inline'], true)
         ? '(max-width: 980px) 100vw, 28rem'
         : '(max-width: 980px) 100vw, 58rem';
     return ' srcset="' . implode(', ', $candidates) . '" sizes="' . $sizes . '"';
@@ -4713,7 +4824,9 @@ function article_related_context_blocks_for_post(int $postId): array
 function article_layout_render_context_block(array $block): string
 {
     $escape = static fn (string $text): string => htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-    return '<aside class="article-context-block article-context-block--' . $escape((string)$block['block_type']) . '" data-slot-id="' . $escape((string)$block['slot_id']) . '"><h2>' . $escape((string)$block['heading']) . '</h2><p>' . nl2br($escape((string)$block['body'])) . '</p>' . ((string)$block['caption'] !== '' ? '<p class="article-context-block__caption">' . $escape((string)$block['caption']) . '</p>' : '') . ((string)$block['reader_attention_note'] !== '' ? '<p class="article-context-block__note">' . $escape((string)$block['reader_attention_note']) . '</p>' : '') . '</aside>';
+    // Caption and reader_attention_note describe an illustration. This block is
+    // rendered independently of the figure, so showing them here creates an orphaned caption.
+    return '<aside class="article-context-block article-context-block--' . $escape((string)$block['block_type']) . '" data-slot-id="' . $escape((string)$block['slot_id']) . '"><h2>' . $escape((string)$block['heading']) . '</h2><p>' . nl2br($escape((string)$block['body'])) . '</p></aside>';
 }
 
 function article_text_presentation_sentences(string $text): array
@@ -4842,6 +4955,12 @@ function render_article_blocks_with_layout(array $blocks, array $images, array $
     foreach ((array) ($plan['text_presentation'] ?? []) as $item) $textPresentations[(string) ($item['section_id'] ?? '')] = $item;
     $contextsBySection = [];
     foreach ($contextBlocks as $block) {
+        $contextImageId = (int) ($block['image_id'] ?? 0);
+        foreach ($renderable as $image) {
+            if ((int) ($image['id'] ?? 0) !== $contextImageId || empty(article_image_presentation_layout($image)['detail_inline'])) continue;
+            $audit[] = ['code'=>'detail_inline_context_integrated','image_id'=>$contextImageId,'context_block_id'=>(int) ($block['id'] ?? 0)];
+            continue 2;
+        }
         $section = (string)($block['placement_after_section'] ?? '');
         $placement = $contextPlacements[(string)($block['slot_id'] ?? '')] ?? 'after_section';
         $contextsBySection[$section][$placement][] = $block;
@@ -4849,10 +4968,11 @@ function render_article_blocks_with_layout(array $blocks, array $images, array $
     $renderImage = static function (array $image, string $section, string $placement) use ($plan): string {
         $presentation = article_image_presentation_layout($image);
         $sideClass = !empty($presentation['side_layout_allowed'])
-            ? ' article-layout__image--side article-layout__image--side-' . (string) $presentation['requested_layout']
+            ? ' article-layout__image--side article-layout__image--side-' . (string) $presentation['side_layout']
             : '';
         $classes = 'article-layout__image article-layout__image--' . $placement
-            . ' article-layout__image--caption-' . (string)$plan['caption_strategy'] . $sideClass;
+            . ' article-layout__image--caption-' . (string)$plan['caption_strategy']
+            . (!empty($presentation['detail_inline']) ? ' article-layout__image--detail-inline' : '') . $sideClass;
         return '<div class="' . htmlspecialchars($classes, ENT_QUOTES, 'UTF-8') . '" data-section="'
             . htmlspecialchars($section, ENT_QUOTES, 'UTF-8') . '">' . render_article_image_record($image) . '</div>';
     };
@@ -4902,10 +5022,35 @@ function render_article_blocks_with_layout(array $blocks, array $images, array $
         } else {
             $consecutiveCards++;
         }
-        $html .= '<div class="article-layout__section article-layout__section--' . htmlspecialchars($layout, ENT_QUOTES, 'UTF-8')
-            . ($callout !== '' ? ' article-layout__section--callout-' . htmlspecialchars($callout, ENT_QUOTES, 'UTF-8') : '') . '" data-section="' . htmlspecialchars($section, ENT_QUOTES, 'UTF-8') . '">';
         $sectionImages = $inlineBySection[$section] ?? [];
         $sideImageIds = [];
+        $detailInlineHeading = false;
+        foreach ($sectionImages as $image) {
+            $presentation = article_image_presentation_layout($image);
+            if (!empty($presentation['side_layout_allowed']) && !empty($presentation['detail_inline'])) {
+                $detailInlineHeading = true;
+                break;
+            }
+        }
+        $headingBlocks = [];
+        $renderBlock = $block;
+        if ($detailInlineHeading && (string) ($block['type'] ?? '') === 'section') {
+            $bodyBlocks = [];
+            $headingLifted = false;
+            foreach ((array) ($block['blocks'] ?? []) as $inner) {
+                if (!$headingLifted && (string) ($inner['type'] ?? '') === 'heading') {
+                    $headingBlocks[] = $inner;
+                    $headingLifted = true;
+                    continue;
+                }
+                $bodyBlocks[] = $inner;
+            }
+            $renderBlock['blocks'] = $bodyBlocks;
+        }
+        $html .= '<div class="article-layout__section article-layout__section--' . htmlspecialchars($layout, ENT_QUOTES, 'UTF-8')
+            . ($detailInlineHeading ? ' article-layout__section--detail-inline-heading' : '')
+            . ($callout !== '' ? ' article-layout__section--callout-' . htmlspecialchars($callout, ENT_QUOTES, 'UTF-8') : '') . '" data-section="' . htmlspecialchars($section, ENT_QUOTES, 'UTF-8') . '">';
+        if ($headingBlocks !== []) $html .= render_article_blocks($headingBlocks, []);
         foreach ($sectionImages as $image) {
             $presentation = article_image_presentation_layout($image);
             if (empty($presentation['side_layout_allowed'])) continue;
@@ -4915,7 +5060,7 @@ function render_article_blocks_with_layout(array $blocks, array $images, array $
             $audit[] = ['code'=>'side_image_wrapped_with_section','section_id'=>$section,'image_id'=>$imageId];
         }
         foreach ($sectionImages as $image) if (!isset($sideImageIds[(int)($image['id'] ?? 0)]) && ($imagePlacements[(int)($image['id'] ?? 0)] ?? 'inline') === 'before_section') $html .= $renderImage($image, $section, 'before_section');
-        $html .= render_article_blocks([$block], []);
+        $html .= render_article_blocks([$renderBlock], []);
         foreach ($sectionImages as $image) if (!isset($sideImageIds[(int)($image['id'] ?? 0)]) && ($imagePlacements[(int)($image['id'] ?? 0)] ?? 'inline') === 'inline') $html .= $renderImage($image, $section, 'inline');
         $html .= $renderContexts($contextsBySection[$section]['after_image'] ?? []);
         foreach ($sectionImages as $image) if (!isset($sideImageIds[(int)($image['id'] ?? 0)]) && ($imagePlacements[(int)($image['id'] ?? 0)] ?? 'inline') === 'after_section') $html .= $renderImage($image, $section, 'after_section');

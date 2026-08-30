@@ -52,6 +52,7 @@ const ARTICLE_RELATED_CONTEXT_BLOCKS_MIGRATION = '20260811_047_article_related_c
 const FINAL_MULTIMODAL_QC_MIGRATION = '20260811_048_final_multimodal_qc';
 const ARTICLE_IMAGE_VISION_AUDIT_MIGRATION = '20260811_049_article_image_vision_audit';
 const ARTICLE_IMAGE_REJECTED_REVIEW_MIGRATION = '20260825_050_article_image_rejected_review';
+const TOPIC_GROUPING_CANDIDATES_REMOVAL_MIGRATION = '20260829_051_topic_grouping_candidates_removal';
 
 function database_table_columns(PDO $database, string $table): array
 {
@@ -401,19 +402,6 @@ function run_schema_migrations(PDO $database): void
                     FOREIGN KEY (feed_item_id) REFERENCES discovered_feed_items(id) ON DELETE CASCADE,
                     FOREIGN KEY (topic_id) REFERENCES editorial_topics(id) ON DELETE CASCADE
                 );
-                CREATE TABLE IF NOT EXISTS topic_grouping_candidates (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    feed_item_id INTEGER NOT NULL,
-                    candidate_topic_id INTEGER NOT NULL,
-                    confidence REAL NOT NULL,
-                    explanation TEXT NOT NULL DEFAULT "",
-                    status TEXT NOT NULL DEFAULT "suggested",
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    decided_at TEXT,
-                    FOREIGN KEY (feed_item_id) REFERENCES discovered_feed_items(id) ON DELETE CASCADE,
-                    FOREIGN KEY (candidate_topic_id) REFERENCES editorial_topics(id) ON DELETE CASCADE,
-                    UNIQUE(feed_item_id, candidate_topic_id)
-                );
                 CREATE TABLE IF NOT EXISTS topic_grouping_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     feed_item_id INTEGER NOT NULL,
@@ -429,8 +417,7 @@ function run_schema_migrations(PDO $database): void
                     ON editorial_topics(event_at DESC);
                 CREATE INDEX IF NOT EXISTS feed_topic_memberships_topic_idx
                     ON feed_topic_memberships(topic_id);
-                CREATE INDEX IF NOT EXISTS topic_grouping_candidates_status_idx
-                    ON topic_grouping_candidates(status, confidence DESC);'
+                '
             );
             $database->exec(
                 'INSERT OR IGNORE INTO editorial_topics (
@@ -1788,6 +1775,13 @@ function run_schema_migrations(PDO $database): void
                 'acceptance_source',
                 'TEXT NOT NULL DEFAULT "automatic"'
             );
+        }
+    );
+    apply_schema_migration(
+        $database,
+        TOPIC_GROUPING_CANDIDATES_REMOVAL_MIGRATION,
+        static function (PDO $database): void {
+            $database->exec('DROP TABLE IF EXISTS topic_grouping_candidates');
         }
     );
 }

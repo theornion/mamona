@@ -260,6 +260,12 @@ function generation_mode(): string
     return in_array($mode, ['manual', 'api'], true) ? $mode : 'manual';
 }
 
+/** Built-in fixtures are allowed only for an explicitly isolated test database. */
+function generation_explicit_test_mode(): bool
+{
+    return PHP_SAPI === 'cli' && trim((string) getenv('CMS_TEST_DATABASE_FILE')) !== '';
+}
+
 function update_generation_mode(string $mode): void
 {
     $mode = strtolower(trim($mode));
@@ -513,11 +519,16 @@ function complete_generation_operation(
     }
     $output = decode_generation_response($rawResponse);
     $seoNormalization = null;
+    $inlineVisualSlotRepair = false;
     if ($operation['operation_type'] === 'research_package') {
         research_normalize_source_map($output);
     }
     if ($operation['operation_type'] === 'article_draft') {
         article_draft_normalize_narrative_sections($operation, $output);
+        $draftInput = json_decode((string) ($operation['input_json'] ?? '{}'), true) ?: [];
+        if (is_array($draftInput['narrative_plan'] ?? null)) {
+            $inlineVisualSlotRepair = article_draft_trim_excess_inline_visual_slots($draftInput['narrative_plan'], $output);
+        }
         $seoNormalization = article_draft_normalize_seo_description($output);
     }
     $schema = json_decode((string) $operation['output_schema_json'], true, 128, JSON_THROW_ON_ERROR);
@@ -530,6 +541,15 @@ function complete_generation_operation(
     }
     if ($operation['operation_type'] === 'article_draft') {
         article_draft_apply_seo_description_schema($schema);
+        if ($inlineVisualSlotRepair) {
+            $inlineSchema =& $schema['properties']['illustration_plan']['properties']['inline'];
+            if (is_array($inlineSchema)) {
+                $inlineCount = count((array) (($output['illustration_plan'] ?? [])['inline'] ?? []));
+                $inlineSchema['minItems'] = $inlineCount;
+                $inlineSchema['maxItems'] = $inlineCount;
+            }
+            unset($inlineSchema);
+        }
     }
     validate_generation_value($output, $schema);
 
@@ -568,6 +588,9 @@ function complete_generation_operation(
              WHERE id = :id'
         );
         $usage = is_array($providerMetadata['usage'] ?? null) ? $providerMetadata['usage'] : [];
+        if ($inlineVisualSlotRepair) {
+            $usage['inline_visual_slot_repair'] = ['applied' => true, 'policy' => 'one_hero_plus_max_three_inline'];
+        }
         if ($operation['operation_type'] === 'image_recovery_replan' && is_array($specialValidation)) {
             $usage['recovery_replan_validation'] = array_intersect_key($specialValidation, array_flip([
                 'valid', 'expected_slot_ids', 'missing_slot_ids', 'duplicate_slot_ids', 'unexpected_slot_ids', 'invalid_slots',
@@ -1051,6 +1074,9 @@ function execute_openai_generation_operation(
 
     $schema = json_decode((string) $operation['output_schema_json'], true, 128, JSON_THROW_ON_ERROR);
     $useBuiltInMock = (bool) app_config('openai_mock') && $transport === null;
+    if ($useBuiltInMock && !generation_explicit_test_mode()) {
+        throw new RuntimeException('Wbudowany mock OpenAI może działać wyłącznie z CMS_TEST_DATABASE_FILE.');
+    }
     if (!$useBuiltInMock && $transport === null) {
         $apiKey = $apiKey ?? app_environment_value('OPENAI_API_KEY');
         if ($apiKey === null) {
@@ -1182,6 +1208,9 @@ function execute_generation_operation(
     // key or a blocked live test is a zero-call refusal, not a running worker.
     $schema = json_decode((string) $operation['output_schema_json'], true, 128, JSON_THROW_ON_ERROR);
     $useBuiltInMock = (bool) app_config('gemini_mock') && $transport === null;
+    if ($useBuiltInMock && !generation_explicit_test_mode()) {
+        throw new RuntimeException('Wbudowany mock Gemini może działać wyłącznie z CMS_TEST_DATABASE_FILE.');
+    }
     $providedTransport = $transport !== null;
     $isLiveRequest = !$useBuiltInMock && !$providedTransport;
     $isCountedRequest = !$useBuiltInMock;

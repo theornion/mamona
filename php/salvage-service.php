@@ -45,6 +45,9 @@ function salvage_prepare_safe_composer(int $sourceDraftId): int
 
 function salvage_execute_safe_composer(array $item): array
 {
+    if (!generation_explicit_test_mode()) {
+        throw new RuntimeException('Bezpieczny kompozytor używa fixture i nie może działać w normalnym pipeline. Wymagany jest ręczny przegląd.');
+    }
     $operationId = salvage_prepare_safe_composer((int) $item['draft_version_id']);
     $operation = find_generation_operation($operationId);
     if (!is_array($operation)) throw new RuntimeException('Nie znaleziono operacji safe composer.');

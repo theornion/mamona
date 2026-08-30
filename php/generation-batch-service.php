@@ -804,6 +804,9 @@ function generation_workflow_statuses(mixed $rawTopicIds): array
         $draftValidation = json_decode((string) ($row['draft_validation'] ?? '{}'), true) ?: [];
         $qualityIsCurrent = (int) ($row['quality_draft_id'] ?? 0) === (int) ($row['draft_id'] ?? 0);
         $qualityPassed = $qualityIsCurrent && (int) ($row['passed'] ?? 0) === 1 && $hardBlocks === [];
+        if ($qualityPassed && !quality_check_is_production_eligible((int) ($row['quality_id'] ?? 0))) {
+            $qualityPassed = false;
+        }
         $coverage = !empty($row['post_id']) ? article_image_coverage_state((int) $row['post_id'], (int) $row['topic_id']) : null;
         $imageReady = is_array($coverage) && !empty($coverage['coverage_complete']);
         $imageManual = (int) $row['image_manual'] > 0 || (int) $row['image_pending'] > 0;
@@ -813,7 +816,8 @@ function generation_workflow_statuses(mixed $rawTopicIds): array
             && !empty($row['approved_at'])
             && in_array((string) ($row['draft_status'] ?? ''), ['completed', 'frozen'], true)
             && $qualityPassed
-            && $imageReady;
+            && $imageReady
+            && final_multimodal_qc_readiness((int) ($row['post_id'] ?? 0)) === 'ready_for_manual_publish';
         $active = in_array((string) ($row['job_status'] ?? ''), GENERATION_BATCH_ACTIVE_STATUSES, true);
         $researchWaiting = ($row['research_status'] ?? '') === 'completed' && empty($row['approved_at']);
         $qualityWaiting = $qualityIsCurrent && ($row['quality_status'] ?? '') === 'completed' && !$qualityPassed;
@@ -821,9 +825,9 @@ function generation_workflow_statuses(mixed $rawTopicIds): array
         $overall = $active ? $jobStatus
             : (in_array($jobStatus, ['ready_for_preview', 'ready_with_notes', 'manual_review', 'waiting_review'], true) ? $jobStatus
             : ($jobStatus === 'auto_rejected' ? 'auto_rejected'
+            : ($jobStatus === 'failed' ? 'failed'
             : ($qualityWaiting || $researchWaiting ? 'waiting_review'
-            : ($allStagesReady ? 'ready'
-            : ($jobStatus === 'failed' ? 'failed' : 'eligible')))));
+            : ($allStagesReady ? 'ready' : 'eligible')))));
         $progress = (int) ($row['progress_percent'] ?? 0);
         $availableAt = !empty($row['next_retry_at'] ?? null)
             ? gmdate('c', strtotime((string) $row['next_retry_at'] . ' UTC'))
@@ -1698,6 +1702,15 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
         } elseif ($stage === 'quality_check') {
             generation_batch_update_item($itemId, ['status' => 'quality_check', 'progress_percent' => 72]);
             if (generation_batch_is_autonomous($item) && (string) ($item['outcome'] ?? '') === 'safe_composer_queued') {
+                if (!generation_explicit_test_mode()) {
+                    generation_batch_update_item($itemId, [
+                        'status' => 'manual_review', 'stage' => 'quality_check', 'outcome' => 'safe_composer_blocked',
+                        'progress_percent' => 84, 'completed_at' => gmdate('Y-m-d H:i:s'),
+                        'wait_reason' => 'Automatyczna atrapa safe composer jest zablokowana poza trybem testowym; wymagany ręczny przegląd.',
+                    ]);
+                    generation_batch_audit((int) $item['batch_id'], $itemId, 'safe_composer_blocked', 'worker', ['reason' => 'fixture_not_allowed_outside_test_mode']);
+                    return;
+                }
                 $salvaged = salvage_execute_safe_composer($item);
                 generation_batch_update_item($itemId, ['status' => 'images', 'stage' => 'images', 'progress_percent' => 85,
                     'draft_operation_id' => (int) $salvaged['draft']['generation_operation_id'],

@@ -99,7 +99,7 @@ $pool = article_image_ranked_candidate_pool(
 );
 p6_assert(count($pool['ranked']) === 1 && $pool['hard_reject_count'] === 1, 'Multiple queries merge and dedupe one legal metadata candidate before Vision.');
 p6_assert(($pool['ranked'][0]['candidate']['provider_id'] ?? '') === 'mediocre', 'Mediocre semantic metadata lowers ranking but is not a hard reject.');
-p6_assert(editorial_v2_required_image_count(8750) === 5 && editorial_v2_publication_image_floor(5) === 4, 'V2 target 5 maps to publication floor 4.');
+p6_assert(editorial_v2_required_image_count(8750) === 4 && editorial_v2_publication_image_floor(4) === 3, 'V2 target jest ograniczony do hero plus trzech grafik inline.');
 $schema = article_image_recovery_planner_schema();
 $candidateSchema = $schema['properties']['recoveries']['items']['properties']['candidate'];
 p6_assert(in_array('provider_id', $candidateSchema['required'], true) && in_array('source_file_url', $candidateSchema['required'], true), 'Persisted planner contract requires stable candidate identity.');

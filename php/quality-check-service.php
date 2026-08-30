@@ -404,6 +404,14 @@ function deterministic_quality_checks(array $operation): array
         ];
     }
 
+    if (($titleError = article_title_surface_error((string) ($draft['title'] ?? ''))) !== null) {
+        $blocks['title_language'] = [
+            'code' => 'title_language',
+            'message' => $titleError,
+            'reviewable' => false,
+        ];
+    }
+
     $allText = implode("\n", quality_texts_from_draft($draft));
     if (preg_match_all('/[„“"«](.{8,240}?)[”"»]/u', $allText, $matches)) {
         foreach ($matches[1] as $quote) {
@@ -957,6 +965,29 @@ function article_image_coverage_state(int $postId, ?int $topicId = null, bool $r
         'narrative_plan_id' => is_array($plan) ? (int) ($plan['id'] ?? 0) : null];
 }
 
+/** A completed QC from a local fixture may exercise tests, never production readiness. */
+function quality_check_is_production_eligible(int $qualityCheckId): bool
+{
+    if ($qualityCheckId <= 0) return false;
+    // The disposable test DB intentionally uses the deterministic transport to
+    // exercise the P08/P09 sequence. It is never publishable outside this
+    // process, while production still requires a real provider response below.
+    if (generation_explicit_test_mode()) return true;
+    $statement = bueno_database()->prepare(
+        'SELECT checks.execution_mode, operations.live_request_count, operations.provider_response_id
+         FROM quality_check_runs checks
+         INNER JOIN generation_operations operations ON operations.id = checks.generation_operation_id
+         WHERE checks.id = :id'
+    );
+    $statement->execute([':id' => $qualityCheckId]);
+    $row = $statement->fetch();
+    if (!is_array($row) || (string) ($row['execution_mode'] ?? '') !== 'api') return false;
+    $responseId = (string) ($row['provider_response_id'] ?? '');
+    return (int) ($row['live_request_count'] ?? 0) > 0
+        && !str_starts_with($responseId, 'deterministic-')
+        && !str_starts_with($responseId, 'resp_local_mock');
+}
+
 function assert_post_quality_allows_publication(int $postId): void
 {
     $draftStatement = bueno_database()->prepare(
@@ -976,6 +1007,9 @@ function assert_post_quality_allows_publication(int $postId): void
     );
     $checkStatement->execute([':draft_id' => (int) $draft['id']]);
     $check = $checkStatement->fetch();
+    if (is_array($check) && !quality_check_is_production_eligible((int) ($check['id'] ?? 0))) {
+        throw new RuntimeException('Publikacja zablokowana: wynik QC nie pochodzi z rzeczywistego wywołania modelu.');
+    }
     if (!is_array($check)) {
         throw new RuntimeException('Najnowsza wersja szkicu nie ma ukończonej kontroli jakości.');
     }

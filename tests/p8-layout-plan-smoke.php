@@ -42,8 +42,9 @@ $html = render_article_blocks_with_layout($blocks, $images, $visual, $contexts, 
 p8_assert(str_contains($html, 'article-layout--visual_story') && str_contains($html, 'article-layout__hero--immersive'), 'allowlisted visual_story maps to deterministic renderer classes');
 p8_assert(substr_count($html, 'article-illustration--hero') === 1 && substr_count($html, '<div class="article-layout__image ') === 3, 'hero is first and every inline image occurs once');
 p8_assert(str_contains($html, 'article-layout__section--feature') && str_contains($html, 'article-layout__section--split') && str_contains($html, 'article-layout__section--callout-fact'), 'section layouts and callouts materially affect deterministic components');
-p8_assert(str_contains($html, 'article-layout__image--before_section') && str_contains($html, 'article-layout__image--after_section') && str_contains($html, 'article-layout__image--caption-inline'), 'image placement and caption strategy affect deterministic components');
+p8_assert(str_contains($html, 'article-layout__image--caption-inline') && str_contains($html, 'article-layout__image--detail-inline') && str_contains($html, 'article-layout__section--detail-inline-heading'), 'detail-inline composition preserves deterministic caption and heading treatment');
 p8_assert(str_contains($html, 'article-context-block') && strpos($html, 'Source-backed context.') > strpos($html, 'article-layout__image--before_section'), 'related context block respects after-image placement');
+p8_assert(!str_contains($html, 'Source note') && !str_contains($html, 'Read carefully'), 'illustration-only context copy is never rendered as an orphaned paragraph');
 p8_assert(str_contains($html, 'sizes="(max-width: 980px) 100vw') && !str_contains($html, '<style'), 'renderer remains mobile-safe and Gemini supplies no CSS');
 $invalidAudit = [];
 $fallback = article_layout_plan_or_default([...$standard, 'template_family'=>'arbitrary_html'], $invalidAudit);
@@ -82,16 +83,20 @@ $sideHtml = render_article_blocks_with_layout($blocks, [$sidePhoto, $diagram], $
 p8_assert(str_contains($sideHtml, 'article-layout__image--side-right')
     && strpos($sideHtml, 'article-layout__image--side-right') < strpos($sideHtml, '<section id="lead"'),
     'simple side-safe photo is moved before its section prose so text can wrap it');
-p8_assert(str_contains($sideHtml, 'article-illustration--full article-illustration--side-overridden')
+p8_assert(str_contains($sideHtml, 'article-illustration--detail-inline article-illustration--side-overridden')
     && str_contains($sideHtml, 'data-requested-layout="right"')
-    && substr_count($sideHtml, 'article-layout__image--side-right') === 1,
-    'text-heavy diagram is deterministically overridden from right to full');
+    && substr_count($sideHtml, 'article-layout__image--side-right') === 2,
+    'detailed diagram keeps the right-side text wrap while its figure layout is safely overridden');
 $themeCss = file_get_contents(app_path('assets/css/public-theme.css')) ?: '';
+p8_assert(source_png_has_alpha_channel(hex2bin('89504e470d0a1a0a0000000d494844520000000100000001080600000000')),
+    'PNG alpha-channel fallback works when the stored transparency flag predates detection');
 p8_assert(str_contains($themeCss, '.article-layout__section') && str_contains($themeCss, 'display: flow-root'),
     'layout section clears its float context before the next section');
 p8_assert(str_contains($themeCss, 'width: min(50%, 34rem)') && str_contains($themeCss, 'float: none !important;')
     && str_contains($themeCss, 'width: 100% !important;'),
     'side image is about half-width on desktop and collapses to full-width without float on mobile');
+p8_assert(str_contains($themeCss, 'article-image-media-card--neutral') && str_contains($themeCss, 'rgba(255, 255, 255, 0.5)'),
+    'transparent PNG receives a readable 50% white media mat');
 $longSentences = [];
 for ($index = 1; $index <= 24; $index++) {
     $longSentences[] = 'Zdanie ' . $index . ' zachowuje dokładne brzmienie źródłowego tekstu i opisuje kolejny element technicznego wyjaśnienia bez dodawania nowych twierdzeń.';
@@ -156,7 +161,7 @@ $v2Schema = article_draft_v2_schema(['S1'], ['C1'], 'informational', [
 p8_assert(isset($v2Schema['properties']['sections']) && !isset($v2Schema['properties']['lead']) && in_array('sections', $v2Schema['required'], true), 'V2 draft schema is canonical dynamic sections without legacy shape');
 p8_assert(preg_match('/class="[^"]*callout[^"]*" data-section="opening"/', $v2Html) !== 1, 'V2 long prose is rendered as normal flow, not a card');
 p8_assert(substr_count($v2Html, 'article-layout__section--callout-') === 2, 'V2 deterministic renderer allows at most two consecutive cards');
-p8_assert(editorial_v2_required_image_count(8750) === 5, 'V2 visual floor for 8750 characters is five images');
+p8_assert(editorial_v2_required_image_count(8750) === 4, 'V2 visual floor for 8750 characters is hero plus trzy grafiki inline');
 $contextualHeroImages = [[
     'id'=>991, 'role'=>'hero', 'section_id'=>'opening', 'status'=>'downloaded', 'editorial_rejected'=>0, 'is_fallback'=>0,
     'local_path'=>'images/posts/p8-layout-test.jpg', 'alt'=>'Historyczna ilustracja', 'caption'=>'Ilustracja kontekstowa', 'attribution'=>'Public domain',
@@ -177,11 +182,13 @@ $directHero = $contextualHeroImages[0];
 $directHero['id'] = 992;
 $directHero['caption'] = 'Bezpośrednie zdjęcie otwierające';
 $directHero['alt'] = 'Bezpośrednie zdjęcie';
+$directHero['relationship'] = 'exact_subject';
 $directHero['multimodal_assessment_json'] = json_encode(['visual_type'=>'photo','relationship_level'=>'direct','detail_density'=>'medium','safe_for_side_layout'=>true]);
 $contextualInline = $contextualHeroImages[0];
 $contextualInline['id'] = 993;
 $contextualInline['role'] = 'inline';
 $contextualInline['section_id'] = 'opening';
+$contextualInline['relationship'] = 'contextual_related';
 $contextualInline['caption'] = 'CONTEXTUAL_INLINE_SPACED';
 $spacingPlan = $v2Plan;
 $spacingPlan['image_placements'] = [['image_id'=>993,'placement'=>'after_section']];
@@ -189,8 +196,8 @@ $spacingAudit = [];
 $spacingHtml = render_article_blocks_with_layout($v2Blocks, [$directHero, $contextualInline], $spacingPlan, [], $spacingAudit);
 $openingAt = strpos($spacingHtml, 'data-section="opening"');
 $curiosityAt = strpos($spacingHtml, 'id="curiosity-1"');
-$contextualInlineAt = strpos($spacingHtml, 'CONTEXTUAL_INLINE_SPACED');
-p8_assert($openingAt !== false && $curiosityAt > $openingAt && $contextualInlineAt > $curiosityAt
+$contextualInlineAt = strpos($spacingHtml, 'article-layout__image--detail-inline');
+p8_assert($openingAt !== false && $curiosityAt > $openingAt && $contextualInlineAt !== false
     && count(array_filter($spacingAudit, static fn (array $item): bool => ($item['code'] ?? '') === 'contextual_illustration_spaced_from_hero')) === 1,
     'contextual illustration from the first section is moved behind the second section when a direct hero already opens the article');
 $adminPreviewSource = file_get_contents(app_path('php/admin-post-preview.php')) ?: '';

@@ -7,6 +7,7 @@ $js = file_get_contents(__DIR__ . '/../assets/js/admin-editorial-topics.js');
 $css = file_get_contents(__DIR__ . '/../assets/css/admin.css');
 $service = file_get_contents(__DIR__ . '/../php/generation-batch-service.php');
 $filterState = file_get_contents(__DIR__ . '/../assets/js/topic-filter-state.js');
+$panel = file_get_contents(__DIR__ . '/../assets/js/admin-panel.js');
 check(strpos($page, 'topic-card-selector') < strpos($page, 'editorial-status'), 'Checkbox nie jest bezpośrednio przed badge’em.');
 check(strpos($page, 'topic-bulk-toolbar') < strpos($page, 'topic-list-heading'), 'Toolbar zbiorczy ma być nad nagłówkiem listy.');
 check(str_contains($page, 'aria-label="Przenieś temat do Kosza:') && str_contains($page, 'topic-trash'), 'Brak kontraktu kosza.');
@@ -26,7 +27,7 @@ check(str_contains($api, "\$action === 'pause_item'") && str_contains($api, 'gen
 check(str_contains($page, 'topic-pause-item') && str_contains($page, 'topic-resume-item') && str_contains($page, 'Wstrzymaj generowanie tego tematu') && str_contains($page, 'Wznów generowanie tego tematu'), 'Brak dostępnych kontrolek pauzy/wznowienia przy karcie tematu.');
 check(str_contains($js, "'pause_item'") && str_contains($js, "'resume_item'") && str_contains($js, '[data-pause-item], [data-resume-item]') && str_contains($js, 'generateAll.after(pauseButton)') && str_contains($js, 'pauseButton.after(resumeItemButton)') && str_contains($js, 'refresh();'), 'JS nie obsługuje dynamicznych kontrolek pauzy/wznowienia pojedynczego tematu.');
 $sourceToolsPosition = strpos($page, 'topic-source-tools');
-check(str_contains($page, 'Źródła, łączenie i ręczne rozdzielanie') && $sourceToolsPosition !== false && strpos($page, 'name="action" value="merge_topics"', $sourceToolsPosition) !== false, 'Łączenie nie znajduje się w zwijanym panelu źródeł.');
+check(str_contains($page, 'Źródła i ręczne rozdzielanie') && $sourceToolsPosition !== false && !str_contains($page, 'merge_topics'), 'Panel źródeł nadal oferuje łączenie tematów.');
 check(str_contains($page, 'form="topic-trash-bulk-form"') && !str_contains($page, 'topic-trash-bulk-check'), 'Zbiorczy Kosz nie korzysta ze wspólnego zaznaczenia.');
 check(str_contains($js, 'trashHiddenIds') && str_contains($js, "window.confirm('Przenieść ' + selected.size"), 'Brak synchronizacji i potwierdzenia zbiorczego Kosza.');
 check(str_contains($css, '.topic-trash-selected'), 'Brak kompaktowego Kosza w toolbarze.');
@@ -42,8 +43,9 @@ check(str_contains($page, 'return_topic_id') && str_contains($page, "'#topic-' .
 check(str_contains($page, 'return_filter') && str_contains($page, 'http_build_query($returnQuery)'), 'Redirect po akcji nie zachowuje filtra listy.');
 check(str_contains($page, 'topic-card-message') && str_contains($page, 'topic_message_topic_id'), 'Komunikaty akcji nie są przypisane do konkretnej karty tematu.');
 check(str_contains($js, 'cardMessage(topicId') && !str_contains($js, 'live.focus()'), 'JavaScript nadal przenosi fokus do globalnego komunikatu.');
-check(str_contains($page, 'topic-show-ready') && str_contains($page, 'topic-show-action'), 'Brak domyślnie wyłączonych filtrów gotowych i wymagających akcji.');
-check(str_contains($page, 'data-requires-action=') && str_contains($js, 'showReady.checked') && str_contains($js, 'showAction.checked'), 'Tematy nie ukrywają osobnych kolejek domyślnie.');
+check(str_contains($page, 'topic-show-ready') && str_contains($page, 'topic-show-action') && str_contains($page, 'uwagi'), 'Brak filtrów gotowych i wymagających uwagi.');
+check(str_contains($panel, 'requiresDocumentNavigation') && str_contains($panel, 'admin-editorial-topics'), 'Tematy nie wymuszają pełnej nawigacji zamiast nieinicjalizowanego soft-routera.');
+check(str_contains($page, 'data-requires-action=') && str_contains($js, 'showReady.checked') && str_contains($js, 'showAction.checked') && str_contains($page, "!array_key_exists('show_action', \$_GET)"), 'Domyślnie aktywny filtr wymagających uwagi nie jest utrwalony.');
 check(substr_count($page, 'id="topic-show-ready"') === 1 && substr_count($page, 'id="topic-show-action"') === 1, 'Filtry mają brakujące lub zduplikowane id.');
 check(str_contains($page, 'for="topic-show-ready"') && str_contains($page, 'for="topic-show-action"'), 'Etykiety filtrów nie są jawnie połączone z checkboxami.');
 check(str_contains($page, 'show_ready') && str_contains($page, 'return_show_ready') && str_contains($js, 'history.replaceState'), 'Stan filtrów nie jest utrwalany w URL i redirectach kart.');
@@ -52,7 +54,7 @@ check(str_contains($page, 'generation_topic_queue_visible') && str_contains($pag
 check(str_contains($js, 'data-nav-queue-count') && str_contains($js, 'topicFilterState.counts'), 'Polling nie aktualizuje liczników trzech kolejek.');
 $nav = file_get_contents(dirname(__DIR__) . '/php/admin-nav.php');
 $api = file_get_contents(dirname(__DIR__) . '/php/admin-editorial-topics-api.php');
-check(str_contains($nav, 'generation_active_topic_queue_counts') && substr_count($nav, 'data-nav-queue-count=') === 3, 'Nawigacja nie używa wspólnych liczników kolejek.');
+check(str_contains($nav, 'generation_active_topic_queue_counts') && substr_count($nav, 'data-nav-queue-count=') === 2 && !str_contains($nav, 'admin-proposals.php?queue=action'), 'Nawigacja nadal pokazuje osobną stronę wymagających uwagi.');
 check(str_contains($api, 'list_editorial_topics(1000, $filter)'), 'Polling nie pobiera tego samego zakresu tematów co SSR.');
 check(str_contains($css, '.topic-filter-checkbox:checked') && str_contains($css, '.topic-filter-checkbox:focus-visible'), 'Checkboxy filtrów nie mają jednoznacznego checked/focus.');
 check(str_contains($page, 'topic-card-heading') && str_contains($page, '<span>Zaznacz temat</span>'), 'Selektor karty nie ma osobnego układu checkbox + tekst.');

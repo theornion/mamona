@@ -18,11 +18,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!in_array($returnFilter, ['active', 'profile-rejected', 'all'], true)) $returnFilter = 'active';
     $returnTopicId = filter_input(INPUT_POST, 'return_topic_id', FILTER_VALIDATE_INT) ?: 0;
     $returnShowReady = topic_filter_enabled($_POST['return_show_ready'] ?? '0');
-    $returnShowAction = topic_filter_enabled($_POST['return_show_action'] ?? '0');
+    $returnShowAction = topic_filter_enabled($_POST['return_show_action'] ?? '1');
     if ($returnTopicId > 0) $_SESSION['topic_message_topic_id'] = $returnTopicId;
     $returnQuery = ['filter' => $returnFilter];
     if ($returnShowReady) $returnQuery['show_ready'] = '1';
-    if ($returnShowAction) $returnQuery['show_action'] = '1';
+    if (!$returnShowAction) $returnQuery['show_action'] = '0';
     $returnLocation = 'admin-editorial-topics.php?' . http_build_query($returnQuery);
     if ($returnTopicId > 0) $returnLocation .= '#topic-' . $returnTopicId;
     if (!admin_valid_csrf()) {
@@ -32,24 +32,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     try {
         $action = trim((string) ($_POST['action'] ?? ''));
-        if ($action === 'merge_topics') {
-            manual_merge_topics(
-                filter_input(INPUT_POST, 'source_topic_id', FILTER_VALIDATE_INT) ?: 0,
-                filter_input(INPUT_POST, 'target_topic_id', FILTER_VALIDATE_INT) ?: 0
-            );
-        } elseif ($action === 'split_item') {
+        if ($action === 'split_item') {
             manual_split_feed_item(filter_input(INPUT_POST, 'feed_item_id', FILTER_VALIDATE_INT) ?: 0);
-        } elseif ($action === 'accept_candidate') {
-            accept_topic_candidate(filter_input(INPUT_POST, 'candidate_id', FILTER_VALIDATE_INT) ?: 0);
-        } elseif ($action === 'reject_candidate') {
-            reject_topic_candidate(filter_input(INPUT_POST, 'candidate_id', FILTER_VALIDATE_INT) ?: 0);
         } elseif ($action === 'run_grouping') {
             $result = run_topic_grouping();
             $_SESSION['topic_grouping_result'] = sprintf(
-                'Przetworzono: %d, połączono: %d, sugestie: %d, błędy: %d.',
+                'Przetworzono: %d, połączono automatycznie: %d, osobne tematy: %d, błędy: %d.',
                 $result['processed'],
                 $result['merged'],
-                $result['suggested'],
+                $result['single'],
                 $result['failed']
             );
         } elseif ($action === 'run_scoring') {
@@ -138,15 +129,14 @@ if (!in_array($topicFilter, ['active', 'profile-rejected', 'all'], true)) {
     $topicFilter = 'active';
 }
 $showReady = topic_filter_enabled($_GET['show_ready'] ?? '0');
-$showAction = topic_filter_enabled($_GET['show_action'] ?? '0');
-$visibilityQuery = ($showReady ? '&amp;show_ready=1' : '') . ($showAction ? '&amp;show_action=1' : '');
+$showAction = !array_key_exists('show_action', $_GET) || topic_filter_enabled($_GET['show_action']);
+$visibilityQuery = ($showReady ? '&amp;show_ready=1' : '') . (!$showAction ? '&amp;show_action=0' : '');
 $topics = list_editorial_topics(1000, $topicFilter);
 $topicWorkflow = generation_topics_workflow_payload($topics);
 $topicQueueCounts = generation_topic_queue_counts($topicWorkflow);
 $automaticDispatchPaused = generation_automatic_dispatch_paused();
 if ($topicFilter === 'active') $GLOBALS['adminTopicQueueCounts'] = $topicQueueCounts;
 $visibleTopicCount = count(array_filter($topicWorkflow, static fn (array $topic): bool => generation_topic_queue_visible((string) ($topic['queue_state'] ?? 'work'), $showReady, $showAction)));
-$suggestions = list_suggested_topic_matches();
 $cleanupPreview = editorial_profile_cleanup_preview();
 $cleanupRuns = list_editorial_profile_cleanup_runs(5);
 $error = (string) ($_SESSION['topic_grouping_error'] ?? '');
@@ -214,32 +204,6 @@ admin_page_open('Grupowanie tematów', 'topics');
         <?php endif; ?>
     </section>
 
-    <h2>Sugestie wymagające decyzji (<?php echo count($suggestions); ?>)</h2>
-    <div class="technical-source-list">
-        <?php if ($suggestions === []): ?><p class="admin-notice">Brak niepewnych dopasowań.</p><?php endif; ?>
-        <?php foreach ($suggestions as $suggestion): ?>
-            <article class="technical-source-card">
-                <h3><?php echo escape_html((string) $suggestion['item_title']); ?></h3>
-                <p>Proponowany temat: <strong><?php echo escape_html((string) $suggestion['topic_title']); ?></strong></p>
-                <p>Pewność: <?php echo number_format((float) $suggestion['confidence'] * 100, 1, ',', ''); ?>% · <?php echo escape_html((string) $suggestion['explanation']); ?></p>
-                <div class="editorial-action-row">
-                    <form method="post" action="admin-editorial-topics.php">
-                        <input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>">
-                        <input type="hidden" name="action" value="accept_candidate">
-                        <input type="hidden" name="candidate_id" value="<?php echo (int) $suggestion['id']; ?>">
-                        <button type="submit">Połącz</button>
-                    </form>
-                    <form method="post" action="admin-editorial-topics.php">
-                        <input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>">
-                        <input type="hidden" name="action" value="reject_candidate">
-                        <input type="hidden" name="candidate_id" value="<?php echo (int) $suggestion['id']; ?>">
-                        <button type="submit" class="admin-danger-action">Odrzuć sugestię</button>
-                    </form>
-                </div>
-            </article>
-        <?php endforeach; ?>
-    </div>
-
     <nav class="editorial-filters" aria-label="Filtr tematów">
         <a href="admin-editorial-topics.php?filter=active<?php echo $visibilityQuery; ?>"<?php echo $topicFilter === 'active' ? ' class="is-active" aria-current="page"' : ''; ?>>Aktywne</a>
         <a href="admin-editorial-topics.php?filter=profile-rejected<?php echo $visibilityQuery; ?>"<?php echo $topicFilter === 'profile-rejected' ? ' class="is-active" aria-current="page"' : ''; ?>>Odrzucone przy zmianie profilu</a>
@@ -247,7 +211,7 @@ admin_page_open('Grupowanie tematów', 'topics');
         <label for="topic-search">Szukaj</label><input id="topic-search" type="search" placeholder="ID, tytuł lub źródło">
         <div class="topic-visibility-filters" role="group" aria-label="Widoczność kolejek tematów">
             <input class="topic-filter-checkbox" id="topic-show-ready" type="checkbox"<?php echo $showReady ? ' checked' : ''; ?>><label for="topic-show-ready">Pokaż gotowe</label>
-            <input class="topic-filter-checkbox" id="topic-show-action" type="checkbox"<?php echo $showAction ? ' checked' : ''; ?>><label for="topic-show-action">Pokaż wymagające akcji</label>
+            <input class="topic-filter-checkbox" id="topic-show-action" type="checkbox"<?php echo $showAction ? ' checked' : ''; ?>><label for="topic-show-action">Pokaż wymagające uwagi</label>
         </div>
     </nav>
 
@@ -355,7 +319,7 @@ admin_page_open('Grupowanie tematów', 'topics');
                     </details>
                 <?php endif; ?>
                 <details class="topic-source-tools">
-                    <summary>Źródła, łączenie i ręczne rozdzielanie</summary>
+                    <summary>Źródła i ręczne rozdzielanie</summary>
                     <div class="topic-source-tools__content">
                     <ul>
                         <?php foreach ($items as $item): ?>
@@ -375,17 +339,6 @@ admin_page_open('Grupowanie tematów', 'topics');
                             </li>
                         <?php endforeach; ?>
                     </ul>
-                    <form class="topic-merge-form" method="post" action="admin-editorial-topics.php">
-                        <input type="hidden" name="return_filter" value="<?php echo escape_html($topicFilter); ?>"><input type="hidden" name="return_topic_id" value="<?php echo (int) $topic['id']; ?>"><input type="hidden" name="return_show_ready" value="<?php echo $showReady ? '1' : '0'; ?>"><input type="hidden" name="return_show_action" value="<?php echo $showAction ? '1' : '0'; ?>">
-                        <input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>">
-                        <input type="hidden" name="action" value="merge_topics">
-                        <input type="hidden" name="source_topic_id" value="<?php echo (int) $topic['id']; ?>">
-                        <label for="target-<?php echo (int) $topic['id']; ?>">Połącz cały temat z ID:</label>
-                        <div class="editorial-action-row">
-                            <input id="target-<?php echo (int) $topic['id']; ?>" type="number" name="target_topic_id" min="1" required>
-                            <button type="submit">Połącz ręcznie</button>
-                        </div>
-                    </form>
                     </div>
                 </details>
                 <form class="topic-trash-form" method="post" action="admin-editorial-topics.php">
