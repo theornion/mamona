@@ -224,6 +224,36 @@ function article_image_contextual_queries(array $plannedImage, int $budget = 8):
     return $queries;
 }
 
+/**
+ * Keep the subject-bearing start of an over-specific provider query available
+ * after the literal query has failed. This is still a direct-search attempt:
+ * it neither changes the slot relationship policy nor accepts a candidate
+ * without the normal legal and Vision gates.
+ */
+function article_image_direct_query_recovery_variants(array $queries, int $limit = 2): array
+{
+    $variants = [];
+    foreach ($queries as $query) {
+        $words = preg_split('/\s+/', trim(preg_replace('/\s+/', ' ', (string) $query) ?? '')) ?: [];
+        if (count($words) >= 5 && mb_strtolower((string) ($words[0] ?? ''), 'UTF-8') === 'human') {
+            $variant = trim(implode(' ', array_slice($words, 0, 3)));
+            if ($variant !== '') $variants[mb_strtolower($variant)] = $variant;
+        }
+    }
+    if (count($variants) >= max(1, $limit)) return array_slice(array_values($variants), 0, $limit);
+    foreach ($queries as $query) {
+        $query = trim(preg_replace('/\s+/', ' ', (string) $query) ?? '');
+        $words = preg_split('/\s+/', $query) ?: [];
+        if (count($words) < 5) continue;
+        $length = max(3, min(4, count($words) - 3));
+        $variant = trim(implode(' ', array_slice($words, 0, $length)));
+        if ($variant === '' || preg_match('/\b(?:of|in|for|and|or|the|a|an)\b/iu', $variant) === 1) continue;
+        $variants[mb_strtolower($variant)] = $variant;
+        if (count($variants) >= max(1, $limit)) return array_values($variants);
+    }
+    return array_values($variants);
+}
+
 /** P05: direct acquisition must not silently broaden into related-image recovery. */
 function article_image_direct_queries(array $plannedImage, ?int $budget = null): array
 {
@@ -231,6 +261,8 @@ function article_image_direct_queries(array $plannedImage, ?int $budget = null):
         static fn ($query): string => trim((string) $query),
         (array) ($plannedImage['search_queries'] ?? [])
     ))));
+    $recoveryVariants = article_image_direct_query_recovery_variants($queries);
+    foreach ($recoveryVariants as $variant) $queries[] = $variant;
     $budget = max($budget ?? (int) app_config('source_image_query_budget_per_slot'), count($queries));
     $intent = trim((string) ($plannedImage['expected_content'] ?? $plannedImage['visual_intent'] ?? ''));
     if ($intent !== '') $queries[] = $intent;
@@ -332,6 +364,9 @@ function article_image_candidate_score(array $candidate, array $plannedImage, st
     $score = $relationScore === false ? 0 : (500 - ($relationScore * 70));
     $score += min(160, (int) floor(min((int) ($candidate['width'] ?? 0), 3200) / 20));
     $score += source_image_candidate_matches_query($candidate, $query, 1) ? 250 : 0;
+    // Provider query order is only a retrieval hint. The candidate's own
+    // title and source identity must dominate before a scarce Vision call.
+    $score += article_image_semantic_gate_score($candidate, $plannedImage) * 4;
     $providerWeight = [
         'smithsonian' => 320, 'europeana' => 300, 'eso' => 300, 'nasa' => 290,
         'usgs' => 290, 'nci' => 290, 'wikimedia' => 190, 'openverse' => 170,
@@ -732,7 +767,7 @@ function search_wikimedia_commons_images(string $query, ?callable $transport = n
 {
     $transport ??= 'source_image_json_transport';
     $url = 'https://commons.wikimedia.org/w/api.php?action=query&generator=search'
-        . '&gsrnamespace=6&gsrlimit=20&prop=imageinfo&iiprop=url%7Csize%7Cextmetadata'
+        . '&gsrnamespace=6&gsrlimit=20&prop=imageinfo&iiprop=url%7Csize%7Cmime%7Cextmetadata'
         . '&iiurlwidth=1600&format=json&origin=*&gsrsearch=' . rawurlencode($query);
     $response = $transport($url);
     $results = [];
@@ -742,6 +777,8 @@ function search_wikimedia_commons_images(string $query, ?callable $transport = n
         $value = static fn (string $key): string => trim(strip_tags((string) ($meta[$key]['value'] ?? '')));
         $fileUrl = (string) ($info['url'] ?? '');
         $pageUrl = (string) ($info['descriptionurl'] ?? '');
+        $mime = strtolower(trim((string) ($info['mime'] ?? '')));
+        if ($mime !== '' && !in_array($mime, ['image/jpeg','image/png','image/webp','image/tiff','image/x-tiff'], true)) continue;
         $licenseUrl = $value('LicenseUrl');
         $author = $value('Artist') ?: $value('Credit');
         $license = $value('LicenseShortName') ?: $value('UsageTerms');
@@ -756,7 +793,7 @@ function search_wikimedia_commons_images(string $query, ?callable $transport = n
             continue;
         }
         try {
-            $results[] = validate_source_image_candidate([
+            $candidate = [
                 'title' => (string) ($page['title'] ?? ''),
                 'source_page_url' => $pageUrl,
                 'source_file_url' => $fileUrl,
@@ -771,7 +808,9 @@ function search_wikimedia_commons_images(string $query, ?callable $transport = n
                 'chosen_query' => $query,
                 'topic_role' => 'candidate',
                 ...$riskFlags,
-            ]);
+            ];
+            if (source_image_candidate_hard_reject_reason($candidate, ['role' => 'inline']) !== null) continue;
+            $results[] = validate_source_image_candidate($candidate);
         } catch (InvalidArgumentException) {
             continue;
         }
@@ -977,10 +1016,11 @@ function search_nasa_images(string $query, ?callable $transport = null): array
 function source_image_search_cached(string $provider, string $query, ?callable $transport, callable $loader): array
 {
     if ($transport !== null) return $loader();
-    $cached = image_provider_cache_get($provider, $query);
+    $cacheQuery = $provider === 'wikimedia' ? 'raster-filter-v3 ' . $query : $query;
+    $cached = image_provider_cache_get($provider, $cacheQuery);
     if ($cached !== null) return $cached;
     $results = $loader();
-    if ($results !== []) image_provider_cache_put($provider, $query, $results);
+    if ($results !== []) image_provider_cache_put($provider, $cacheQuery, $results);
     return $results;
 }
 
@@ -1024,10 +1064,9 @@ function article_image_semantic_gate_score(array $candidate, array $plannedImage
 {
     $title = mb_strtolower((string) ($candidate['title'] ?? ''));
     $sourcePath = mb_strtolower(rawurldecode((string) ($candidate['source_page_url'] ?? '')));
-    // `chosen_query` is provider-supplied search provenance for this exact result.
-    // It lets multilingual provider titles pass the deterministic prefilter while
-    // Gemini Vision remains the final semantic safety gate.
-    $combined = $title . ' ' . $sourcePath . ' ' . (string) ($candidate['chosen_query'] ?? '');
+    // Search provenance remains auditable, but must not make an unrelated
+    // candidate inherit semantic relevance from the query that found it.
+    $combined = $title . ' ' . $sourcePath;
 
     /* Token-based relevance: compare candidate tokens against planned visual_intent + expected_content. */
     $plannedTokens = article_image_semantic_gate_tokenize(implode(' ', [
@@ -2540,6 +2579,12 @@ function article_image_operation_completed(int $postId, string $operationType): 
     return (int) $statement->fetchColumn() > 0;
 }
 
+/** A completed P06 already exhausted its bounded source-backed shortlist; retry the retrieval/replan path instead. */
+function article_image_shortage_recovery_needed(array $coverage, bool $p06Completed): bool
+{
+    return (array) ($coverage['missing_slots'] ?? []) !== [] && !$p06Completed;
+}
+
 /** Count only concrete related recoveries that still target an unfilled slot. */
 function article_image_pending_additive_module_calls(int $postId, array $coverage): int
 {
@@ -2574,15 +2619,16 @@ function article_image_direct_vision_budget_plan(int $postId, ?int $topicId = nu
     $budget = gemini_article_budget_state($postId);
     $missingSlots = count((array) ($coverage['missing_slots'] ?? []));
     $p06Completed = article_image_operation_completed($postId, 'image_recovery');
-    $replanCompleted = article_image_valid_recovery_replan_count($postId, $topicId) > 0;
+    $replanCount = article_image_valid_recovery_replan_count($postId, $topicId);
+    $p06Pending = article_image_shortage_recovery_needed($coverage, $p06Completed);
     return article_image_direct_vision_limit_from_budget(
         (int) ($budget['used_calls'] ?? 0),
-        (int) ($budget['max_calls'] ?? 30),
+        (int) ($budget['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT),
         $missingSlots,
         [
-            'p06_pending' => $missingSlots > 0 && !$p06Completed,
-            'replan_pending' => $missingSlots > 0 && !$replanCompleted,
-            'p07_pending_calls' => article_image_pending_additive_module_calls($postId, $coverage),
+            'p06_pending' => $p06Pending,
+            'replan_pending' => $missingSlots > 0 && $replanCount < ARTICLE_IMAGE_RECOVERY_REPLAN_MAX_ATTEMPTS,
+            'p07_pending_calls' => $p06Pending ? article_image_pending_additive_module_calls($postId, $coverage) : 0,
             'p08_pending' => !article_image_operation_completed($postId, 'layout_plan'),
             'p09_pending' => !article_image_operation_completed($postId, 'final_multimodal_qc'),
         ]
@@ -3354,24 +3400,29 @@ function article_image_shortage_recovery_input(int $postId, int $topicId): array
         'missing_slots' => $missing,
         'expansion_modules' => $modules,
         'research_source_map' => $sourceMap,
-        'remaining_gemini_budget' => max(0, (int) ($budget['max_calls'] ?? 30) - (int) ($budget['used_calls'] ?? 0)),
+        'remaining_gemini_budget' => max(0, (int) ($budget['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT) - (int) ($budget['used_calls'] ?? 0)),
     ];
 }
 
-/** One bounded second look is allowed only while it can still improve coverage without consuming P08/P09 closure. */
+const ARTICLE_IMAGE_RECOVERY_REPLAN_MAX_ATTEMPTS = 2;
+
+/** Two bounded replans are allowed only while they preserve the P08/P09 closure budget. */
 function article_image_recovery_replan_eligibility(array $coverage, array $budget, bool $normalPathsExhausted, int $priorReplans): array
 {
     $floor = (int) ($coverage['publication_visual_floor'] ?? 0);
     $found = count((array) ($coverage['filled_slots'] ?? []));
-    $remaining = max(0, (int) ($budget['max_calls'] ?? 30) - (int) ($budget['used_calls'] ?? 0));
+    $remaining = max(0, (int) ($budget['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT) - (int) ($budget['used_calls'] ?? 0));
     $missing = count((array) ($coverage['missing_slots'] ?? [])) + (int) ($coverage['visual_deficit'] ?? 0);
     $required = max((int) ($coverage['visual_target'] ?? 0), count((array) ($coverage['required_slots'] ?? [])), $found + $missing);
     $closureReserve = 2;
     $safeThreshold = 1 + $closureReserve + ($missing > 0 ? 1 : 0);
-    $eligible = $found < $required && $normalPathsExhausted && $priorReplans === 0 && $remaining >= $safeThreshold;
+    $eligible = $found < $required && $normalPathsExhausted
+        && $priorReplans < ARTICLE_IMAGE_RECOVERY_REPLAN_MAX_ATTEMPTS
+        && $remaining >= $safeThreshold;
     return [
         'eligible'=>$eligible,'found'=>$found,'floor'=>$floor,'required'=>$required,'missing'=>$missing,'remaining_budget'=>$remaining,
-        'safe_recovery_threshold'=>$safeThreshold,'closure_reserve'=>$closureReserve,'max_replans'=>1,
+        'safe_recovery_threshold'=>$safeThreshold,'closure_reserve'=>$closureReserve,
+        'max_replans'=>ARTICLE_IMAGE_RECOVERY_REPLAN_MAX_ATTEMPTS,
         'vision_candidate_limit_per_missing_slot'=>2,
     ];
 }
@@ -3577,7 +3628,7 @@ function article_image_apply_recovery_replan(int $operationId): array
         'status'=>$analysis['valid'] ? 'applied' : ($revised === [] ? 'canonical_fallback' : 'partial_fallback'),
         'revised_slot_ids'=>$revised,
         'validation'=>$analysis,
-        'max_replans'=>1,
+        'max_replans'=>ARTICLE_IMAGE_RECOVERY_REPLAN_MAX_ATTEMPTS,
     ];
 }
 
@@ -3825,7 +3876,13 @@ function article_recovery_protected_closure_calls(string $operationType): int
 {
     // P06 preserves P07 + dedicated final hero Vision + P08/P09. P07 itself
     // preserves the final hero Vision + P08/P09; unused reservations cost zero.
-    return $operationType === 'image_recovery' ? 4 : ($operationType === 'image_recovery_replan' ? 2 : ($operationType === 'additive_module' ? 3 : 0));
+    return match ($operationType) {
+        'image_recovery' => 4,
+        'image_recovery_replan' => 2,
+        'additive_module' => 3,
+        'layout_plan' => 1,
+        default => 0,
+    };
 }
 
 /** Second, operation-bound validation called by generation-service before claim/transport. */
@@ -3841,7 +3898,7 @@ function article_recovery_validate_generation_operation(array $operation): void
     $postId = (int) $input['post_id'];
     $protected = article_recovery_protected_closure_calls($type);
     $budget = gemini_article_budget_state($postId);
-    $remaining = max(0, (int) ($budget['max_calls'] ?? 30) - (int) ($budget['used_calls'] ?? 0));
+    $remaining = max(0, (int) ($budget['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT) - (int) ($budget['used_calls'] ?? 0));
     if ($remaining <= $protected) {
         article_recovery_preflight_fail('recovery_insufficient_closure_budget', 'Recovery would consume the P08/P09 closure floor.');
     }
@@ -3852,7 +3909,9 @@ function article_recovery_validate_generation_operation(array $operation): void
     if ($type === 'image_recovery_replan') {
         article_image_shortage_recovery_preflight($input, true, false);
         $currentCount = article_image_valid_recovery_replan_count($postId, (int) $input['topic_id']);
-        if ($currentCount > 0) article_recovery_preflight_fail('recovery_replan_limit', 'Only one current-contract visual recovery replan is allowed per article.');
+        if ($currentCount >= ARTICLE_IMAGE_RECOVERY_REPLAN_MAX_ATTEMPTS) {
+            article_recovery_preflight_fail('recovery_replan_limit', 'Maximum current-contract visual recovery replans reached for this article.');
+        }
         $policy = article_image_recovery_replan_retry_state(
             $postId, (int) $input['topic_id'], article_image_coverage_state($postId, (int) $input['topic_id']), $budget, true
         );
@@ -4443,6 +4502,27 @@ function validate_article_blocks(array $blocks): void
 
 function article_image_detail_inline_description(array $image): string
 {
+    $assessment = json_decode((string) ($image['multimodal_assessment_json'] ?? '{}'), true);
+    if (!is_array($assessment)) $assessment = [];
+    $visionCaption = trim((string) ($assessment['suggested_caption'] ?? ''));
+    $visionAccepted = (string) ($assessment['decision'] ?? '') === 'accept'
+        && ($assessment['honest_caption_possible'] ?? true) !== false;
+    $candidates = $visionAccepted ? [$visionCaption] : [];
+    $candidates = array_merge($candidates, [
+        trim((string) ($image['caption'] ?? '')),
+        trim((string) ($image['alt'] ?? '')),
+        trim((string) ($assessment['expected_content'] ?? '')),
+        trim((string) ($image['visual_intent'] ?? '')),
+    ]);
+    foreach ($candidates as $candidate) {
+        $normalized = mb_strtolower(trim($candidate));
+        if ($normalized === ''
+            || str_starts_with($normalized, 'szczegółowa ilustracja uzupełniająca tekst artykułu')) {
+            continue;
+        }
+        return $candidate;
+    }
+
     $descriptor = mb_strtolower(implode(' ', [
         (string) ($image['caption'] ?? ''),
         (string) ($image['alt'] ?? ''),
@@ -4568,7 +4648,8 @@ function render_article_image_record(array $image, bool $hero = false): string
         . ($hero ? ' article-illustration--hero' : '')
         . (!empty($presentation['overridden']) ? ' article-illustration--side-overridden' : '')
         . (!empty($presentation['has_transparency']) ? ' article-illustration--transparent' : '')
-        . ($detailInline ? ' article-illustration--detail-inline' : '') . '"'
+        . ($detailInline ? ' article-illustration--detail-inline' : '')
+        . (!empty($presentation['is_tall']) ? ' article-illustration--portrait' : '') . '"'
         . (!empty($presentation['overridden']) ? ' data-requested-layout="' . htmlspecialchars((string) $presentation['requested_layout'], ENT_QUOTES, 'UTF-8') . '"' : '') . '>';
     $imageTag = '<img src="../' . htmlspecialchars($path, ENT_QUOTES, 'UTF-8') . '" alt="' . $alt
         . '" width="' . max(1, (int) ($image['width'] ?? 1))
@@ -4576,7 +4657,7 @@ function render_article_image_record(array $image, bool $hero = false): string
         . '" decoding="async"' . $responsive . $loading . '>';
     if ($detailInline) {
         $zoomLabel = htmlspecialchars('Powiększ ilustrację: ' . (string) ($image['alt'] ?? 'grafika artykułu'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-        $html .= '<div class="article-image-media-card' . (!empty($presentation['requires_neutral_media_card']) ? ' article-image-media-card--neutral' : '') . '"><a class="article-image-zoom" href="../' . htmlspecialchars($path, ENT_QUOTES, 'UTF-8') . '" data-article-detail-zoom data-article-zoom-caption="' . $editorialDescription . '" aria-label="' . $zoomLabel . '">' . $imageTag . '<span class="article-image-zoom__hint" aria-hidden="true">Powiększ</span></a></div>';
+        $html .= '<div class="article-image-media-card' . (!empty($presentation['requires_neutral_media_card']) ? ' article-image-media-card--neutral' : '') . (!empty($presentation['is_tall']) ? ' article-image-media-card--portrait' : '') . '"><a class="article-image-zoom" href="../' . htmlspecialchars($path, ENT_QUOTES, 'UTF-8') . '" data-article-detail-zoom data-article-zoom-caption="' . $editorialDescription . '" aria-label="' . $zoomLabel . '">' . $imageTag . '</a><div class="article-image-zoom__bar" aria-hidden="true">Kliknij, aby powiększyć</div></div>';
     } else {
         $html .= $imageTag;
     }

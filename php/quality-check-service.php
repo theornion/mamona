@@ -1100,8 +1100,8 @@ function assert_post_quality_allows_publication(int $postId): void
         throw new RuntimeException('Publikacja zablokowana: brak pozytywnego finalnego QC multimodalnego.');
     }
     $budget = gemini_article_budget_state($postId);
-    if ((int) ($budget['used_calls'] ?? 0) > 30 || (int) ($budget['max_calls'] ?? 30) > 30) {
-        throw new RuntimeException('Publikacja zablokowana: przekroczono GeminiBudget 30.');
+    if ((int) ($budget['used_calls'] ?? 0) > GEMINI_ARTICLE_CALL_LIMIT || (int) ($budget['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT) > GEMINI_ARTICLE_CALL_LIMIT) {
+        throw new RuntimeException('Publikacja zablokowana: przekroczono GeminiBudget ' . GEMINI_ARTICLE_CALL_LIMIT . '.');
     }
 }
 
@@ -1198,7 +1198,7 @@ function gemini_budget_exhaustion_diagnostics(int $postId): array
     $budget = gemini_article_budget_state($postId);
     $diagnostics['budget'] = [
         'used_calls' => (int) ($budget['used_calls'] ?? 0),
-        'max_calls' => (int) ($budget['max_calls'] ?? 30),
+        'max_calls' => (int) ($budget['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT),
         'convergence_active' => (bool) ($budget['convergence_active'] ?? false),
         'is_exhausted' => (bool) ($budget['is_exhausted'] ?? false),
     ];

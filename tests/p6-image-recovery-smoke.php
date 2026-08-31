@@ -175,12 +175,19 @@ $replanEligibility = article_image_recovery_replan_eligibility([
     'filled_slots'=>[['slot_id'=>'inline-intro']],
     'missing_slots'=>[['slot_id'=>'hero'],['slot_id'=>'inline-1'],['slot_id'=>'inline-2']],
 ], ['used_calls'=>14,'max_calls'=>30], true, 0);
-p6_assert(!empty($replanEligibility['eligible']) && $replanEligibility['max_replans'] === 1,
-    '1/4 coverage with 14/30 budget and exhausted normal paths opens exactly one bounded recovery replan.');
+p6_assert(!empty($replanEligibility['eligible']) && $replanEligibility['max_replans'] === 2,
+    '1/4 coverage with 14/30 budget and exhausted normal paths opens the bounded recovery-replan window.');
+p6_assert(article_image_shortage_recovery_needed(['missing_slots'=>[['slot_id'=>'inline-1']]], false)
+    && !article_image_shortage_recovery_needed(['missing_slots'=>[['slot_id'=>'inline-1']]], true),
+    'A completed P06 is reused instead of spending a duplicate model call before replan.');
+p6_assert(!empty(article_image_recovery_replan_eligibility([
+    'publication_visual_floor'=>3,'filled_slots'=>[['slot_id'=>'inline-intro']],
+    'missing_slots'=>[['slot_id'=>'hero'],['slot_id'=>'inline-1'],['slot_id'=>'inline-2']],
+], ['used_calls'=>14,'max_calls'=>30], true, 1)['eligible']), 'A second recovery replan remains available after source-provider failure.');
 p6_assert(empty(article_image_recovery_replan_eligibility([
     'publication_visual_floor'=>3,'filled_slots'=>[['slot_id'=>'inline-intro']],
     'missing_slots'=>[['slot_id'=>'hero'],['slot_id'=>'inline-1'],['slot_id'=>'inline-2']],
-], ['used_calls'=>14,'max_calls'=>30], true, 1)['eligible']), 'A second recovery replan is blocked deterministically.');
+], ['used_calls'=>14,'max_calls'=>30], true, 2)['eligible']), 'A third recovery replan is blocked deterministically.');
 p6_assert(!empty(article_image_recovery_replan_eligibility([
     'publication_visual_floor'=>3,'filled_slots'=>[['slot_id'=>'a'],['slot_id'=>'b'],['slot_id'=>'c']],
     'missing_slots'=>[['slot_id'=>'d']],
@@ -288,8 +295,13 @@ $afterCurrent = article_image_recovery_replan_retry_state($postId, $topicId, [
     'publication_visual_floor'=>3,'filled_slots'=>[['slot_id'=>'intro']],
     'missing_slots'=>[['slot_id'=>'hero-main'],['slot_id'=>'fact-1']],
 ], ['used_calls'=>14,'max_calls'=>30], true);
-p6_assert(empty($afterCurrent['eligible']) && ($afterCurrent['current_contract_replans'] ?? 0) === 1,
-    'After one valid current-contract replan, another fresh replan is deterministically blocked.');
+p6_assert(!empty($afterCurrent['eligible']) && ($afterCurrent['current_contract_replans'] ?? 0) === 1,
+    'After one valid current-contract replan, one budget-safe retry remains available.');
+p6_assert(empty(article_image_recovery_replan_eligibility([
+    'publication_visual_floor'=>3,'filled_slots'=>[['slot_id'=>'intro']],
+    'missing_slots'=>[['slot_id'=>'hero-main'],['slot_id'=>'fact-1']],
+], ['used_calls'=>27,'max_calls'=>30], true, 1)['eligible']),
+    'The second recovery replan cannot consume the protected P08/P09 closure budget.');
 $originQueries = article_image_direct_queries([
     'search_queries'=>$effectiveInline['search_queries_direct'],
     'query_origin'=>$effectiveInline['query_origin'],

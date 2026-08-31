@@ -53,6 +53,7 @@ const FINAL_MULTIMODAL_QC_MIGRATION = '20260811_048_final_multimodal_qc';
 const ARTICLE_IMAGE_VISION_AUDIT_MIGRATION = '20260811_049_article_image_vision_audit';
 const ARTICLE_IMAGE_REJECTED_REVIEW_MIGRATION = '20260825_050_article_image_rejected_review';
 const TOPIC_GROUPING_CANDIDATES_REMOVAL_MIGRATION = '20260829_051_topic_grouping_candidates_removal';
+const GEMINI_ARTICLE_BUDGET_31_MIGRATION = '20260830_052_gemini_article_budget_31';
 
 function database_table_columns(PDO $database, string $table): array
 {
@@ -1577,9 +1578,9 @@ function run_schema_migrations(PDO $database): void
             $database->exec(
                 'CREATE TABLE IF NOT EXISTS article_generation_budget (' .
                     'article_id INTEGER PRIMARY KEY,' .
-                    'max_calls INTEGER NOT NULL DEFAULT 30,' .
+                    'max_calls INTEGER NOT NULL DEFAULT ' . GEMINI_ARTICLE_CALL_LIMIT . ',' .
                     'used_calls INTEGER NOT NULL DEFAULT 0,' .
-                    'convergence_threshold INTEGER NOT NULL DEFAULT 24,' .
+                    'convergence_threshold INTEGER NOT NULL DEFAULT ' . GEMINI_ARTICLE_CONVERGENCE_THRESHOLD . ',' .
                     'calls_log_json TEXT DEFAULT "[]",' .
                     'is_exhausted INTEGER NOT NULL DEFAULT 0,' .
                     'convergence_active INTEGER NOT NULL DEFAULT 0,' .
@@ -1782,6 +1783,20 @@ function run_schema_migrations(PDO $database): void
         TOPIC_GROUPING_CANDIDATES_REMOVAL_MIGRATION,
         static function (PDO $database): void {
             $database->exec('DROP TABLE IF EXISTS topic_grouping_candidates');
+        }
+    );
+    apply_schema_migration(
+        $database,
+        GEMINI_ARTICLE_BUDGET_31_MIGRATION,
+        static function (PDO $database): void {
+            $database->prepare(
+                'UPDATE article_generation_budget
+                 SET max_calls=:max_calls,
+                     is_exhausted=CASE WHEN used_calls >= :max_calls THEN 1 ELSE 0 END,
+                     convergence_active=CASE WHEN used_calls >= convergence_threshold THEN 1 ELSE 0 END,
+                     updated_at=CURRENT_TIMESTAMP
+                 WHERE max_calls=30'
+            )->execute([':max_calls' => GEMINI_ARTICLE_CALL_LIMIT]);
         }
     );
 }

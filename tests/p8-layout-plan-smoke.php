@@ -87,16 +87,82 @@ p8_assert(str_contains($sideHtml, 'article-illustration--detail-inline article-i
     && str_contains($sideHtml, 'data-requested-layout="right"')
     && substr_count($sideHtml, 'article-layout__image--side-right') === 2,
     'detailed diagram keeps the right-side text wrap while its figure layout is safely overridden');
+$rightBlocks = [['type'=>'section','id'=>'lead','variant'=>'default','blocks'=>[
+    ['type'=>'heading','level'=>2,'text'=>'Lead'],
+    ['type'=>'paragraph','text'=>str_repeat('Długi akapit obok obrazu. ', 80)],
+]]];
+$rightPlan = [...$standard, 'image_placements'=>[['image_id'=>105,'placement'=>'before_section']]];
+$rightHtml = render_article_blocks_with_layout($rightBlocks, [$sidePhoto], $rightPlan, [], $sideAudit);
+p8_assert(str_contains($rightHtml, 'article-layout__image--side-right')
+    && strpos($rightHtml, 'article-layout__image--side-right') < strpos($rightHtml, '<section id="lead"')
+    && str_contains($rightHtml, 'Długi akapit obok obrazu.'),
+    'right side image keeps the complete section body in normal flow after its heading');
+$leftPhoto = $sidePhoto;
+$leftPhoto['id'] = 107;
+$leftPhoto['layout'] = 'left';
+$leftBlocks = [['type'=>'section','id'=>'lead','variant'=>'default','blocks'=>[
+    ['type'=>'heading','level'=>2,'text'=>'Lead'],
+    ['type'=>'paragraph','text'=>str_repeat('Długi akapit obok obrazu. ', 80)],
+]]];
+$leftPlan = [...$standard, 'image_placements'=>[['image_id'=>107,'placement'=>'before_section']]];
+$leftHtml = render_article_blocks_with_layout($leftBlocks, [$leftPhoto], $leftPlan, [], $sideAudit);
+p8_assert(str_contains($leftHtml, 'article-layout__image--side-left')
+    && strpos($leftHtml, 'article-layout__image--side-left') < strpos($leftHtml, '<section id="lead"')
+    && str_contains($leftHtml, 'Długi akapit obok obrazu.'),
+    'left side image keeps the complete section body in normal flow after its heading');
+$frozenIntroBody = 'Treść zamrożonego draftu pozostaje widoczna po kompozycji z ilustracją.';
+$frozenBlocks = article_draft_content_blocks(['sections'=>[[
+    'section_id'=>'intro', 'topic_role'=>'A', 'content_type'=>'prose',
+    'heading'=>'Czym jest zwężenie zastawki aortalnej?', 'body'=>$frozenIntroBody,
+]]], ['intro'=>105]);
+$frozenHtml = render_article_blocks_with_layout($frozenBlocks, [$sidePhoto], $rightPlan, [], $sideAudit);
+p8_assert(str_contains($frozenHtml, 'Czym jest zwężenie zastawki aortalnej?')
+    && str_contains($frozenHtml, $frozenIntroBody),
+    'frozen section body survives image placement and final composition');
+$semanticDiagram = $diagram;
+$semanticDiagram['multimodal_assessment_json'] = generation_json([
+    'decision'=>'accept', 'honest_caption_possible'=>true,
+    'suggested_caption'=>'Schemat pokazujący zależności między badanymi elementami układu.',
+    'visual_type'=>'diagram', 'detail_density'=>'high', 'contains_readable_text'=>true, 'safe_for_side_layout'=>false,
+]);
+$semanticHtml = render_article_image_record($semanticDiagram);
+p8_assert(str_contains($semanticHtml, 'Schemat pokazujący zależności między badanymi elementami układu.')
+    && !str_contains($semanticHtml, 'Szczegółowa ilustracja uzupełniająca tekst artykułu')
+    && str_contains($semanticHtml, 'article-image-zoom__bar')
+    && str_contains($semanticHtml, 'Kliknij, aby powiększyć')
+    && !str_contains($semanticHtml, 'article-image-zoom__hint')
+    && str_contains($semanticHtml, 'data-article-detail-zoom'),
+    'accepted Vision caption is semantic and the below-image zoom bar preserves the lightbox link');
+$lightboxSource = file_get_contents(app_path('assets/js/article-detail-lightbox.js')) ?: '';
+p8_assert(str_contains($lightboxSource, "closest('[data-article-detail-zoom]')")
+    && str_contains($lightboxSource, 'event.preventDefault()')
+    && str_contains($lightboxSource, 'image.src = trigger.href'),
+    'the existing lightbox continues to open from the clickable image anchor');
+$portrait = $semanticDiagram;
+$portrait['id'] = 108;
+$portrait['width'] = 900;
+$portrait['height'] = 1600;
+$portraitHtml = render_article_image_record($portrait);
+p8_assert(str_contains($portraitHtml, 'article-illustration--portrait')
+    && str_contains($portraitHtml, 'article-image-media-card--portrait'),
+    'vertical detail image receives an orientation-aware wrapper class');
 $themeCss = file_get_contents(app_path('assets/css/public-theme.css')) ?: '';
 p8_assert(source_png_has_alpha_channel(hex2bin('89504e470d0a1a0a0000000d494844520000000100000001080600000000')),
     'PNG alpha-channel fallback works when the stored transparency flag predates detection');
 p8_assert(str_contains($themeCss, '.article-layout__section') && str_contains($themeCss, 'display: flow-root'),
     'layout section clears its float context before the next section');
+p8_assert(!str_contains($themeCss, ':where(.news-feed-card,.article-section,.ad-slot)')
+    && str_contains($themeCss, '.article-section {') && str_contains($themeCss, 'contain: style;'),
+    'article section is not layout-contained, so prose resumes full width below either side image');
 p8_assert(str_contains($themeCss, 'width: min(50%, 34rem)') && str_contains($themeCss, 'float: none !important;')
     && str_contains($themeCss, 'width: 100% !important;'),
     'side image is about half-width on desktop and collapses to full-width without float on mobile');
 p8_assert(str_contains($themeCss, 'article-image-media-card--neutral') && str_contains($themeCss, 'rgba(255, 255, 255, 0.5)'),
     'transparent PNG receives a readable 50% white media mat');
+p8_assert(str_contains($themeCss, '.article-image-zoom__bar')
+    && str_contains($themeCss, 'article-illustration--detail-inline.article-illustration--portrait')
+    && str_contains($themeCss, 'max-height: min(68vh, 42rem)'),
+    'zoom instruction is below the image and portrait media uses constrained natural proportions');
 $longSentences = [];
 for ($index = 1; $index <= 24; $index++) {
     $longSentences[] = 'Zdanie ' . $index . ' zachowuje dokładne brzmienie źródłowego tekstu i opisuje kolejny element technicznego wyjaśnienia bez dodawania nowych twierdzeń.';

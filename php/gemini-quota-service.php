@@ -2,6 +2,9 @@
 
 declare(strict_types=1);
 
+defined('GEMINI_ARTICLE_CALL_LIMIT') || define('GEMINI_ARTICLE_CALL_LIMIT', 31);
+defined('GEMINI_ARTICLE_CONVERGENCE_THRESHOLD') || define('GEMINI_ARTICLE_CONVERGENCE_THRESHOLD', 24);
+
 final class GeminiQuotaWaitException extends RuntimeException
 {
     public function __construct(
@@ -27,7 +30,7 @@ final class GeminiArticleBudgetException extends RuntimeException
     public function __construct(
         public readonly int $articleId,
         public readonly int $usedCalls,
-        public readonly int $maxCalls = 30
+        public readonly int $maxCalls = GEMINI_ARTICLE_CALL_LIMIT
     ) {
         parent::__construct(sprintf(
             'Budzet %d wywołań Gemini dla artykułu %d został wyczerpany (użyto %d); przełączam na manual_review.',
@@ -224,7 +227,7 @@ function gemini_article_budget_ensure(PDO $database, int $articleId): array
 {
     $database->prepare(
         'INSERT OR IGNORE INTO article_generation_budget (article_id, max_calls, used_calls, convergence_threshold, calls_log_json, is_exhausted, convergence_active, created_at, updated_at)
-         VALUES (:id, 30, 0, 24, "[]", 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
+         VALUES (:id, ' . GEMINI_ARTICLE_CALL_LIMIT . ', 0, ' . GEMINI_ARTICLE_CONVERGENCE_THRESHOLD . ', "[]", 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
     )->execute([':id' => $articleId]);
     $stmt = $database->prepare('SELECT * FROM article_generation_budget WHERE article_id=:id');
     $stmt->execute([':id' => $articleId]);
@@ -250,7 +253,7 @@ function gemini_article_budget_claim(PDO $database, int $articleId, string $oper
     try {
         $row = gemini_article_budget_ensure($database, $articleId);
         $used = (int) ($row['used_calls'] ?? 0);
-        $max = (int) ($row['max_calls'] ?? 30);
+        $max = (int) ($row['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT);
         $closureStart = max(0, $max - 3);
         if ($used >= $max || $used + max(0, $protectedClosureCalls) >= $max || ($used >= $closureStart && !gemini_article_budget_is_closure_safe($operationType))) {
             throw new GeminiArticleBudgetException($articleId, $used, $max);
@@ -262,7 +265,7 @@ function gemini_article_budget_claim(PDO $database, int $articleId, string $oper
             'stage' => $stage, 'attempt' => $attempt, 'status' => 'reserved',
             'claim_token' => $claimToken, 'timestamp' => gmdate('Y-m-d H:i:s'),
         ];
-        $threshold = (int) ($row['convergence_threshold'] ?? 24);
+        $threshold = (int) ($row['convergence_threshold'] ?? GEMINI_ARTICLE_CONVERGENCE_THRESHOLD);
         $database->prepare('UPDATE article_generation_budget SET used_calls=:used,calls_log_json=:log,convergence_active=:conv,is_exhausted=:exh,updated_at=CURRENT_TIMESTAMP WHERE article_id=:id')
             ->execute([':used'=>$next, ':log'=>json_encode($log, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), ':conv'=>$next >= $threshold ? 1 : 0, ':exh'=>$next >= $max ? 1 : 0, ':id'=>$articleId]);
         if ($ownsTransaction) $database->exec('COMMIT');
@@ -296,8 +299,8 @@ function gemini_article_budget_reconcile_claim(PDO $database, int $articleId, st
         $log[$index]['status'] = $release ? 'released_no_response' : $status;
         $log[$index]['reconciled_at'] = gmdate('Y-m-d H:i:s');
         $used = max(0, (int) ($row['used_calls'] ?? 0) - ($release ? 1 : 0));
-        $max = (int) ($row['max_calls'] ?? 30);
-        $threshold = (int) ($row['convergence_threshold'] ?? 24);
+        $max = (int) ($row['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT);
+        $threshold = (int) ($row['convergence_threshold'] ?? GEMINI_ARTICLE_CONVERGENCE_THRESHOLD);
         $database->prepare('UPDATE article_generation_budget SET used_calls=:used,calls_log_json=:log,convergence_active=:conv,is_exhausted=:exh,updated_at=CURRENT_TIMESTAMP WHERE article_id=:id')
             ->execute([':used'=>$used, ':log'=>json_encode(array_values($log), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), ':conv'=>$used >= $threshold ? 1 : 0, ':exh'=>$used >= $max ? 1 : 0, ':id'=>$articleId]);
         if ($ownsTransaction) $database->exec('COMMIT');
@@ -331,7 +334,7 @@ function gemini_article_budget_admit(PDO $database, int $articleId, string $oper
     }
     $row = gemini_article_budget_ensure($database, $articleId);
     $used = (int) ($row['used_calls'] ?? 0);
-    $max = (int) ($row['max_calls'] ?? 30);
+    $max = (int) ($row['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT);
     if ($used >= $max) {
         throw new GeminiArticleBudgetException($articleId, $used, $max);
     }
@@ -352,8 +355,8 @@ function gemini_article_budget_increment(PDO $database, int $articleId, string $
         return;
     }
     $used = (int) ($row['used_calls'] ?? 0);
-    $max = (int) ($row['max_calls'] ?? 30);
-    $threshold = (int) ($row['convergence_threshold'] ?? 24);
+    $max = (int) ($row['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT);
+    $threshold = (int) ($row['convergence_threshold'] ?? GEMINI_ARTICLE_CONVERGENCE_THRESHOLD);
     $log = json_decode((string) ($row['calls_log_json'] ?? '[]'), true) ?: [];
 
     if ($used >= $max) {

@@ -39,6 +39,52 @@ image_pipeline_assert(article_inline_image_target_count(3000) === 3, 'Dla 3000 z
 image_pipeline_assert(article_inline_image_target_count(3200) === 3, 'Dla 3200 znaków oczekiwano 3 ilustracji inline i hero osobno.');
 image_pipeline_assert(article_inline_image_target_count(4000) === 3, 'Dla 4000 znaków obowiązuje limit 3 ilustracji inline.');
 image_pipeline_assert(article_inline_image_target_count(5000) === 3, 'Dla 5000 znaków obowiązuje limit 3 ilustracji inline.');
+image_pipeline_assert(
+    article_image_direct_query_recovery_variants([
+        'Y chromosome gene expression aortic valve stenosis',
+        'sex-specific gene expression heart valve disease',
+    ]) === ['Y chromosome gene expression', 'sex-specific gene expression'],
+    'Direct query recovery must retain bounded subject-bearing semantic variants.'
+);
+image_pipeline_assert(
+    article_image_direct_query_recovery_variants(['human Y chromosome gene map diagram']) === ['human Y chromosome'],
+    'Direct query recovery must preserve an explicit human chromosome subject.'
+);
+image_pipeline_assert(
+    article_image_semantic_gate_score([
+        'title' => 'Unrelated archival image',
+        'source_page_url' => 'https://commons.wikimedia.org/wiki/File:Unrelated.png',
+        'chosen_query' => 'Y chromosome gene expression',
+    ], [
+        'visual_intent' => 'Y chromosome gene expression',
+        'expected_content' => 'Y chromosome gene expression',
+        'search_queries' => ['Y chromosome gene expression'],
+    ]) === 0,
+    'Search provenance must not inflate an unrelated candidate semantic score.'
+);
+$rankingPlan = [
+    'role' => 'inline',
+    'visual_intent' => 'Sex-specific gene expression network',
+    'expected_content' => 'Sex-specific gene expression network',
+    'search_queries' => ['Y chromosome gene expression', 'sex-specific gene expression'],
+];
+$genericExpressionCandidate = [
+    'title' => 'Genetic loci and transcription differences in the brain',
+    'source_page_url' => 'https://commons.wikimedia.org/wiki/File:Generic-expression.png',
+    'source_file_url' => 'https://upload.wikimedia.org/generic-expression.png',
+    'provider' => 'openverse', 'license' => 'CC BY 4.0', 'width' => 1600, 'height' => 900,
+];
+$specificExpressionCandidate = [
+    'title' => 'Sex gene networks',
+    'source_page_url' => 'https://commons.wikimedia.org/wiki/File:Sex-gene-networks.png',
+    'source_file_url' => 'https://upload.wikimedia.org/sex-gene-networks.png',
+    'provider' => 'wikimedia', 'license' => 'CC BY 4.0', 'width' => 1600, 'height' => 900,
+];
+image_pipeline_assert(
+    article_image_candidate_score($specificExpressionCandidate, $rankingPlan, 'sex-specific gene expression', 'exact_subject')
+        > article_image_candidate_score($genericExpressionCandidate, $rankingPlan, 'Y chromosome gene expression', 'exact_subject'),
+    'Candidate ranking must prioritize direct semantic evidence over an earlier generic provider hit.'
+);
 image_pipeline_assert(article_image_license_is_auto_safe('CC0 1.0'), 'CC0 nie zostało zaakceptowane.');
 image_pipeline_assert(article_image_license_is_auto_safe('CC BY 4.0'), 'CC BY nie zostało zaakceptowane.');
 image_pipeline_assert(article_image_license_is_auto_safe('by-4.0'), 'Zapis licencji CC BY z Openverse nie został zaakceptowany.');
@@ -293,6 +339,21 @@ image_pipeline_expect(
 $wikimediaFixture = [
     'query' => [
         'pages' => [[
+            'pageid' => 122,
+            'title' => 'File:Archiwalny_raport.pdf',
+            'imageinfo' => [[
+                'url' => 'https://upload.wikimedia.org/example.pdf',
+                'descriptionurl' => 'https://commons.wikimedia.org/wiki/File:Example.pdf',
+                'mime' => 'application/pdf',
+                'width' => 1600,
+                'height' => 900,
+                'extmetadata' => [
+                    'Artist' => ['value' => 'Fixture Author'],
+                    'LicenseShortName' => ['value' => 'CC BY 4.0'],
+                    'LicenseUrl' => ['value' => 'https://creativecommons.org/licenses/by/4.0/'],
+                ],
+            ]],
+        ], [
             'pageid' => 123,
             'title' => 'File:Artykuł_popularnonaukowy_nauka.jpg',
             'imageinfo' => [[
@@ -310,11 +371,17 @@ $wikimediaFixture = [
         ]],
     ],
 ];
+$wikimediaRequest = '';
 $results = search_wikimedia_commons_images(
     'fixture query',
-    static fn (string $url): array => $wikimediaFixture
+    static function (string $url) use (&$wikimediaRequest, $wikimediaFixture): array {
+        $wikimediaRequest = $url;
+        return $wikimediaFixture;
+    }
 );
 image_pipeline_assert(count($results) === 1 && $results[0]['status'] === 'selected', 'Fixture Wikimedia nie została znormalizowana.');
+image_pipeline_assert(!str_contains($wikimediaRequest, 'filetype%3Abitmap'), 'Wikimedia search must not rely on an unsupported bitmap search operator.');
+image_pipeline_assert(!str_contains($wikimediaRequest, 'Example.pdf'), 'Wikimedia fixture must filter documents locally before caching.');
 $visionMock = static function (array $candidate, array $plannedImage, string $articleContext): array {
     return [
         'semantic_relevance' => 9,

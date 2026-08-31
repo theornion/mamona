@@ -1907,7 +1907,9 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
                 (int) $item['topic_id']
             );
             $recovery = null;
-            if (((int) $imageSummary['missing'] + (int) $imageSummary['manual_review']) > 0
+            $coverageBeforeRecovery = article_image_coverage_state($postId, (int) $item['topic_id']);
+            $p06Completed = article_image_operation_completed($postId, 'image_recovery');
+            if (article_image_shortage_recovery_needed($coverageBeforeRecovery, $p06Completed)
                 && find_narrative_plan_for_post($postId, (int) $item['topic_id']) !== null) {
                 try {
                     $recovery = article_image_execute_shortage_recovery(
@@ -1929,6 +1931,8 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
                     ];
                     generation_batch_audit((int) $item['batch_id'], $itemId, 'recovery_preflight_refused', 'worker', $recovery);
                 }
+            } elseif (!empty($coverageBeforeRecovery['missing_slots']) && $p06Completed) {
+                $recovery = ['status'=>'reused_completed_p06','provider_calls'=>0];
             }
             if (generation_batch_is_autonomous($item)) {
                 repair_report_append($itemId, 'image_plan', 'source_image_waterfall', ['summary' => $imageSummary,
@@ -1947,7 +1951,7 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
                     execute_generation_operation($replanOperationId, $transport);
                     $replan = article_image_apply_recovery_replan($replanOperationId);
                     $afterReplanBudget = gemini_article_budget_state($postId);
-                    $remainingAfterReplan = max(0, (int) ($afterReplanBudget['max_calls'] ?? 30) - (int) ($afterReplanBudget['used_calls'] ?? 0));
+                    $remainingAfterReplan = max(0, (int) ($afterReplanBudget['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT) - (int) ($afterReplanBudget['used_calls'] ?? 0));
                     $visionLimit = min(
                         2 * count((array) ($coverage['missing_slots'] ?? [])),
                         max(0, $remainingAfterReplan - (int) $replanEligibility['closure_reserve'])
@@ -1967,14 +1971,14 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
             $wwClosure = ['revalidation'=>null,'retrieval'=>null];
             if (empty($coverage['coverage_complete'])) {
                 $closureReserve = article_layout_reusable_operation_id($postId) !== null ? 1 : 2;
-                $remainingForImages = max(0, (int) (gemini_article_budget_state($postId)['max_calls'] ?? 30)
+                $remainingForImages = max(0, (int) (gemini_article_budget_state($postId)['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT)
                     - (int) (gemini_article_budget_state($postId)['used_calls'] ?? 0) - $closureReserve);
                 if ($remainingForImages > 0) {
                     $wwClosure['revalidation'] = article_image_revalidate_downloaded_contextual_candidates(
                         $postId, (int) $item['topic_id'], min(count((array) ($coverage['missing_slots'] ?? [])), $remainingForImages)
                     );
                     $coverage = article_image_coverage_state($postId, (int) $item['topic_id']);
-                    $remainingForImages = max(0, (int) (gemini_article_budget_state($postId)['max_calls'] ?? 30)
+                    $remainingForImages = max(0, (int) (gemini_article_budget_state($postId)['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT)
                         - (int) (gemini_article_budget_state($postId)['used_calls'] ?? 0) - $closureReserve);
                     if ($remainingForImages > 0 && empty($coverage['coverage_complete'])) {
                         $wwClosure['retrieval'] = fulfill_article_source_images(
@@ -2051,17 +2055,17 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
         $classification = generation_error_classification($exception);
         $budgetNow = gemini_article_budget_state((int) $item['post_id']);
         $budgetExhausted = (bool) ($budgetNow['is_exhausted'] ?? false)
-            || (int) ($budgetNow['used_calls'] ?? 0) >= (int) ($budgetNow['max_calls'] ?? 30);
+            || (int) ($budgetNow['used_calls'] ?? 0) >= (int) ($budgetNow['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT);
         if (generation_batch_is_autonomous($item)
             && ($exception instanceof GeminiArticleBudgetException || $budgetExhausted)) {
             $budgetDiagnostics = gemini_budget_exhaustion_diagnostics((int) $item['post_id']);
             generation_batch_update_item($itemId, [
                 'status'=>'manual_review','stage'=>$stage,'outcome'=>'budget_exhausted','progress_percent'=>90,
-                'wait_reason'=>'Budżet 30 wywołań Gemini wyczerpany; artykuł wymaga przeglądu redakcyjnego.',
+                'wait_reason'=>'Budżet ' . GEMINI_ARTICLE_CALL_LIMIT . ' wywołań Gemini wyczerpany; artykuł wymaga przeglądu redakcyjnego.',
                 'available_at'=>gmdate('Y-m-d H:i:s'),'next_retry_at'=>null,'quota_dimension'=>'','quota_model'=>'','completed_at'=>null,
             ]);
             repair_report_append($itemId, 'final_package', 'manual_review', [
-                'live_requests_used'=>(int) ($budgetNow['used_calls'] ?? 0),'request_cap'=>(int) ($budgetNow['max_calls'] ?? 30),'publication_recommended'=>false,
+                'live_requests_used'=>(int) ($budgetNow['used_calls'] ?? 0),'request_cap'=>(int) ($budgetNow['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT),'publication_recommended'=>false,
                 'stage_at_exhaustion'=>$stage,'convergence_active'=>(bool)($item['convergence_active']??false),
                 'trigger_error'=>$message,
                 'budget'=>$budgetDiagnostics['budget'],
@@ -2069,7 +2073,7 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
                 'images'=>$budgetDiagnostics['images'],
             ]);
             generation_batch_audit((int)$item['batch_id'],$itemId,'gemini_article_budget_exhausted','worker',[
-                'live_requests_used'=>(int) ($budgetNow['used_calls'] ?? 0),'request_cap'=>(int) ($budgetNow['max_calls'] ?? 30),'next'=>'manual_review',
+                'live_requests_used'=>(int) ($budgetNow['used_calls'] ?? 0),'request_cap'=>(int) ($budgetNow['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT),'next'=>'manual_review',
                 'stage_at_exhaustion'=>$stage,
                 'trigger_error'=>$message,
                 'convergence_active'=>(bool)($item['convergence_active']??false),

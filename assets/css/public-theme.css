@@ -787,18 +787,28 @@ body:not(.admin-page) .article-image-zoom img {
     object-fit: contain;
 }
 
-body:not(.admin-page) .article-image-zoom__hint {
-    position: absolute;
-    right: 0.65rem;
-    bottom: 0.65rem;
-    padding: 0.28rem 0.52rem;
-    border-radius: 999px;
-    background: rgba(4, 12, 26, 0.82);
-    color: #f4fbff;
+body:not(.admin-page) .article-image-zoom__bar {
+    padding: 0.42rem 0.65rem;
+    border-top: 1px solid rgba(145, 205, 227, 0.18);
+    background: rgba(4, 12, 26, 0.5);
+    color: #b9d7e4;
     font-family: "Cascadia Code", Consolas, monospace;
     font-size: 0.67rem;
     letter-spacing: 0.04em;
+    text-align: center;
     text-transform: uppercase;
+}
+
+body:not(.admin-page) .article-illustration--detail-inline.article-illustration--portrait {
+    width: min(100%, 26rem);
+    margin-inline: auto;
+}
+
+body:not(.admin-page) .article-illustration--detail-inline.article-illustration--portrait .article-image-zoom img {
+    width: auto;
+    max-width: 100%;
+    max-height: min(68vh, 42rem);
+    margin-inline: auto;
 }
 
 body:not(.admin-page) .article-illustration--detail-inline figcaption {
@@ -1316,8 +1326,14 @@ body:not(.admin-page) :where(.cat-slide, .burger-slide) {
     }
 }
 
-body:not(.admin-page) :where(.news-feed-card,.article-section,.ad-slot) {
+body:not(.admin-page) :where(.news-feed-card,.ad-slot) {
     contain: layout paint style;
+}
+
+/* A section containing a floated side image must remain in normal flow so
+   paragraphs expand back to the full reading width below the image. */
+body:not(.admin-page) .article-section {
+    contain: style;
 }
 
 body:not(.admin-page) .news-feed-card {

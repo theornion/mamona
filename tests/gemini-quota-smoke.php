@@ -82,7 +82,7 @@ $qcId=prepare_generation_operation('quota_fixture',['fixture'=>'central-budget-q
 execute_generation_operation($qcId,$transport,'fixture-key');
 $budget=gemini_article_budget_state($postId);
 quota_assert($responses===2 && (int)$budget['used_calls']===2,'Two actual controlled Gemini responses did not consume exactly two shared budget points.');
-$database->prepare('UPDATE article_generation_budget SET used_calls=20,is_exhausted=1 WHERE article_id=:post')->execute([':post'=>$postId]);
+$database->prepare('UPDATE article_generation_budget SET max_calls=20,used_calls=20,is_exhausted=1 WHERE article_id=:post')->execute([':post'=>$postId]);
 $blockedId=prepare_generation_operation('quota_fixture',['fixture'=>'budget-blocked'],$schema,$postId,$topicId);
 $blockedTransportCalls=0;
 try {
@@ -126,6 +126,44 @@ try {
     $secondConnection = null;
     quota_assert((int)gemini_article_budget_state($closureArticleId)['used_calls']===14, 'Closure-floor rejection mutated article budget.');
 }
+
+// A final Vision validation needs its own call plus layout and final QC. The
+// equality boundary is legal: only a smaller remaining budget is blocked.
+$boundaryArticleId = $postId + 100002;
+$insertBoundary = $database->prepare('INSERT INTO article_generation_budget (article_id,max_calls,used_calls,convergence_threshold,calls_log_json,is_exhausted,convergence_active,created_at,updated_at) VALUES (:id,:max,:used,24,"[]",0,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)');
+$insertBoundary->execute([':id'=>$boundaryArticleId, ':max'=>30, ':used'=>28]);
+try {
+    gemini_article_budget_claim($database, $boundaryArticleId, 'image_vision_assessment', 'images', 1, 'boundary-less', 2);
+    throw new RuntimeException('Vision was admitted with fewer than its three required remaining calls.');
+} catch (GeminiArticleBudgetException) {
+    quota_assert((int)gemini_article_budget_state($boundaryArticleId)['used_calls']===28, 'Below-boundary rejection mutated article budget.');
+}
+$boundaryArticleId++;
+$insertBoundary->execute([':id'=>$boundaryArticleId, ':max'=>31, ':used'=>28]);
+$equalClaim = gemini_article_budget_claim($database, $boundaryArticleId, 'image_vision_assessment', 'images', 1, 'boundary-equal', 2);
+quota_assert((int)$equalClaim['used_after']===29, 'Vision was not admitted when exactly Vision, layout, and final QC remained.');
+gemini_article_budget_reconcile_claim($database, $boundaryArticleId, (string)$equalClaim['claim_token'], 'released');
+$boundaryArticleId++;
+$insertBoundary->execute([':id'=>$boundaryArticleId, ':max'=>32, ':used'=>28]);
+$greaterClaim = gemini_article_budget_claim($database, $boundaryArticleId, 'image_vision_assessment', 'images', 1, 'boundary-greater', 2);
+quota_assert((int)$greaterClaim['used_after']===29, 'Vision was not admitted with more than its three required remaining calls.');
+gemini_article_budget_reconcile_claim($database, $boundaryArticleId, (string)$greaterClaim['claim_token'], 'released');
+
+// Layout itself reserves the final multimodal QC, so the same equality rule
+// applies to the last two-step closure chain.
+$layoutBoundaryArticleId = $postId + 100005;
+$insertBoundary->execute([':id'=>$layoutBoundaryArticleId, ':max'=>31, ':used'=>30]);
+try {
+    gemini_article_budget_claim($database, $layoutBoundaryArticleId, 'layout_plan', 'layout', 1, 'layout-less', article_recovery_protected_closure_calls('layout_plan'));
+    throw new RuntimeException('Layout was admitted without the final QC budget point.');
+} catch (GeminiArticleBudgetException) {
+    quota_assert((int)gemini_article_budget_state($layoutBoundaryArticleId)['used_calls']===30, 'Layout below-boundary rejection mutated article budget.');
+}
+$layoutBoundaryArticleId++;
+$insertBoundary->execute([':id'=>$layoutBoundaryArticleId, ':max'=>31, ':used'=>29]);
+$layoutEqualClaim = gemini_article_budget_claim($database, $layoutBoundaryArticleId, 'layout_plan', 'layout', 1, 'layout-equal', article_recovery_protected_closure_calls('layout_plan'));
+quota_assert((int)$layoutEqualClaim['used_after']===30, 'Layout was not admitted when layout and final QC exactly remained.');
+gemini_article_budget_reconcile_claim($database, $layoutBoundaryArticleId, (string)$layoutEqualClaim['claim_token'], 'released');
 
 $sameA=prepare_generation_operation('field_text_repair', ['fixture'=>'idempotent'], $schema);
 $sameB=prepare_generation_operation('field_text_repair', ['fixture'=>'idempotent'], $schema);

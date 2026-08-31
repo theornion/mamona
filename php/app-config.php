@@ -109,6 +109,9 @@ function app_generation_provider_from_environment(): string
     return in_array($provider, ['gemini', 'openai'], true) ? $provider : 'gemini';
 }
 
+defined('GEMINI_ARTICLE_CALL_LIMIT') || define('GEMINI_ARTICLE_CALL_LIMIT', 31);
+defined('GEMINI_ARTICLE_CONVERGENCE_THRESHOLD') || define('GEMINI_ARTICLE_CONVERGENCE_THRESHOLD', 24);
+
 function app_config(?string $key = null): mixed
 {
     static $configuration = null;
