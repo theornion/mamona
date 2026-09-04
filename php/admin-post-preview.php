@@ -36,11 +36,13 @@ $previewBlocks = $draftId > 0
     : (json_decode((string) ($post['content_blocks'] ?? '[]'), true) ?: []);
 if ($previewBlocks !== []) {
     $layoutAudit = [];
-    $post['rendered_content_override'] = render_article_blocks_with_layout(
+    $post['rendered_content_override'] = render_article_blocks_with_layout_and_advertising(
         $previewBlocks,
         article_image_required_records($postId),
         article_layout_plan_for_post($postId, $layoutAudit),
         article_related_context_blocks_for_post($postId),
+        advertising_article_render_config($postId, true),
+        null,
         $layoutAudit
     );
     $post['rendered_content_includes_hero'] = true;

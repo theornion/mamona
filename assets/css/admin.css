@@ -94,8 +94,8 @@ body.admin-page .admin-nav-group { margin:0 0 .85rem; }
 body.admin-page .admin-nav-group h2 { margin:.75rem .65rem .35rem; color:#78998e!important; font-size:.62rem; font-weight:800; letter-spacing:.13em; text-transform:uppercase; }
 body.admin-page .admin-nav-links { display:grid!important; width:100%; margin:0!important; padding:0!important; list-style:none; }
 body.admin-page .admin-nav-links li { width:100%!important; margin:0!important; padding:0!important; }
-body.admin-page .admin-nav-links a { display:flex!important; align-items:center; gap:.65rem; width:100%!important; min-height:2.35rem; padding:.5rem .65rem!important; border:0!important; border-left:2px solid transparent!important; border-radius:var(--admin-radius-sm)!important; color:#c7d9d3!important; font-size:.78rem!important; line-height:1.25!important; letter-spacing:0!important; text-transform:none!important; }
-body.admin-page .admin-nav-links a>span { width:1.25rem; color:#6e8b82; font-size:.6rem; font-variant-numeric:tabular-nums; }
+body.admin-page .admin-nav-links a { display:flex!important; align-items:center; justify-content:flex-start!important; gap:.65rem; width:100%!important; min-height:2.35rem; padding:.5rem .65rem!important; border:0!important; border-left:2px solid transparent!important; border-radius:var(--admin-radius-sm)!important; color:#c7d9d3!important; font-size:.78rem!important; line-height:1.25!important; letter-spacing:0!important; text-align:left!important; text-transform:none!important; }
+body.admin-page .admin-nav-links a>span { flex:0 0 1.25rem; width:1.25rem; color:#6e8b82; font-size:.6rem; font-variant-numeric:tabular-nums; }
 body.admin-page .admin-nav-links a:hover { background:rgba(109,240,193,.07)!important; color:#fff!important; }
 body.admin-page .admin-nav-links a.is-active { border-left-color:var(--admin-accent)!important; background:linear-gradient(90deg,rgba(109,240,193,.18),rgba(109,240,193,.04))!important; color:var(--admin-accent)!important; box-shadow:none!important; }
 body.admin-page .admin-nav-close, body.admin-page .admin-nav-toggle, body.admin-page .admin-nav-backdrop { display:none; }
@@ -152,7 +152,7 @@ body.admin-page .admin-card h3 { font-size:1rem; }
 body.admin-page .admin-card p { max-width:76ch; color:#c7d9d3; }
 body.admin-page .admin-card :focus-visible, body.admin-page .admin-nav :focus-visible, body.admin-page .admin-nav-toggle:focus-visible { outline:3px solid var(--admin-accent-strong)!important; outline-offset:3px!important; }
 
-body.admin-page .admin-form .fields, body.admin-page .admin-editorial-grid, body.admin-page .technical-source-grid { display:grid!important; grid-template-columns:repeat(12,minmax(0,1fr)); gap:var(--admin-space-3)!important; }
+body.admin-page .admin-form .fields, body.admin-page .admin-editorial-grid { display:grid!important; grid-template-columns:repeat(12,minmax(0,1fr)); gap:var(--admin-space-3)!important; }
 body.admin-page .admin-form .field { grid-column:span 6; width:auto!important; padding:0!important; }
 body.admin-page .admin-form .field:only-child, body.admin-page .admin-form .field.full, body.admin-page .admin-form textarea { grid-column:1/-1; }
 body.admin-page .admin-form label { display:block!important; margin:0 0 .38rem!important; color:var(--admin-text)!important; font-size:.75rem; font-weight:700; }
@@ -363,4 +363,86 @@ body.admin-page .proposal-draft-content .article-layout__section .article-sectio
     gap: .65rem;
     margin: 1.15rem 0;
     padding-left: 1.35rem;
+}
+.admin-range {
+	accent-color:var(--theme-accent,#6c5b7b);
+	width:min(100%,34rem);
+	margin:0.8rem 0 0.3rem;
+	padding:0;
+}
+
+.admin-range-labels {
+	display:flex;
+	justify-content:space-between;
+	width:min(100%,34rem);
+	color:var(--theme-muted,#66737f);
+	font-size:0.8rem;
+}
+
+/* RSS source forms use a readable field grid, not the editorial 12-column grid. */
+body.admin-page .technical-source-form,
+body.admin-page .technical-source-form * { min-width:0; }
+body.admin-page .technical-source-grid {
+    display:grid!important;
+    grid-template-columns:repeat(2,minmax(0,1fr))!important;
+    gap:var(--admin-space-3)!important;
+}
+body.admin-page .technical-source-grid > div { min-width:0; }
+body.admin-page .technical-source-grid > div:nth-child(2),
+body.admin-page .technical-source-grid > div:nth-child(3) { grid-column:1/-1; }
+body.admin-page .technical-source-grid label {
+    display:block!important;
+    margin:0 0 .38rem!important;
+    color:var(--admin-text)!important;
+    font-size:.75rem;
+    font-weight:700;
+}
+body.admin-page .technical-source-grid input:not([type="checkbox"]),
+body.admin-page .technical-source-grid select {
+    display:block;
+    width:100%!important;
+    max-width:100%;
+    box-sizing:border-box;
+}
+body.admin-page .technical-source-flags {
+    display:flex;
+    flex-wrap:wrap;
+    gap:var(--admin-space-3) 1.25rem;
+    align-items:center;
+}
+body.admin-page .technical-source-delete {
+    display:grid;
+    gap:.55rem;
+    margin-top:1rem;
+    padding-top:1rem;
+    border-top:1px solid var(--admin-border);
+}
+body.admin-page .technical-source-delete-warning {
+    margin:0!important;
+    color:var(--admin-text-muted)!important;
+    font-size:.78rem;
+}
+
+/* Keep every secondary navigation link on the same left edge. */
+body.admin-page .admin-nav-group .admin-nav-links {
+    align-items:stretch!important;
+    justify-items:stretch!important;
+}
+body.admin-page .admin-nav-group .admin-nav-links > li,
+body.admin-page .admin-nav-group .admin-nav-links > li > a {
+    justify-self:stretch!important;
+}
+body.admin-page .admin-nav-group .admin-nav-links > li > a {
+    justify-content:flex-start!important;
+    text-align:left!important;
+}
+body.admin-page .admin-nav-group .admin-nav-links > li > a > span:empty {
+    display:none!important;
+}
+@media (max-width:736px) {
+    body.admin-page .technical-source-grid { grid-template-columns:1fr!important; }
+    body.admin-page .technical-source-grid > div:nth-child(2),
+    body.admin-page .technical-source-grid > div:nth-child(3) { grid-column:auto; }
+    body.admin-page .technical-source-form button,
+    body.admin-page .technical-source-delete button { width:100%; }
 }

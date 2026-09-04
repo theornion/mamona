@@ -202,6 +202,8 @@
             if (payload.server_time) serverOffset = Date.parse(payload.server_time) - Date.now();
             if (typeof payload.automatic_dispatch_paused === 'boolean') toolbar.dataset.dispatchPaused = payload.automatic_dispatch_paused ? '1' : '0';
             networkFailures = 0; topics = payload.topics || topics;
+            if (payload.status_dispatch_warning === 'worker_busy') announce('Stan jest odświeżany; worker nadal przetwarza zadanie.');
+            if (payload.status_dispatch_warning === 'dispatch_unavailable') announce('Stan jest odświeżany, ale automatyczne uruchomienie workera jest chwilowo niedostępne.');
             var changes = [];
             topics.forEach(function (topic) {
                 if (!topic.job) return;

@@ -62,7 +62,7 @@ $visionPresentation = article_image_multimodal_assess([], [], '', static fn (): 
     'semantic_relevance'=>9, 'editorial_fit'=>9, 'hero_fit'=>8, 'depicts_required_subject'=>true,
     'misleading'=>false, 'inappropriate'=>false, 'decision'=>'accept', 'reason'=>'fixture',
     'relationship_level'=>'direct', 'contextual_useful'=>true, 'honest_caption_possible'=>true,
-    'suggested_caption'=>'Fixture caption.', 'contains_readable_text'=>false, 'detail_density'=>'low',
+    'suggested_caption'=>'Fixture caption.', 'visual_subject'=>'Fixture subject', 'visual_function'=>'Fixture visual function', 'contains_readable_text'=>false, 'detail_density'=>'low',
     'visual_type'=>'photo', 'safe_for_side_layout'=>true,
 ]);
 p8_assert(($visionPresentation['visual_type'] ?? '') === 'photo'
@@ -81,7 +81,7 @@ $sidePlan = [...$standard, 'image_placements'=>[
 $sideAudit = [];
 $sideHtml = render_article_blocks_with_layout($blocks, [$sidePhoto, $diagram], $sidePlan, [], $sideAudit);
 p8_assert(str_contains($sideHtml, 'article-layout__image--side-right')
-    && strpos($sideHtml, 'article-layout__image--side-right') < strpos($sideHtml, '<section id="lead"'),
+    && strpos($sideHtml, 'article-layout__image--side-right') < strpos($sideHtml, '<section id="article-section-lead"'),
     'simple side-safe photo is moved before its section prose so text can wrap it');
 p8_assert(str_contains($sideHtml, 'article-illustration--detail-inline article-illustration--side-overridden')
     && str_contains($sideHtml, 'data-requested-layout="right"')
@@ -94,7 +94,7 @@ $rightBlocks = [['type'=>'section','id'=>'lead','variant'=>'default','blocks'=>[
 $rightPlan = [...$standard, 'image_placements'=>[['image_id'=>105,'placement'=>'before_section']]];
 $rightHtml = render_article_blocks_with_layout($rightBlocks, [$sidePhoto], $rightPlan, [], $sideAudit);
 p8_assert(str_contains($rightHtml, 'article-layout__image--side-right')
-    && strpos($rightHtml, 'article-layout__image--side-right') < strpos($rightHtml, '<section id="lead"')
+    && strpos($rightHtml, 'article-layout__image--side-right') < strpos($rightHtml, '<section id="article-section-lead"')
     && str_contains($rightHtml, 'Długi akapit obok obrazu.'),
     'right side image keeps the complete section body in normal flow after its heading');
 $leftPhoto = $sidePhoto;
@@ -107,7 +107,7 @@ $leftBlocks = [['type'=>'section','id'=>'lead','variant'=>'default','blocks'=>[
 $leftPlan = [...$standard, 'image_placements'=>[['image_id'=>107,'placement'=>'before_section']]];
 $leftHtml = render_article_blocks_with_layout($leftBlocks, [$leftPhoto], $leftPlan, [], $sideAudit);
 p8_assert(str_contains($leftHtml, 'article-layout__image--side-left')
-    && strpos($leftHtml, 'article-layout__image--side-left') < strpos($leftHtml, '<section id="lead"')
+    && strpos($leftHtml, 'article-layout__image--side-left') < strpos($leftHtml, '<section id="article-section-lead"')
     && str_contains($leftHtml, 'Długi akapit obok obrazu.'),
     'left side image keeps the complete section body in normal flow after its heading');
 $frozenIntroBody = 'Treść zamrożonego draftu pozostaje widoczna po kompozycji z ilustracją.';
@@ -117,8 +117,10 @@ $frozenBlocks = article_draft_content_blocks(['sections'=>[[
 ]]], ['intro'=>105]);
 $frozenHtml = render_article_blocks_with_layout($frozenBlocks, [$sidePhoto], $rightPlan, [], $sideAudit);
 p8_assert(str_contains($frozenHtml, 'Czym jest zwężenie zastawki aortalnej?')
-    && str_contains($frozenHtml, $frozenIntroBody),
-    'frozen section body survives image placement and final composition');
+    && str_contains($frozenHtml, $frozenIntroBody)
+    && str_contains($frozenHtml, 'id="article-section-intro"')
+    && str_contains($frozenHtml, 'data-article-section-id="intro"'),
+    'frozen section body survives image placement without colliding with the page intro id');
 $semanticDiagram = $diagram;
 $semanticDiagram['multimodal_assessment_json'] = generation_json([
     'decision'=>'accept', 'honest_caption_possible'=>true,
@@ -133,11 +135,26 @@ p8_assert(str_contains($semanticHtml, 'Schemat pokazujący zależności między 
     && !str_contains($semanticHtml, 'article-image-zoom__hint')
     && str_contains($semanticHtml, 'data-article-detail-zoom'),
     'accepted Vision caption is semantic and the below-image zoom bar preserves the lightbox link');
+$plainImageHtml = render_article_image_record($sidePhoto);
+p8_assert(substr_count($plainImageHtml, 'data-article-detail-zoom') === 1
+    && str_contains($plainImageHtml, 'article-image-zoom__bar')
+    && str_contains($plainImageHtml, '<details class="article-image-meta">'),
+    'non-detail image uses the same clickable media card and independent native license control');
+p8_assert(preg_match('/data-article-detail-zoom[^>]*>.*article-image-zoom__bar/s', $semanticHtml) === 1
+    && !str_contains($semanticHtml, 'article-image-zoom__bar" aria-hidden'),
+    'diagram zoom CTA is inside the same interactive anchor as its image');
 $lightboxSource = file_get_contents(app_path('assets/js/article-detail-lightbox.js')) ?: '';
 p8_assert(str_contains($lightboxSource, "closest('[data-article-detail-zoom]')")
     && str_contains($lightboxSource, 'event.preventDefault()')
-    && str_contains($lightboxSource, 'image.src = trigger.href'),
-    'the existing lightbox continues to open from the clickable image anchor');
+    && str_contains($lightboxSource, 'image.src = trigger.href')
+    && str_contains($lightboxSource, '}, true);')
+    && str_contains($lightboxSource, 'event.target === lightbox')
+    && str_contains($lightboxSource, "event.key === 'Escape'")
+    && str_contains($lightboxSource, 'function bindTrigger(trigger)')
+    && str_contains($lightboxSource, "trigger.dataset.articleZoomBound = 'true'")
+    && str_contains($lightboxSource, 'event.stopPropagation()')
+    && str_contains($lightboxSource, '>×</button>'),
+    'lightbox directly binds every trigger and retains X, backdrop, and Escape close paths');
 $portrait = $semanticDiagram;
 $portrait['id'] = 108;
 $portrait['width'] = 900;
@@ -157,12 +174,104 @@ p8_assert(!str_contains($themeCss, ':where(.news-feed-card,.article-section,.ad-
 p8_assert(str_contains($themeCss, 'width: min(50%, 34rem)') && str_contains($themeCss, 'float: none !important;')
     && str_contains($themeCss, 'width: 100% !important;'),
     'side image is about half-width on desktop and collapses to full-width without float on mobile');
+p8_assert(str_contains($themeCss, '.article-layout__image--side')
+    && str_contains($themeCss, 'isolation: isolate')
+    && str_contains($themeCss, 'z-index: 2')
+    && str_contains($themeCss, 'pointer-events: auto'),
+    'side media is stacked above wrapping prose and remains directly clickable');
 p8_assert(str_contains($themeCss, 'article-image-media-card--neutral') && str_contains($themeCss, 'rgba(255, 255, 255, 0.5)'),
     'transparent PNG receives a readable 50% white media mat');
 p8_assert(str_contains($themeCss, '.article-image-zoom__bar')
+    && str_contains($themeCss, 'background-color: #040c1a !important;')
+    && str_contains($themeCss, 'background-image: none !important;')
     && str_contains($themeCss, 'article-illustration--detail-inline.article-illustration--portrait')
+    && str_contains($themeCss, 'inline-size: fit-content')
+    && str_contains($themeCss, 'aspect-ratio: auto')
     && str_contains($themeCss, 'max-height: min(68vh, 42rem)'),
-    'zoom instruction is below the image and portrait media uses constrained natural proportions');
+    'zoom instruction is below the image and portrait media card follows the rendered image width');
+p8_assert(str_contains($themeCss, 'article-detail-lightbox__panel')
+    && str_contains($themeCss, 'width: fit-content')
+    && str_contains($themeCss, 'max-height: calc(100vh - 6rem)')
+    && str_contains($themeCss, 'position: fixed'),
+    'lightbox uses an image-sized panel, viewport X control, and bounded image instead of a wide frame');
+$semanticTakeawayBlocks = [['type'=>'section','id'=>'takeaway','variant'=>'v2-takeaway','content_type'=>'takeaway','blocks'=>[
+    ['type'=>'heading','level'=>2,'text'=>'Takeaway'],
+    ['type'=>'paragraph','text'=>'First semantic takeaway paragraph.'],
+    ['type'=>'paragraph','text'=>'Second semantic takeaway paragraph.'],
+]]];
+$semanticTakeawayPlan = [...$standard,
+    'image_placements'=>[['image_id'=>105,'placement'=>'before_section']],
+    'callouts'=>[['section_id'=>'takeaway','type'=>'takeaway']],
+];
+$takeawaySidePhoto = $sidePhoto;
+$takeawaySidePhoto['section_id'] = 'takeaway';
+$semanticTakeawayHtml = render_article_blocks_with_layout($semanticTakeawayBlocks, [$takeawaySidePhoto], $semanticTakeawayPlan);
+$semanticCalloutOffset = strpos($semanticTakeawayHtml, 'article-layout__callout--takeaway');
+p8_assert(substr_count($semanticTakeawayHtml, 'article-layout__callout--takeaway') === 1
+    && str_contains($semanticTakeawayHtml, 'First semantic takeaway paragraph.')
+    && str_contains($semanticTakeawayHtml, 'Second semantic takeaway paragraph.')
+    && $semanticCalloutOffset !== false
+    && strpos($semanticTakeawayHtml, '</figure>') < $semanticCalloutOffset,
+    'one semantic callout groups consecutive paragraphs after the complete side media card');
+$plainCalloutBlocks = [['type'=>'section','id'=>'intro','variant'=>'v2-explainer','content_type'=>'explainer','blocks'=>[
+    ['type'=>'paragraph','text'=>'Ordinary explanatory prose.'],
+]]];
+$plainCalloutHtml = render_article_blocks_with_layout($plainCalloutBlocks, [], [...$standard,
+    'callouts'=>[['section_id'=>'intro','type'=>'fact']],
+]);
+p8_assert(!str_contains($plainCalloutHtml, 'article-layout__callout')
+    && str_contains($plainCalloutHtml, 'Ordinary explanatory prose.'),
+    'ordinary V2 prose remains unframed when a decorative layout callout was proposed');
+$insetListHtml = render_article_blocks([[
+    'type'=>'list', 'presentation_list'=>true, 'items'=>['First inset item.', 'Second inset item.'],
+]], []);
+p8_assert(str_contains($insetListHtml, 'article-layout__inset-list')
+    && str_contains($insetListHtml, 'data-text-presentation="list-group"')
+    && str_contains($insetListHtml, '<ul>'),
+    'only a LayoutPlan presentation list receives the subdued inset frame');
+$publicRouteHtml = render_article_blocks_with_layout_and_advertising(
+    $semanticTakeawayBlocks,
+    [$takeawaySidePhoto],
+    $semanticTakeawayPlan,
+    [],
+    advertising_config(['enabled'=>false])
+);
+p8_assert(str_contains($publicRouteHtml, 'class="article-layout ')
+    && str_contains($publicRouteHtml, 'article-layout__callout--takeaway')
+    && str_contains($publicRouteHtml, 'data-callout-source="semantic"')
+    && str_contains($publicRouteHtml, 'article-section--v2-takeaway'),
+    'public article route preserves the layout callout markup contract instead of falling back to bare V2 sections');
+$advertisingBlocks = array_map(static fn (string $id): array => [
+    'type'=>'section', 'id'=>$id, 'variant'=>'v2-explainer', 'content_type'=>'explainer',
+    'blocks'=>[['type'=>'paragraph','text'=>str_repeat('Public composition keeps article advertisements after complete sections. ', 24)]],
+], ['one', 'two', 'three']);
+$advertisingRouteHtml = render_article_blocks_with_layout_and_advertising(
+    $advertisingBlocks,
+    [],
+    $standard,
+    [],
+    advertising_config([
+        'enabled'=>true,
+        'preview'=>true,
+        'allowed_placements'=>['article-inline'],
+        'max_slots_per_page'=>3,
+        'max_inline_slots'=>1,
+    ])
+);
+p8_assert(str_contains($advertisingRouteHtml, 'class="article-layout ')
+    && str_contains($advertisingRouteHtml, 'data-ad-placement="article-inline"'),
+    'public layout route retains bounded inline advertising without reverting to the legacy renderer');
+p8_assert(str_contains($themeCss, '.article-layout__callout')
+    && str_contains($themeCss, 'clear: both')
+    && str_contains($themeCss, '.article-layout__inset-list')
+    && str_contains($themeCss, 'list-style: disc')
+    && str_contains($themeCss, 'text-align: left !important')
+    && str_contains($themeCss, '.article-image-meta :where(summary, p)')
+    && str_contains($themeCss, 'overflow-wrap: anywhere')
+    && str_contains($themeCss, 'border-bottom: 0 !important')
+    && str_contains($themeCss, 'width: 100%;')
+    && !str_contains($themeCss, 'border-top: 1px solid rgba(145, 205, 227, 0.18)'),
+    'semantic callout, natural license wrapping, and single-bar CTA styling are explicit in public CSS');
 $longSentences = [];
 for ($index = 1; $index <= 24; $index++) {
     $longSentences[] = 'Zdanie ' . $index . ' zachowuje dokładne brzmienie źródłowego tekstu i opisuje kolejny element technicznego wyjaśnienia bez dodawania nowych twierdzeń.';
@@ -270,10 +379,10 @@ $adminPreviewSource = file_get_contents(app_path('php/admin-post-preview.php')) 
 $adminProposalsSource = file_get_contents(app_path('php/admin-proposals.php')) ?: '';
 $postRendererSource = file_get_contents(app_path('php/admin-database.php')) ?: '';
 $adminCss = file_get_contents(app_path('assets/css/admin.css')) ?: '';
-p8_assert(str_contains($adminPreviewSource, 'render_article_blocks_with_layout(')
+p8_assert(str_contains($adminPreviewSource, 'render_article_blocks_with_layout_and_advertising(')
     && !str_contains($adminPreviewSource, 'render_article_blocks(article_draft_content_blocks($draft)'),
     'standalone draft preview uses canonical LayoutPlan text presentation');
-p8_assert(str_contains($adminPreviewSource, '$post[\'rendered_content_override\'] = render_article_blocks_with_layout(')
+p8_assert(str_contains($adminPreviewSource, '$post[\'rendered_content_override\'] = render_article_blocks_with_layout_and_advertising(')
     && str_contains($postRendererSource, '$post[\'rendered_content_override\'] ?? null')
     && str_contains($postRendererSource, '$preview ?'),
     'standalone link renders the exact selected proposal preview instead of persisted post content_blocks');
@@ -282,7 +391,7 @@ p8_assert(str_contains($adminPreviewSource, '$post[\'rendered_content_includes_h
     && str_contains($postRendererSource, 'if (!$contentAlreadyIncludesHero)'),
     'standalone selected-version preview suppresses the duplicate page-header hero');
 p8_assert(str_contains($adminProposalsSource, '$proposalPreviewHtml =')
-    && str_contains($adminProposalsSource, 'render_article_blocks_with_layout(')
+    && str_contains($adminProposalsSource, 'render_article_blocks_with_layout_and_advertising(')
     && !str_contains($adminProposalsSource, "foreach (['lead', 'why_important', 'facts', 'context', 'summary']"),
     'embedded ready-proposal preview uses canonical LayoutPlan text presentation');
 p8_assert(str_contains($adminCss, '.proposal-draft-content .article-layout__section .article-section p + p')

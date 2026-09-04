@@ -125,7 +125,7 @@ $db->prepare('INSERT INTO editorial_topics (primary_post_id,title,normalized_tit
     ->execute([':post'=>$postId]);
 $topicId = (int) $db->lastInsertId();
 $inlineSlot = ['slot_id'=>'fact-1','role'=>'inline','section_anchor'=>'fact-1','visual_need'=>'Related device context',
-    'must_be_direct'=>false,'acceptable_related'=>true,'search_queries_direct'=>['device diagram'],
+    'must_be_direct'=>true,'acceptable_related'=>true,'search_queries_direct'=>['device diagram'],
     'search_queries_related'=>['wearable biosensor technology'],'required'=>true];
 $visualPlan = ['hero_slot'=>['slot_id'=>'article','role'=>'hero','section_anchor'=>'article','visual_need'=>'Hero',
     'must_be_direct'=>true,'acceptable_related'=>false,'search_queries_direct'=>['hero'],'search_queries_related'=>[],'required'=>true],
@@ -149,8 +149,8 @@ $db->prepare('INSERT INTO generation_operations (operation_key,post_id,topic_id,
 $researchOperationId = (int) $db->lastInsertId();
 $db->prepare('INSERT INTO research_packages (topic_id,post_id,generation_operation_id,status,execution_mode,package_json,approved_at) VALUES (:topic,:post,:operation,"approved","mock",:package,CURRENT_TIMESTAMP)')
     ->execute([':topic'=>$topicId, ':post'=>$postId, ':operation'=>$researchOperationId, ':package'=>generation_json($researchOutput)]);
-$db->prepare('INSERT INTO article_images (post_id,role,section_id,visual_intent,expected_content,search_queries_json,source_page_url,source_file_url,author,license,license_url,attribution,alt,caption,layout,status,width,height,relationship,is_fallback,editorial_rejected,multimodal_accepted,multimodal_assessment_json) VALUES (:post,"inline","fact-1","Related device context","Related device context","[]","https://example.test/image-page","https://example.test/image.jpg","Author","cc-by","https://creativecommons.org/licenses/by/4.0/","Author","Related device","Related device","inline","downloaded",1600,900,"related_context",0,0,1,"{}")')
-    ->execute([':post'=>$postId]);
+$db->prepare('INSERT INTO article_images (post_id,role,section_id,visual_intent,expected_content,search_queries_json,source_page_url,source_file_url,author,license,license_url,attribution,alt,caption,layout,status,width,height,relationship,is_fallback,editorial_rejected,multimodal_accepted,multimodal_assessment_json) VALUES (:post,"inline","fact-1","Related device context","Related device context","[]","https://example.test/image-page","https://example.test/image.jpg","Author","cc-by","https://creativecommons.org/licenses/by/4.0/","Author","Related device","Related device","inline","downloaded",1600,900,"related_context",0,0,1,:assessment)')
+    ->execute([':post'=>$postId, ':assessment'=>generation_json(['contextual_policy'=>'ww_contextual_v1'])]);
 $imageId = (int) $db->lastInsertId();
 $moduleOperation = prepare_article_additive_module_operation($postId, $topicId, $imageId, 'fact-1', 'context-method', 'after-fact-1');
 $moduleOutput = ['module_id'=>'context-method','target_slot_id'=>'fact-1','placement_after_section'=>'after-fact-1',
@@ -175,7 +175,7 @@ $replanEligibility = article_image_recovery_replan_eligibility([
     'filled_slots'=>[['slot_id'=>'inline-intro']],
     'missing_slots'=>[['slot_id'=>'hero'],['slot_id'=>'inline-1'],['slot_id'=>'inline-2']],
 ], ['used_calls'=>14,'max_calls'=>30], true, 0);
-p6_assert(!empty($replanEligibility['eligible']) && $replanEligibility['max_replans'] === 2,
+p6_assert(!empty($replanEligibility['eligible']) && $replanEligibility['max_replans'] === 5,
     '1/4 coverage with 14/30 budget and exhausted normal paths opens the bounded recovery-replan window.');
 p6_assert(article_image_shortage_recovery_needed(['missing_slots'=>[['slot_id'=>'inline-1']]], false)
     && !article_image_shortage_recovery_needed(['missing_slots'=>[['slot_id'=>'inline-1']]], true),
@@ -184,10 +184,22 @@ p6_assert(!empty(article_image_recovery_replan_eligibility([
     'publication_visual_floor'=>3,'filled_slots'=>[['slot_id'=>'inline-intro']],
     'missing_slots'=>[['slot_id'=>'hero'],['slot_id'=>'inline-1'],['slot_id'=>'inline-2']],
 ], ['used_calls'=>14,'max_calls'=>30], true, 1)['eligible']), 'A second recovery replan remains available after source-provider failure.');
+p6_assert(!empty(article_image_recovery_replan_eligibility([
+    'publication_visual_floor'=>3,'filled_slots'=>[['slot_id'=>'inline-intro']],
+    'missing_slots'=>[['slot_id'=>'hero'],['slot_id'=>'inline-1'],['slot_id'=>'inline-2']],
+], ['used_calls'=>14,'max_calls'=>30], true, 2)['eligible']), 'A third recovery replan remains available for a final stubborn slot.');
+p6_assert(!empty(article_image_recovery_replan_eligibility([
+    'publication_visual_floor'=>3,'filled_slots'=>[['slot_id'=>'inline-intro']],
+    'missing_slots'=>[['slot_id'=>'hero'],['slot_id'=>'inline-1'],['slot_id'=>'inline-2']],
+], ['used_calls'=>14,'max_calls'=>30], true, 3)['eligible']), 'A fourth recovery replan remains available for a final approved recovery cycle.');
+p6_assert(!empty(article_image_recovery_replan_eligibility([
+    'publication_visual_floor'=>3,'filled_slots'=>[['slot_id'=>'inline-intro']],
+    'missing_slots'=>[['slot_id'=>'hero'],['slot_id'=>'inline-1'],['slot_id'=>'inline-2']],
+], ['used_calls'=>14,'max_calls'=>30], true, 4)['eligible']), 'A fifth recovery replan remains available for a final approved recovery cycle.');
 p6_assert(empty(article_image_recovery_replan_eligibility([
     'publication_visual_floor'=>3,'filled_slots'=>[['slot_id'=>'inline-intro']],
     'missing_slots'=>[['slot_id'=>'hero'],['slot_id'=>'inline-1'],['slot_id'=>'inline-2']],
-], ['used_calls'=>14,'max_calls'=>30], true, 2)['eligible']), 'A third recovery replan is blocked deterministically.');
+], ['used_calls'=>14,'max_calls'=>30], true, 5)['eligible']), 'A sixth recovery replan is blocked deterministically.');
 p6_assert(!empty(article_image_recovery_replan_eligibility([
     'publication_visual_floor'=>3,'filled_slots'=>[['slot_id'=>'a'],['slot_id'=>'b'],['slot_id'=>'c']],
     'missing_slots'=>[['slot_id'=>'d']],
@@ -200,6 +212,65 @@ $replannedQueries = article_image_semantic_queries([
 p6_assert((bool) array_filter($replannedQueries, static fn (array $query): bool =>
     $query['query'] === 'source-backed neural imaging context' && $query['relation'] === 'related_context'),
     'Recovery retrieval consumes the replanned related queries instead of silently ignoring them.');
+$semanticCascadeQueries = article_image_semantic_queries([
+    'search_queries'=>[
+        'literal direct query one', 'literal direct query two',
+        'literal direct query three', 'literal direct query four',
+    ],
+    'search_queries_related'=>['source-backed mechanism context'],
+    'expected_content'=>'Concrete mechanism diagram for the researched phenomenon',
+], 4);
+p6_assert((bool) array_filter($semanticCascadeQueries, static fn (array $query): bool =>
+    $query['query'] === 'source-backed mechanism context' && $query['relation'] === 'related_context'),
+    'A full direct-query budget still reaches the semantic recovery tier before Vision is considered.');
+$mechanismDirectQueries = article_image_direct_queries([
+    'search_queries'=>['specific physical effect diagram'],
+    'search_queries_related'=>['particle acceleration magnetic field diagram'],
+    'recovery_relationship_policy'=>'broader_direct',
+]);
+p6_assert((bool) array_filter($mechanismDirectQueries, static fn (array $query): bool =>
+    $query['query'] === 'particle acceleration magnetic field diagram'
+    && $query['relation'] === 'exact_subject'
+    && $query['level'] === 'broader_direct'
+), 'A broader-direct recovery reuses a mechanism query without weakening the direct-slot acceptance gate.');
+$strictDirectQueries = article_image_direct_queries([
+    'search_queries'=>['specific physical effect diagram'],
+    'search_queries_related'=>['particle acceleration magnetic field diagram'],
+]);
+p6_assert(!(bool) array_filter($strictDirectQueries, static fn (array $query): bool =>
+    $query['query'] === 'particle acceleration magnetic field diagram'
+), 'A canonical direct slot does not inherit related queries before an authorized recovery replan.');
+p6_assert(article_image_search_audit_has_pending_recovery([[
+    'result'=>'deferred','reason'=>'vision_shortlist_limit_per_missing_slot',
+]]), 'Deferred legal candidates keep recovery pending instead of falsely marking a slot exhausted.');
+p6_assert(article_image_search_audit_has_pending_recovery([[
+    'result'=>'rejected','local_reject'=>true,'reason'=>'Source image returned HTTP 429.',
+]]), 'Provider rate limiting keeps recovery pending instead of triggering a semantic replan.');
+p6_assert(!article_image_search_audit_has_pending_recovery([
+    ['result'=>'rejected','local_reject'=>true,'reason'=>'Source image returned HTTP 429.'],
+    ['result'=>'missing','reason'=>'all_legal_candidates_exhausted; local_fallback_required'],
+]), 'A later exhaustive retry clears stale provider-rate-limit recovery state.');
+p6_assert(!article_image_search_audit_has_pending_recovery([[
+    'result'=>'rejected','local_reject'=>true,'reason'=>'hard_technical_ineligible:too_small',
+]]), 'A permanently unsuitable asset does not keep recovery pending.');
+$hardRejectedUrls = article_image_search_audit_local_hard_rejected_urls([
+    ['local_reject'=>true,'url'=>'https://example.test/too-small.jpg','final_local_reject_reason'=>'too_small'],
+    ['local_reject'=>true,'url'=>'https://example.test/rate-limited.jpg','final_local_reject_reason'=>'download_failure'],
+]);
+p6_assert(isset($hardRejectedUrls['https://example.test/too-small.jpg'])
+    && !isset($hardRejectedUrls['https://example.test/rate-limited.jpg']),
+    'Next recovery skips known-bad bytes but retries a transient source failure.');
+$feedback = article_image_replan_vision_feedback_from_records([[
+    'slot_identifier'=>'inline-mechanism',
+    'provider_response_text'=>generation_json([
+        'decision'=>'accept','contextual_useful'=>true,'honest_caption_possible'=>true,
+        'misleading'=>false,'inappropriate'=>false,'relationship_level'=>'domain_related',
+        'reason'=>'The scientific diagram honestly illustrates the mechanism.',
+        'visual_type'=>'diagram','suggested_caption'=>'Contextual mechanism illustration.',
+    ]),
+]]);
+p6_assert(($feedback['inline-mechanism']['relationship_level'] ?? '') === 'domain_related',
+    'Accepted contextual Vision evidence is retained as feedback for a later semantic replan.');
 $replanInput = ['missing_slots'=>[[
     'slot_id'=>'hero-main','role'=>'hero','direct_exhaustion'=>['confirmed'=>true],
 ]]];
@@ -412,4 +483,37 @@ article_image_vision_audit_record([
 $rightsReview = article_image_rejected_review_candidates($postId, $topicId);
 p6_assert(!array_filter($rightsReview['items'], static fn (array $item): bool => (string) ($item['audit']['candidate_identifier'] ?? '') === 'manual-rights-blocked'),
     'Rights-rejected candidate never enters the manual-accept gallery.');
+
+// A completed, matching direct Vision acceptance is reusable without spending
+// another Vision request, while normal candidate validation still runs.
+$cachedCandidate = [...$manualCandidate,
+    'provider_id'=>'cached-direct', 'source_page_url'=>'https://example.test/cached-page',
+    'source_file_url'=>'https://example.test/cached.jpg'];
+$cachedAssessment = ['semantic_relevance'=>9,'editorial_fit'=>9,'hero_fit'=>9,'depicts_required_subject'=>true,
+    'misleading'=>false,'inappropriate'=>false,'decision'=>'accept','reason'=>'Previously accepted direct fixture.',
+    'relationship_level'=>'direct','contextual_useful'=>true,'honest_caption_possible'=>true,
+    'suggested_caption'=>'Cached direct fixture.','contains_readable_text'=>false,
+    'detail_density'=>'medium','visual_type'=>'photo','safe_for_side_layout'=>true];
+article_image_vision_audit_record([
+    ':call_key'=>'v2-vision-cached-direct', ':generation_operation_id'=>null, ':post_id'=>$postId, ':topic_id'=>$topicId,
+    ':budget_before'=>0, ':budget_after'=>1, ':operation_type'=>ARTICLE_IMAGE_GEMINI_OPERATION_TYPE, ':model'=>'fixture',
+    ':slot_identifier'=>'cached-inline', ':candidate_identifier'=>'cached-direct',
+    ':source_page_identifier'=>$cachedCandidate['source_page_url'], ':source_file_identifier'=>$cachedCandidate['source_file_url'],
+    ':outbound_prompt'=>'fixture', ':image_sha256'=>'fixture-cached', ':image_mime'=>'image/jpeg',
+    ':provider_response_json'=>generation_json(['_candidate'=>$cachedCandidate]), ':provider_response_text'=>generation_json($cachedAssessment),
+    ':status'=>'completed', ':error_message'=>'',
+]);
+$cachedPlan = ['role'=>'inline','section_id'=>'cached-inline','visual_intent'=>'Direct fixture image',
+    'expected_content'=>'Direct fixture image','search_queries'=>['direct fixture image'],
+    'source_page_url'=>'','source_file_url'=>'','local_path'=>'','author'=>'','license'=>'','license_url'=>'','attribution'=>'',
+    'alt'=>'Direct fixture image','caption'=>'Direct fixture image','layout'=>'full','status'=>'planned'];
+$cachedVisionCalls = 0;
+$cachedCandidates = article_image_prior_vision_accepted_candidates($postId, 'cached-inline', ['direct', 'broader_direct']);
+$cachedSelected = select_source_image_from_results(
+    $cachedPlan, $cachedCandidates, 'cached-direct',
+    static function () use (&$cachedVisionCalls): array { $cachedVisionCalls++; return []; }
+);
+p6_assert(count($cachedCandidates) === 1 && $cachedVisionCalls === 0
+    && (string) ($cachedSelected['caption'] ?? '') === 'Cached direct fixture.',
+    'Accepted direct Vision candidate is reused without another provider call.');
 echo "P6_IMAGE_RECOVERY_SMOKE_OK\n";

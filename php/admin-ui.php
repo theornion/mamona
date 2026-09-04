@@ -44,7 +44,7 @@ function admin_page_open(string $title, string $active): void
     <title><?php echo escape_html($title); ?> | CMS</title>
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="stylesheet" href="../assets/css/main.css?v=bueno-release-20260721c">
-    <link rel="stylesheet" href="../assets/css/admin.css?v=admin-redesign-20260731a">
+    <link rel="stylesheet" href="../assets/css/admin.css?v=admin-nav-align-20260903a">
 </head>
 <body class="is-preload admin-page admin-page-<?php echo escape_html($active); ?>">
     <a class="admin-skip-link" href="#admin-content">Przejdź do treści</a>

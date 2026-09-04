@@ -16,16 +16,40 @@ function topics_api_json(array $payload, int $status = 200): never
     exit;
 }
 
+/**
+ * A status poll must remain read-capable while a worker owns SQLite's write
+ * lock. The running worker is already progressing the job; returning a 500
+ * here made the browser discard otherwise fresh workflow state until reload.
+ */
+function topics_api_try_dispatch_due_items(): ?string
+{
+    try {
+        if (generation_batch_has_due_items()) generation_batch_launch_worker();
+        return null;
+    } catch (PDOException $exception) {
+        $message = mb_strtolower($exception->getMessage());
+        if (str_contains($message, 'database is locked') || str_contains($message, 'database is busy')) {
+            return 'worker_busy';
+        }
+        error_log('Editorial topics status dispatch failed: ' . $exception->getMessage());
+        return 'dispatch_unavailable';
+    } catch (Throwable $exception) {
+        error_log('Editorial topics status dispatch failed: ' . $exception->getMessage());
+        return 'dispatch_unavailable';
+    }
+}
+
 if (!admin_is_logged_in()) topics_api_json(['ok' => false, 'error' => 'Wymagane jest logowanie administratora.'], 401);
 $method = (string) ($_SERVER['REQUEST_METHOD'] ?? 'GET');
 
 if ($method === 'GET') {
     $filter = trim((string) ($_GET['filter'] ?? 'active'));
     if (!in_array($filter, ['active', 'profile-rejected', 'all'], true)) $filter = 'active';
-    if (generation_batch_has_due_items()) generation_batch_launch_worker();
+    $dispatchWarning = topics_api_try_dispatch_due_items();
     topics_api_json([
         'ok' => true,
         'server_time' => gmdate('c'),
+        'status_dispatch_warning' => $dispatchWarning,
         'automatic_dispatch_paused' => generation_automatic_dispatch_paused(),
         'topics' => generation_topics_workflow_payload(list_editorial_topics(1000, $filter)),
         'batch_limit' => (int) app_config('batch_max_topics'),

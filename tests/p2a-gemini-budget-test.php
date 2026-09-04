@@ -83,6 +83,9 @@ $pdo->exec(
         'calls_log_json TEXT DEFAULT "[]",' .
         'is_exhausted INTEGER NOT NULL DEFAULT 0,' .
         'convergence_active INTEGER NOT NULL DEFAULT 0,' .
+        'manual_extension_calls INTEGER NOT NULL DEFAULT 0,' .
+        'manual_extension_reason TEXT NOT NULL DEFAULT "",' .
+        'manual_extension_authorized_at TEXT,' .
         'created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,' .
         'updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP' .
     ')'
@@ -94,7 +97,7 @@ assert_test(count($tables) === 1, 'Tabela article_generation_budget istnieje');
 
 // Verify columns
 $cols = array_column($pdo->query('PRAGMA table_info(article_generation_budget)')->fetchAll(), 'name');
-foreach (['article_id', 'max_calls', 'used_calls', 'convergence_threshold', 'calls_log_json', 'is_exhausted', 'convergence_active', 'created_at', 'updated_at'] as $col) {
+foreach (['article_id', 'max_calls', 'used_calls', 'convergence_threshold', 'calls_log_json', 'is_exhausted', 'convergence_active', 'manual_extension_calls', 'manual_extension_reason', 'manual_extension_authorized_at', 'created_at', 'updated_at'] as $col) {
     assert_test(in_array($col, $cols, true), sprintf('Kolumna %s istnieje w article_generation_budget', $col));
 }
 
@@ -106,6 +109,22 @@ assert_test((int)$row['convergence_threshold'] === 24, 'Domyślny convergence_th
 assert_test((int)$row['used_calls'] === 0, 'Domyślny used_calls = 0');
 assert_test((int)$row['is_exhausted'] === 0, 'Domyślny is_exhausted = 0');
 assert_test((int)$row['convergence_active'] === 0, 'Domyślny convergence_active = 0');
+$extension = gemini_article_budget_authorize_extension($pdo, 999, 5, 'Approved continuation for a test article.');
+assert_test((int)$extension['max_calls'] === GEMINI_ARTICLE_CALL_LIMIT + 5, 'Manual extension raises max_calls within its bounded range');
+assert_test(gemini_article_budget_has_authorized_extension($extension), 'Manual extension is auditable and authorized');
+assert_test(gemini_article_budget_effective_max($extension) === GEMINI_ARTICLE_CALL_LIMIT + 5, 'Effective limit recognizes authorized extension');
+$fullRecoveryExtension = gemini_article_budget_authorize_extension($pdo, 999, GEMINI_ARTICLE_MANUAL_EXTENSION_MAX, 'Approved complete recovery cycle for a test article.');
+assert_test((int)$fullRecoveryExtension['max_calls'] === GEMINI_ARTICLE_CALL_LIMIT + GEMINI_ARTICLE_MANUAL_EXTENSION_MAX,
+    'Bounded extension covers the full recovery cycle and final closure calls');
+$overLimitExtensionRejected = false;
+try {
+    gemini_article_budget_authorize_extension($pdo, 999, GEMINI_ARTICLE_MANUAL_EXTENSION_MAX + 1, 'Must remain bounded.');
+} catch (InvalidArgumentException) {
+    $overLimitExtensionRejected = true;
+}
+assert_test($overLimitExtensionRejected, 'Extension above the bounded recovery ceiling is rejected');
+$pdo->exec('UPDATE article_generation_budget SET max_calls=40,manual_extension_calls=0,manual_extension_reason="" WHERE article_id=999');
+assert_test(gemini_article_budget_effective_max(q1($pdo, 'SELECT * FROM article_generation_budget WHERE article_id=?', [999])) === GEMINI_ARTICLE_CALL_LIMIT, 'Unauthorized extension does not raise effective limit');
 $pdo->exec('DELETE FROM article_generation_budget WHERE article_id=999');
 
 // --- TEST 2: Migration — ALTER TABLE article_images columns ---

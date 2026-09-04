@@ -31,9 +31,14 @@ admin_ui_assert(str_contains($panelJs, "event.key === 'Escape'") && str_contains
 admin_ui_assert(str_contains($layout, 'data-admin-config-reminder-close'), 'Przypomnienie konfiguracyjne nie ma przycisku zamknięcia.');
 admin_ui_assert(str_contains($panelJs, "sessionStorage.setItem('mamona-admin-config-reminder-dismissed'"), 'Zamknięcie przypomnienia nie jest pamiętane w sesji karty.');
 
-foreach (['admin-content-studio.php', 'admin-editorial-topics.php', 'admin-generation.php', 'admin-proposals.php', 'admin-editorial-queue.php', 'admin-topic-trash.php', 'admin-posts.php', 'admin-gallery.php', 'admin-technical-sources.php', 'admin-messages.php', 'admin-styles.php', 'admin-contact.php', 'admin-social.php', 'admin-profile.php', 'admin-trash.php'] as $route) {
+foreach (['admin-content-studio.php', 'admin-editorial-topics.php', 'admin-proposals.php', 'admin-topic-trash.php', 'admin-monetization.php', 'admin-posts.php', 'admin-gallery.php', 'admin-technical-sources.php', 'admin-messages.php', 'admin-styles.php', 'admin-contact.php', 'admin-social.php', 'admin-profile.php', 'admin-trash.php'] as $route) {
     admin_ui_assert(str_contains($nav, 'href="' . $route . '"'), 'Nawigacja zgubiła funkcję: ' . $route);
 }
+foreach (['admin-generation.php', 'admin-editorial-queue.php'] as $hiddenRoute) {
+    admin_ui_assert(!str_contains($nav, 'href="' . $hiddenRoute . '"'), 'Nawigacja nadal pokazuje widok diagnostyczny: ' . $hiddenRoute);
+}
+admin_ui_assert(str_contains($css, '.technical-source-grid') && str_contains($css, 'grid-template-columns:repeat(2,minmax(0,1fr))!important'), 'Formularz źródła nie ma bezpiecznego układu dwukolumnowego.');
+admin_ui_assert(str_contains($css, '@media (max-width:736px)') && str_contains($css, '.technical-source-delete'), 'Brak responsywnego formularza źródła lub stylu akcji usuwania.');
 
 foreach (array_merge([$root . '/index.html'], glob($root . '/pages/*.html') ?: []) as $publicPage) {
     $html = (string) file_get_contents($publicPage);

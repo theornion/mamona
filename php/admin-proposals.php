@@ -167,12 +167,19 @@ $displayVersions = array_values(array_filter($versions, static function (array $
 $images = $post ? article_image_required_records((int) $post['id']) : [];
 $rejectedImageReview = $post ? article_image_rejected_review_candidates((int) $post['id']) : ['items' => [], 'reviewable_count' => 0, 'hard_rejected_count' => 0];
 $proposalLayoutAudit = [];
+$proposalAdConfig = $post
+    ? advertising_article_render_config((int) $post['id'], true, [
+        'allowed_placements' => ['article-inline'],
+    ])
+    : null;
 $proposalPreviewHtml = $selected && $post
-    ? render_article_blocks_with_layout(
+    ? render_article_blocks_with_layout_and_advertising(
         article_draft_content_blocks($draftData),
         $images,
         article_layout_plan_for_post((int) $post['id'], $proposalLayoutAudit),
         article_related_context_blocks_for_post((int) $post['id']),
+        $proposalAdConfig,
+        null,
         $proposalLayoutAudit
     )
     : '';

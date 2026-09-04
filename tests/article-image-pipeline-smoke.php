@@ -395,6 +395,70 @@ $visionMock = static function (array $candidate, array $plannedImage, string $ar
 };
 $selected = select_source_image_from_results($plan['hero'], $results, '123', $visionMock);
 image_pipeline_assert($selected['author'] === 'Fixture Author', 'Nie zapisano autora z rzeczywistego wyniku.');
+$directContextualCandidate = [...$results[0],
+    'provider_id' => 'direct-contextual-fixture',
+    'source_page_url' => 'https://commons.wikimedia.org/wiki/File:Direct-contextual.png',
+    'source_file_url' => 'https://upload.wikimedia.org/direct-contextual.png',
+];
+image_pipeline_expect(
+    static fn () => select_source_image_from_results(
+        $plan['hero'],
+        [$directContextualCandidate],
+        'direct-contextual-fixture',
+        static fn (): array => [
+            'semantic_relevance' => 7, 'editorial_fit' => 7, 'hero_fit' => 6,
+            'depicts_required_subject' => false, 'misleading' => false, 'inappropriate' => false,
+            'decision' => 'accept', 'reason' => 'Contextual but not direct.',
+            'relationship_level' => 'contextual_related', 'contextual_useful' => true,
+            'honest_caption_possible' => true, 'suggested_caption' => 'Kontekstowa ilustracja testowa.',
+            'contains_readable_text' => false, 'detail_density' => 'low', 'visual_type' => 'photo',
+            'safe_for_side_layout' => true,
+        ]
+    ),
+    'odrzucone przez multimodalną'
+);
+$recoveryContextualSelected = select_source_image_from_results(
+    $plan['hero'],
+    [$directContextualCandidate],
+    'direct-contextual-fixture',
+    static fn (): array => [
+        'semantic_relevance' => 7, 'editorial_fit' => 7, 'hero_fit' => 6,
+        'depicts_required_subject' => false, 'misleading' => false, 'inappropriate' => false,
+        'decision' => 'accept', 'reason' => 'Contextual but source-backed recovery may use it.',
+        'relationship_level' => 'contextual_related', 'contextual_useful' => true,
+        'honest_caption_possible' => true, 'suggested_caption' => 'Kontekstowa ilustracja recovery.',
+        'contains_readable_text' => false, 'detail_density' => 'low', 'visual_type' => 'photo',
+        'safe_for_side_layout' => true,
+    ],
+    '',
+    true
+);
+image_pipeline_assert($recoveryContextualSelected['caption'] === 'Kontekstowa ilustracja recovery.',
+    'Jawna ścieżka P06 nie dopuściła uczciwie podpisanego kontekstowego recovery.');
+$visionCaptionCandidate = [...$results[0],
+    'provider_id' => 'vision-caption-fixture',
+    'source_page_url' => 'https://commons.wikimedia.org/wiki/File:Vision-caption.png',
+    'source_file_url' => 'https://upload.wikimedia.org/vision-caption.png',
+];
+$visionCaptionSelected = select_source_image_from_results(
+    $plan['hero'],
+    [$visionCaptionCandidate],
+    'vision-caption-fixture',
+    static fn (): array => [
+        'semantic_relevance' => 9, 'editorial_fit' => 9, 'hero_fit' => 9,
+        'depicts_required_subject' => true, 'misleading' => false, 'inappropriate' => false,
+        'decision' => 'accept', 'reason' => 'Direct fixture image.',
+        'relationship_level' => 'direct', 'contextual_useful' => true,
+        'honest_caption_possible' => true, 'suggested_caption' => 'Podpis opisujący faktyczny obraz testowy.',
+        'contains_readable_text' => false, 'detail_density' => 'low', 'visual_type' => 'photo',
+            'safe_for_side_layout' => true,
+        ]
+);
+image_pipeline_assert(
+    (string) $visionCaptionSelected['caption'] === 'Podpis opisujący faktyczny obraz testowy.'
+    && (string) $visionCaptionSelected['alt'] === 'Podpis opisujący faktyczny obraz testowy.',
+    'Zaakceptowany obraz nie przejął semantycznego podpisu Vision.'
+);
 $weakMetadataCandidate = [...$results[0],
     'provider_id' => 'weak-semantic-fixture',
     'title' => 'File:Abstract archival photograph.png',
@@ -802,7 +866,9 @@ $accountingSummary = fulfill_article_source_images(
         $claim = gemini_article_budget_claim($database, $accountingPostId, ARTICLE_IMAGE_GEMINI_OPERATION_TYPE, 'images', 1, 'accounting-' . $slot . '-' . $accountingTransportCalls);
         gemini_article_budget_reconcile_claim($database, $accountingPostId, (string) $claim['claim_token'], 'completed');
         return ['semantic_relevance'=>9,'editorial_fit'=>9,'hero_fit'=>5,'depicts_required_subject'=>true,
-            'misleading'=>false,'inappropriate'=>false,'decision'=>'accept','reason'=>'controlled real transport fixture'];
+            'misleading'=>false,'inappropriate'=>false,'decision'=>'accept','reason'=>'controlled real transport fixture',
+            'suggested_caption'=>'Controlled ' . $slot . ' image.', 'visual_subject'=>'Controlled ' . $slot . ' subject',
+            'visual_function'=>'Controlled ' . $slot . ' function', 'visual_type'=>'photo'];
     },
     'direct',
     3,

@@ -133,6 +133,10 @@ function article_image_semantic_queries(array $plannedImage, ?int $budget = null
     if ($intent !== '') {
         $base[] = $intent;
     }
+    // A slot can legitimately contain several literal/direct formulations.
+    // Do not let them starve the recovery tiers: metadata discovery is cheap,
+    // while Vision remains bounded later by the ranked shortlist.
+    $budget = max($budget, min(8, count($base) + 3));
     $seed = trim((string) ($base[0] ?? $intent));
     $explicitRelated = array_values(array_unique(array_filter(array_map(
         static fn ($query): string => trim((string) $query),
@@ -263,6 +267,16 @@ function article_image_direct_queries(array $plannedImage, ?int $budget = null):
     ))));
     $recoveryVariants = article_image_direct_query_recovery_variants($queries);
     foreach ($recoveryVariants as $variant) $queries[] = $variant;
+    // A recovery replan may identify a mechanism-level query that still
+    // illustrates a direct slot.  Search it as a broader-direct candidate;
+    // Vision must still confirm direct or broader-direct fit, so this never
+    // silently admits a contextual asset into a direct-only slot.
+    if (in_array((string) ($plannedImage['recovery_relationship_policy'] ?? ''), ['direct', 'broader_direct'], true)) {
+        foreach ((array) ($plannedImage['search_queries_related'] ?? []) as $query) {
+            $query = trim((string) $query);
+            if ($query !== '') $queries[] = $query;
+        }
+    }
     $budget = max($budget ?? (int) app_config('source_image_query_budget_per_slot'), count($queries));
     $intent = trim((string) ($plannedImage['expected_content'] ?? $plannedImage['visual_intent'] ?? ''));
     if ($intent !== '') $queries[] = $intent;
@@ -322,7 +336,8 @@ function article_image_ranked_candidate_pool(
             catch (Throwable $exception) {
                 $reason = 'hard_technical_ineligible:' . article_image_local_reject_reason($exception);
                 $hardRejects[$reason] = ($hardRejects[$reason] ?? 0) + 1;
-                $audit[] = ['query'=>$query,'level'=>$level,'query_origin'=>$queryOrigin,'source'=>$provider,'result'=>'rejected','reason'=>$reason];
+                $audit[] = ['query'=>$query,'level'=>$level,'query_origin'=>$queryOrigin,'source'=>$provider,
+                    'url'=>$url,'result'=>'rejected','reason'=>$reason];
                 continue;
             }
             $hardReason = article_image_license_is_auto_safe((string) ($result['license'] ?? ''))
@@ -331,7 +346,8 @@ function article_image_ranked_candidate_pool(
             if ($hardReason !== null) {
                 $reason = 'hard_technical_ineligible:' . $hardReason;
                 $hardRejects[$reason] = ($hardRejects[$reason] ?? 0) + 1;
-                $audit[] = ['query'=>$query,'level'=>$level,'query_origin'=>$queryOrigin,'source'=>$provider,'result'=>'rejected','reason'=>$reason];
+                $audit[] = ['query'=>$query,'level'=>$level,'query_origin'=>$queryOrigin,'source'=>$provider,
+                    'url'=>$url,'result'=>'rejected','reason'=>$reason];
                 continue;
             }
             // Query order is an editorial priority.  Without this bounded
@@ -1142,6 +1158,112 @@ function article_image_semantic_gate_tokenize(string $text, ?array $stopWords = 
 }
 
 /**
+ * Compare two short editorial descriptions without treating inflectional
+ * variants (for example "makak" / "makaki") as different subjects.
+ * This is deliberately a diversity signal, never a relevance score.
+ */
+function article_image_semantic_text_similarity(string $first, string $second): float
+{
+    $left = article_image_semantic_gate_tokenize($first);
+    $right = article_image_semantic_gate_tokenize($second);
+    if ($left === [] || $right === []) return 0.0;
+    $hits = 0;
+    foreach ($left as $token) {
+        foreach ($right as $other) {
+            if (article_image_semantic_tokens_match($token, $other)) {
+                $hits++;
+                break;
+            }
+        }
+    }
+    return $hits / max(count($left), count($right));
+}
+
+/** Build one auditable semantic profile from the data already saved for Vision. */
+function article_image_diversity_profile(array $image): array
+{
+    $assessment = is_array($image['multimodal_assessment'] ?? null)
+        ? $image['multimodal_assessment']
+        : (json_decode((string) ($image['multimodal_assessment_json'] ?? '{}'), true) ?: []);
+    $caption = trim((string) ($image['caption'] ?? ''));
+    $visionCaption = trim((string) ($assessment['suggested_caption'] ?? ''));
+    $subject = trim((string) ($assessment['visual_subject'] ?? ''));
+    $function = trim((string) ($assessment['visual_function'] ?? ''));
+    return [
+        'caption' => $caption !== '' ? $caption : $visionCaption,
+        'subject' => $subject !== '' ? $subject : ($visionCaption !== '' ? $visionCaption : $caption),
+        'function' => $function !== '' ? $function : trim((string) ($image['expected_content'] ?? $image['visual_intent'] ?? '')),
+        'visual_type' => (string) ($assessment['visual_type'] ?? ''),
+        'relationship_level' => (string) ($assessment['relationship_level'] ?? ''),
+    ];
+}
+
+/**
+ * A pair is redundant only when actual-image evidence says that it performs
+ * effectively the same illustrative job. Similar topic alone is allowed.
+ */
+function article_image_semantic_duplicate_reason(array $candidate, array $accepted): ?array
+{
+    $left = article_image_diversity_profile($candidate);
+    $right = article_image_diversity_profile($accepted);
+    $captionSimilarity = article_image_semantic_text_similarity($left['caption'], $right['caption']);
+    $subjectSimilarity = article_image_semantic_text_similarity($left['subject'], $right['subject']);
+    $functionSimilarity = article_image_semantic_text_similarity($left['function'], $right['function']);
+    $sameType = $left['visual_type'] !== '' && $left['visual_type'] === $right['visual_type'];
+    $sameRelationship = $left['relationship_level'] !== '' && $left['relationship_level'] === $right['relationship_level'];
+
+    // Near-identical semantic captions are a strong editorial warning. A
+    // matching visual type/relationship prevents false positives for two
+    // genuinely different explanatory views of the same object.
+    if ($captionSimilarity >= 0.82 && ($sameType || $sameRelationship || $subjectSimilarity >= 0.62)) {
+        return [
+            'code' => 'semantic_duplicate',
+            'caption_similarity' => round($captionSimilarity, 3),
+            'subject_similarity' => round($subjectSimilarity, 3),
+            'function_similarity' => round($functionSimilarity, 3),
+            'against_image_id' => (int) ($accepted['id'] ?? 0),
+        ];
+    }
+    if ($subjectSimilarity >= 0.82 && $functionSimilarity >= 0.72 && ($sameType || $sameRelationship)) {
+        return [
+            'code' => 'insufficient_new_value',
+            'caption_similarity' => round($captionSimilarity, 3),
+            'subject_similarity' => round($subjectSimilarity, 3),
+            'function_similarity' => round($functionSimilarity, 3),
+            'against_image_id' => (int) ($accepted['id'] ?? 0),
+        ];
+    }
+    return null;
+}
+
+final class ArticleImageSemanticDuplicateException extends InvalidArgumentException
+{
+    public function __construct(public readonly array $diversity)
+    {
+        parent::__construct((string) ($diversity['code'] ?? 'semantic_duplicate')
+            . ': redundant_visual_against_image_' . (int) ($diversity['against_image_id'] ?? 0));
+    }
+}
+
+/** Reject only a redundant slot; all other accepted images remain untouched. */
+function article_image_assert_selected_diversity(int $postId, array $selected): void
+{
+    foreach (list_article_images($postId) as $accepted) {
+        if ((int) ($accepted['editorial_rejected'] ?? 0) === 1
+            || (int) ($accepted['multimodal_accepted'] ?? 0) !== 1
+            || (string) ($accepted['status'] ?? '') !== 'downloaded'
+            || ((string) ($accepted['role'] ?? '') === (string) ($selected['role'] ?? '')
+                && (string) ($accepted['section_id'] ?? '') === (string) ($selected['section_id'] ?? ''))) {
+            continue;
+        }
+        $reason = article_image_semantic_duplicate_reason($selected, $accepted);
+        if ($reason !== null) {
+            throw new ArticleImageSemanticDuplicateException($reason);
+        }
+    }
+}
+
+/**
  * Multimodal semantic/editorial assessment for an image candidate.
  *
  * In production, this calls Gemini Vision with article context + actual image.
@@ -1192,6 +1314,10 @@ function article_image_multimodal_assess(
         'contextual_useful' => (bool) ($assessment['contextual_useful'] ?? (($assessment['decision'] ?? '') === 'accept')),
         'honest_caption_possible' => (bool) ($assessment['honest_caption_possible'] ?? (($assessment['decision'] ?? '') === 'accept')),
         'suggested_caption' => trim((string) ($assessment['suggested_caption'] ?? '')),
+        // New Vision responses provide these directly. Older audited responses
+        // remain usable through the truthful caption/slot fallback below.
+        'visual_subject' => trim((string) ($assessment['visual_subject'] ?? $assessment['suggested_caption'] ?? $candidate['title'] ?? '')),
+        'visual_function' => trim((string) ($assessment['visual_function'] ?? $plannedImage['expected_content'] ?? $plannedImage['visual_intent'] ?? '')),
         'contains_readable_text' => (bool) ($assessment['contains_readable_text'] ?? false),
         'detail_density' => strtolower(trim((string) ($assessment['detail_density'] ?? 'high'))),
         'visual_type' => strtolower(trim((string) ($assessment['visual_type'] ?? 'other'))),
@@ -1207,11 +1333,34 @@ function article_image_multimodal_assess(
         || !in_array($assessment['relationship_level'], ['direct', 'broader_direct', 'strong_related', 'contextual_related', 'domain_related', 'unrelated'], true)
         || !in_array($assessment['detail_density'], ['low', 'medium', 'high'], true)
         || !in_array($assessment['visual_type'], ['photo', 'illustration', 'diagram', 'chart', 'screenshot', 'other'], true)
-        || $assessment['reason'] === '') {
+        || $assessment['reason'] === '' || $assessment['visual_subject'] === '' || $assessment['visual_function'] === '') {
         throw new RuntimeException('Gemini Vision zwróciło niepełną albo nieprawidłową ocenę obrazu.');
     }
 
     return $assessment;
+}
+
+/**
+ * A direct acquisition may not silently promote contextual fit to a direct
+ * slot. Contextual assets are admitted only by the explicit recovery path,
+ * which also persists the required source-backed context.
+ */
+function article_image_assessment_allows_planned_slot(array $assessment, array $plannedImage): bool
+{
+    if ((string) ($assessment['decision'] ?? '') !== 'accept'
+        || empty($assessment['honest_caption_possible'])
+        || !empty($assessment['misleading'])
+        || !empty($assessment['inappropriate'])) {
+        return false;
+    }
+
+    $level = (string) ($assessment['relationship_level'] ?? 'unrelated');
+    if ((string) ($plannedImage['relationship_policy'] ?? '') === 'ww_contextual_v1') {
+        return !empty($assessment['contextual_useful'])
+            && in_array($level, ['direct', 'broader_direct', 'strong_related', 'contextual_related', 'domain_related'], true);
+    }
+
+    return in_array($level, ['direct', 'broader_direct'], true);
 }
 
 final class ArticleImageVisionRejectedException extends InvalidArgumentException
@@ -1488,15 +1637,17 @@ function article_image_gemini_vision_assess(
             'contextual_useful' => ['type'=>'boolean'],
             'honest_caption_possible' => ['type'=>'boolean'],
             'suggested_caption' => ['type'=>'string'],
+            'visual_subject' => ['type'=>'string','minLength'=>3,'maxLength'=>500],
+            'visual_function' => ['type'=>'string','minLength'=>3,'maxLength'=>500],
             'contains_readable_text' => ['type'=>'boolean'],
             'detail_density' => ['type'=>'string','enum'=>['low','medium','high']],
             'visual_type' => ['type'=>'string','enum'=>['photo','illustration','diagram','chart','screenshot','other']],
             'safe_for_side_layout' => ['type'=>'boolean'],
         ],
-        'required' => ['semantic_relevance', 'editorial_fit', 'hero_fit', 'depicts_required_subject', 'misleading', 'inappropriate', 'decision', 'reason', 'relationship_level', 'contextual_useful', 'honest_caption_possible', 'suggested_caption', 'contains_readable_text', 'detail_density', 'visual_type', 'safe_for_side_layout'],
+        'required' => ['semantic_relevance', 'editorial_fit', 'hero_fit', 'depicts_required_subject', 'misleading', 'inappropriate', 'decision', 'reason', 'relationship_level', 'contextual_useful', 'honest_caption_possible', 'suggested_caption', 'visual_subject', 'visual_function', 'contains_readable_text', 'detail_density', 'visual_type', 'safe_for_side_layout'],
     ];
     $context = [
-        'ww_policy_instruction' => 'Evaluate direct fit first. If direct fit is false, independently evaluate broader_direct, strong_related, contextual_related, or domain_related. Under ww_contextual_v1 accept any of those five levels when the image is useful, honest, legal, not misleading, and an honest contextual caption is possible. depicts_required_subject=false alone is not a rejection reason. suggested_caption must disclose contextual or illustrative use and must not claim this is the exact study or instrument. In the same response classify presentation metadata: readable embedded text, detail density, visual type, and whether the image remains clear at roughly half article width. safe_for_side_layout must be false for diagrams, charts, screenshots, high detail, or important readable text.',
+        'ww_policy_instruction' => 'Evaluate direct fit first. If direct fit is false, independently evaluate broader_direct, strong_related, contextual_related, or domain_related. Under ww_contextual_v1 accept any of those five levels when the image is useful, honest, legal, not misleading, and an honest contextual caption is possible. depicts_required_subject=false alone is not a rejection reason. suggested_caption must disclose contextual or illustrative use and must not claim this is the exact study or instrument. visual_subject must name what the image actually depicts; visual_function must name the distinct information this image contributes for this slot, not merely repeat the article topic. In the same response classify presentation metadata: readable embedded text, detail density, visual type, and whether the image remains clear at roughly half article width. safe_for_side_layout must be false for diagrams, charts, screenshots, high detail, or important readable text.',
         'article_context' => $articleContext,
         'section_context' => (string) ($plannedImage['section_id'] ?? ''),
         'visual_slot' => [
@@ -1617,7 +1768,8 @@ function select_source_image_from_results(
     array $results,
     string $providerId,
     ?callable $geminiVisionCallback = null,
-    string $articleContext = ''
+    string $articleContext = '',
+    bool $allowContextualRecovery = false
 ): array {
     validate_planned_article_image(
         $plannedImage,
@@ -1631,6 +1783,9 @@ function select_source_image_from_results(
         if (!is_array($result) || (string) ($result['provider_id'] ?? '') !== $providerId) {
             continue;
         }
+        $priorVisionAssessment = is_array($result['_prior_vision_assessment'] ?? null)
+            ? $result['_prior_vision_assessment']
+            : null;
         $candidate = validate_source_image_candidate($result);
         if (!source_image_candidate_is_suitable_for_role($candidate, $plannedImage)) {
             throw new InvalidArgumentException(
@@ -1646,7 +1801,7 @@ function select_source_image_from_results(
          * multimodal semantic assessment sees it.
          */
         $semanticScore = article_image_semantic_gate_score($candidate, $plannedImage);
-        $scoredCandidates[] = [$semanticScore, $candidate];
+        $scoredCandidates[] = [$semanticScore, $candidate, $priorVisionAssessment];
     }
 
     if ($scoredCandidates === []) {
@@ -1657,18 +1812,25 @@ function select_source_image_from_results(
     usort($scoredCandidates, static fn (array $a, array $b): int => $b[0] <=> $a[0]);
 
     /* Phase 2: Multimodal assessment — the final publication gate. */
-    foreach ($scoredCandidates as [$score, $candidate]) {
+    foreach ($scoredCandidates as [$score, $candidate, $priorVisionAssessment]) {
+        $assessmentPlan = $allowContextualRecovery
+            ? [...$plannedImage, 'relationship_policy'=>'ww_contextual_v1']
+            : $plannedImage;
+        $assessmentCallback = $priorVisionAssessment === null
+            ? $geminiVisionCallback
+            : static fn (array $_candidate, array $_planned, string $_context): array => $priorVisionAssessment;
         $assessment = article_image_multimodal_assess(
             $candidate,
-            $plannedImage,
+            $assessmentPlan,
             $articleContext,
-            $geminiVisionCallback
+            $assessmentCallback
         );
 
-        if ((string) ($assessment['decision'] ?? '') === 'accept') {
+        if (article_image_assessment_allows_planned_slot($assessment, $assessmentPlan)) {
             $manifest = $candidate['rights_manifest'];
             $manifest['topic_role'] = (string) $plannedImage['role'];
             $manifest = validate_image_rights_manifest($manifest);
+            $caption = trim((string) ($assessment['suggested_caption'] ?? ''));
             return array_merge($plannedImage, [
                 'source_page_url' => $candidate['source_page_url'],
                 'source_file_url' => $candidate['source_file_url'],
@@ -1684,6 +1846,8 @@ function select_source_image_from_results(
                 'rights_manifest' => $manifest,
                 'multimodal_assessment' => $assessment,
                 'multimodal_accepted' => 1,
+                'caption' => $caption !== '' ? $caption : (string) ($plannedImage['caption'] ?? ''),
+                'alt' => $caption !== '' ? $caption : (string) ($plannedImage['alt'] ?? ''),
             ]);
         }
     }
@@ -2492,6 +2656,66 @@ function article_image_provider_search_with_retry(
     return [];
 }
 
+/** Deferred Vision or retriable source failures are not evidence that a slot is exhausted. */
+function article_image_search_audit_has_pending_recovery(array $audit): bool
+{
+    $lastTerminal = -1;
+    foreach ($audit as $index => $entry) {
+        if (!is_array($entry)) continue;
+        $result = (string) ($entry['result'] ?? '');
+        $reason = mb_strtolower((string) ($entry['reason'] ?? ''));
+        if ($result === 'exhausted' || ($result === 'missing' && str_contains($reason, 'all_legal_candidates_exhausted'))) {
+            $lastTerminal = $index;
+        }
+    }
+    foreach (array_slice($audit, $lastTerminal + 1) as $entry) {
+        if (!is_array($entry)) continue;
+        $result = (string) ($entry['result'] ?? '');
+        $reason = mb_strtolower((string) ($entry['reason'] ?? ''));
+        if ($result === 'deferred' && in_array($reason, [
+            'vision_shortlist_limit_per_missing_slot',
+            'vision_budget_reserved_for_p06_p07_p08_p09',
+            'local_candidate_check_limit_per_missing_slot',
+        ], true)) return true;
+        if ($result === 'search_error' && (str_contains($reason, 'provider_rate_limited')
+            || str_contains($reason, 'http 429') || str_contains($reason, 'timeout'))) return true;
+        if ($result === 'rejected' && !empty($entry['local_reject'])
+            && (str_contains($reason, 'http 429') || str_contains($reason, 'provider_rate_limited')
+                || str_contains($reason, 'timeout'))) return true;
+    }
+    return false;
+}
+
+/** Keep retryable transports available, but do not spend another shortlist slot on known-bad bytes. */
+function article_image_search_audit_local_hard_rejected_urls(array $audit): array
+{
+    $urls = [];
+    foreach ($audit as $entry) {
+        if (!is_array($entry) || empty($entry['local_reject'])) continue;
+        $url = trim((string) ($entry['url'] ?? ''));
+        $reason = mb_strtolower((string) ($entry['final_local_reject_reason'] ?? $entry['reason'] ?? ''));
+        if ($url === '' || str_contains($reason, 'download_failure')
+            || str_contains($reason, 'http 429') || str_contains($reason, 'provider_rate_limited')
+            || str_contains($reason, 'timeout')) continue;
+        if (str_contains($reason, 'too_small') || str_contains($reason, 'other_hard_technical')
+            || str_contains($reason, 'rights_or_license') || str_contains($reason, 'mime')) {
+            $urls[$url] = true;
+        }
+    }
+    return $urls;
+}
+
+function article_image_has_pending_recovery(int $postId): bool
+{
+    $statement = bueno_database()->prepare('SELECT search_audit_json FROM article_images WHERE post_id=:post AND status IN ("missing","planned","manual_review")');
+    $statement->execute([':post'=>$postId]);
+    foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $auditJson) {
+        $audit = json_decode((string) $auditJson, true);
+        if (is_array($audit) && article_image_search_audit_has_pending_recovery($audit)) return true;
+    }
+    return false;
+}
+
 /** Provider search is unmetered; GeminiBudget starts only at Vision/planner calls. */
 function article_image_default_searcher(?callable $providerSearch = null, ?callable $sleeper = null): callable
 {
@@ -2739,6 +2963,11 @@ function fulfill_article_source_images(
         'vision_calls_reserved' => 0,
     ];
     $imageRows = list_article_images($postId);
+    $coverage = article_image_coverage_state($postId);
+    $diversityRecoveryKeys = [];
+    foreach ((array) ($coverage['diversity_rejected_slots'] ?? []) as $rejectedSlot) {
+        $diversityRecoveryKeys[(string) ($rejectedSlot['role'] ?? '') . ':' . (string) ($rejectedSlot['section_anchor'] ?? '')] = $rejectedSlot;
+    }
     $usedUrls = [];
     foreach ($imageRows as $existing) {
         if (in_array((string) $existing['status'], ['selected', 'downloaded', 'manual_review'], true)
@@ -2758,10 +2987,12 @@ function fulfill_article_source_images(
     if ($visionCallLimit !== null) {
         $eligibleSlotKeys = [];
         foreach ($imageRows as $row) {
+            $rowKey = (string) ($row['role'] ?? '') . ':' . (string) ($row['section_id'] ?? '');
             $downloadedAndPresent = (string) $row['status'] === 'downloaded'
                 && trim((string) $row['local_path']) !== ''
                 && is_file(app_path((string) $row['local_path']));
-            if ($downloadedAndPresent || !in_array((string) $row['status'], ['planned','missing','manual_review','downloaded'], true)) continue;
+            if (($downloadedAndPresent && !isset($diversityRecoveryKeys[$rowKey]))
+                || !in_array((string) $row['status'], ['planned','missing','manual_review','downloaded'], true)) continue;
             $eligibleSlotKeys[] = (string) $row['role'] . ':' . (string) $row['section_id'];
         }
         $eligibleSlotKeys = array_values(array_unique($eligibleSlotKeys));
@@ -2771,6 +3002,17 @@ function fulfill_article_source_images(
     }
 
     foreach ($imageRows as $image) {
+        $imageKey = (string) ($image['role'] ?? '') . ':' . (string) ($image['section_id'] ?? '');
+        $diversityRecovery = (array) ($diversityRecoveryKeys[$imageKey] ?? []);
+        if ($diversityRecovery !== []) {
+            $priorAudit = json_decode((string) ($image['search_audit_json'] ?? '[]'), true);
+            $priorAudit = is_array($priorAudit) ? $priorAudit : [];
+            $priorAudit[] = ['query'=>'', 'level'=>'diversity_recovery', 'result'=>'missing',
+                'reason'=>(string) ($diversityRecovery['status'] ?? 'semantic_duplicate'),
+                'duplicate_against_image_id'=>(int) ($diversityRecovery['duplicate_against_image_id'] ?? 0)];
+            $image['search_audit_json'] = generation_json($priorAudit);
+            $image['status'] = 'missing';
+        }
         if ((string) $image['status'] === 'downloaded'
             && trim((string) $image['local_path']) !== ''
             && is_file(app_path((string) $image['local_path']))) {
@@ -2834,7 +3076,9 @@ function fulfill_article_source_images(
         if ($acquisitionMode !== 'direct') {
             $planned['relationship_policy'] = 'ww_contextual_v1';
         }
-        $audit = [];
+        $audit = $diversityRecovery !== []
+            ? (json_decode((string) ($image['search_audit_json'] ?? '[]'), true) ?: [])
+            : [];
         $completed = false;
         $slotKey = $planned['role'] . ':' . $planned['section_id'];
         $visionShortlistRemaining = $slotVisionAllowances === null
@@ -2852,7 +3096,30 @@ function fulfill_article_source_images(
             'contextual' => article_image_contextual_queries($planned),
             default => article_image_semantic_queries($planned),
         };
-        $pool = article_image_ranked_candidate_pool($planned, $attempts, $searcher, $usedUrls);
+        $priorAudit = json_decode((string) ($image['search_audit_json'] ?? '[]'), true);
+        $slotUsedUrls = $usedUrls + article_image_search_audit_local_hard_rejected_urls(
+            is_array($priorAudit) ? $priorAudit : []
+        );
+        $pool = article_image_ranked_candidate_pool($planned, $attempts, $searcher, $slotUsedUrls);
+        $priorVisionLevels = $acquisitionMode === 'direct'
+            ? ['direct', 'broader_direct']
+            : ['direct', 'broader_direct', 'strong_related', 'contextual_related', 'domain_related'];
+        if ($pool['ranked'] === [] && ($acquisitionMode === 'direct' || !empty($planned['acceptable_related']))
+            && trim((string) ($planned['slot_id'] ?? '')) !== '') {
+            $priorCandidates = article_image_prior_vision_accepted_candidates(
+                $postId,
+                (string) $planned['slot_id'],
+                $priorVisionLevels
+            );
+            if ($priorCandidates !== []) {
+                $pool = article_image_ranked_candidate_pool(
+                    $planned,
+                    [['query'=>'accepted vision recovery candidate','relation'=>'related_context','level'=>'vision_feedback','query_origin'=>'vision_feedback']],
+                    static fn (string $_): array => $priorCandidates,
+                    $slotUsedUrls
+                );
+            }
+        }
         array_push($audit, ...(array) $pool['audit']);
         foreach ((array) $pool['errors'] as $error) $summary['errors'][] = $image['role'] . '/' . $image['section_id'] . ': wyszukiwanie: ' . $error;
         foreach ((array) $pool['ranked'] as $rankedCandidate) {
@@ -2862,6 +3129,7 @@ function fulfill_article_source_images(
                 $relation = (string) $rankedCandidate['relation'];
                 $level = (string) $rankedCandidate['level'];
                 $queryOrigin = (string) ($rankedCandidate['query_origin'] ?? 'canonical_visual_plan');
+                $hasPriorVisionAssessment = is_array($result['_prior_vision_assessment'] ?? null);
                 $seriesKey = article_image_candidate_series_key($result);
                 if (article_image_candidate_deferred_for_rejected_series($result, $severelyRejectedSeries)) {
                     $audit[] = ['query'=>$query, 'level'=>$level, 'query_origin'=>$queryOrigin,
@@ -2877,13 +3145,13 @@ function fulfill_article_source_images(
                         'reason' => 'local_candidate_check_limit_per_missing_slot'];
                     break;
                 }
-                if ($visionShortlistRemaining <= 0) {
+                if (!$hasPriorVisionAssessment && $visionShortlistRemaining <= 0) {
                     $audit[] = ['query' => $query, 'level' => $level, 'query_origin'=>$queryOrigin, 'source' => (string) ($result['provider'] ?? ''),
                         'url' => (string) ($result['source_file_url'] ?? ''), 'result' => 'deferred',
                         'reason' => 'vision_shortlist_limit_per_missing_slot'];
                     break;
                 }
-                if ($visionCallLimit !== null && $summary['vision_calls_attempted'] >= $visionCallLimit) {
+                if (!$hasPriorVisionAssessment && $visionCallLimit !== null && $summary['vision_calls_attempted'] >= $visionCallLimit) {
                     $audit[] = ['query' => $query, 'level' => $level, 'query_origin'=>$queryOrigin, 'source' => (string) ($result['provider'] ?? ''),
                         'url' => (string) ($result['source_file_url'] ?? ''), 'result' => 'deferred',
                         'reason' => 'vision_budget_reserved_for_p06_p07_p08_p09'];
@@ -2907,6 +3175,7 @@ function fulfill_article_source_images(
                     $summary['vision_calls_attempted'] += $realVisionCalls;
                     $visionShortlistRemaining = max(0, $visionShortlistRemaining - $realVisionCalls);
                     $selected = article_image_honest_copy($selected, $relation, $result);
+                    article_image_assert_selected_diversity($postId, $selected);
                     $assessment = (array) ($selected['multimodal_assessment'] ?? []);
                     if ($acquisitionMode !== 'direct'
                         && in_array((string) ($assessment['relationship_level'] ?? ''), ['direct','broader_direct','strong_related','contextual_related','domain_related'], true)
@@ -2939,13 +3208,16 @@ function fulfill_article_source_images(
                     $summary['vision_calls_attempted'] += $realVisionCalls;
                     $visionShortlistRemaining = max(0, $visionShortlistRemaining - $realVisionCalls);
                     $watermarkRejected = str_starts_with($exception->getMessage(), 'watermark_rejected:');
+                    $diversity = $exception instanceof ArticleImageSemanticDuplicateException ? $exception->diversity : null;
                     if ($realVisionCalls > 0 && $seriesKey !== '' && $exception instanceof ArticleImageVisionRejectedException
                         && article_image_assessment_is_severe_reject($exception->assessment)) {
                         $severelyRejectedSeries[$seriesKey] = true;
                     }
                     $audit[] = ['query' => $query, 'level' => $level, 'query_origin'=>$queryOrigin, 'source' => (string) ($result['provider'] ?? ''),
                         'url' => (string) ($result['source_file_url'] ?? ''),
-                        'result' => $watermarkRejected ? 'watermark_rejected' : 'rejected', 'reason' => $exception->getMessage(),
+                        'result' => $watermarkRejected ? 'watermark_rejected' : 'rejected',
+                        'reason' => $diversity['code'] ?? $exception->getMessage(),
+                        'diversity' => $diversity,
                         'candidate_checked'=>true, 'local_reject'=>$realVisionCalls === 0,
                         'local_reject_reason'=>$realVisionCalls === 0 ? $exception->getMessage() : '',
                         'original_format'=>(string) ($result['mime'] ?? $result['format'] ?? pathinfo((string) parse_url((string) ($result['source_file_url'] ?? ''), PHP_URL_PATH), PATHINFO_EXTENSION)),
@@ -3129,6 +3401,35 @@ function article_final_visual_plan_schema(array $sectionIds, int $visualTarget):
     ],'required'=>['hero_slot','inline_slots'],'additionalProperties'=>false];
 }
 
+/** FinalVisualPlan must assign complementary illustrative functions, not synonyms to two slots. */
+function article_final_visual_plan_redundant_slot_pairs(array $slots): array
+{
+    $duplicates = [];
+    foreach ($slots as $index => $slot) {
+        if (!is_array($slot)) continue;
+        for ($otherIndex = $index + 1; $otherIndex < count($slots); $otherIndex++) {
+            $other = (array) $slots[$otherIndex];
+            $needSimilarity = article_image_semantic_text_similarity(
+                (string) ($slot['visual_need'] ?? ''),
+                (string) ($other['visual_need'] ?? '')
+            );
+            $querySimilarity = article_image_semantic_text_similarity(
+                implode(' ', [...(array) ($slot['search_queries_direct'] ?? []), ...(array) ($slot['search_queries_related'] ?? [])]),
+                implode(' ', [...(array) ($other['search_queries_direct'] ?? []), ...(array) ($other['search_queries_related'] ?? [])])
+            );
+            if ($needSimilarity >= 0.72 && $querySimilarity >= 0.55) {
+                $duplicates[] = [
+                    'first_slot_id' => (string) ($slot['slot_id'] ?? ''),
+                    'second_slot_id' => (string) ($other['slot_id'] ?? ''),
+                    'need_similarity' => round($needSimilarity, 3),
+                    'query_similarity' => round($querySimilarity, 3),
+                ];
+            }
+        }
+    }
+    return $duplicates;
+}
+
 function article_final_visual_plan_validate(array $input, array $output): array
 {
     $draftId = (int)($input['draft_version_id'] ?? 0);
@@ -3158,6 +3459,12 @@ function article_final_visual_plan_validate(array $input, array $output): array
         }
     }
     if (1 + count($inline) !== $target) throw new InvalidArgumentException('FinalVisualPlan nie odpowiada finalnemu visual target.');
+    $duplicates = article_final_visual_plan_redundant_slot_pairs([$hero, ...$inline]);
+    if ($duplicates !== []) {
+        $first = $duplicates[0];
+        throw new InvalidArgumentException('FinalVisualPlan ma redundantne funkcjonalnie sloty: '
+            . $first['first_slot_id'] . ' i ' . $first['second_slot_id'] . '.');
+    }
     return ['visual_target_total'=>$target,'slot_count'=>1+count($inline),'section_anchors'=>array_keys($anchors)];
 }
 
@@ -3189,6 +3496,7 @@ function prepare_article_final_visual_plan_operation(int $postId, int $topicId):
         'source_claim_map'=>article_image_approved_research_source_map($postId, $topicId),
         'preliminary_visual_directions'=>json_decode((string)($narrative['visual_plan_json'] ?? '{}'), true) ?: [],
         'instructions'=>[
+            'Assign every slot a complementary illustrative function; never return variants of the same subject, context, visual need, or query family.',
             'Return exactly one required hero plus visual_target_total-1 required inline slots.',
             'Use only existing dynamic section ids as inline section_anchor and distribute slots across the final article and A/B/C where supported.',
             'Direct queries require at least 1; prefer 3–5 diverse queries. Do not invent article sections.',
@@ -3404,9 +3712,12 @@ function article_image_shortage_recovery_input(int $postId, int $topicId): array
     ];
 }
 
-const ARTICLE_IMAGE_RECOVERY_REPLAN_MAX_ATTEMPTS = 2;
+// A final stubborn slot can remain after four valid, whole-plan replans. Keep
+// one last bounded replan available instead of routing an otherwise
+// recoverable article to manual handling.
+const ARTICLE_IMAGE_RECOVERY_REPLAN_MAX_ATTEMPTS = 5;
 
-/** Two bounded replans are allowed only while they preserve the P08/P09 closure budget. */
+/** Bounded replans are allowed only while they preserve the P08/P09 closure budget. */
 function article_image_recovery_replan_eligibility(array $coverage, array $budget, bool $normalPathsExhausted, int $priorReplans): array
 {
     $floor = (int) ($coverage['publication_visual_floor'] ?? 0);
@@ -3425,6 +3736,66 @@ function article_image_recovery_replan_eligibility(array $coverage, array $budge
         'max_replans'=>ARTICLE_IMAGE_RECOVERY_REPLAN_MAX_ATTEMPTS,
         'vision_candidate_limit_per_missing_slot'=>2,
     ];
+}
+
+/** Preserve useful Vision evidence so a replan can change visual strategy instead of replaying a rejected direct fit. */
+function article_image_replan_vision_feedback_from_records(array $records): array
+{
+    $feedback = [];
+    foreach ($records as $record) {
+        if (!is_array($record)) continue;
+        $slotId = trim((string) ($record['slot_identifier'] ?? ''));
+        $assessment = json_decode((string) ($record['provider_response_text'] ?? ''), true);
+        if ($slotId === '' || !is_array($assessment)
+            || (string) ($assessment['decision'] ?? '') !== 'accept'
+            || empty($assessment['contextual_useful']) || empty($assessment['honest_caption_possible'])
+            || !empty($assessment['misleading']) || !empty($assessment['inappropriate'])) {
+            continue;
+        }
+        $level = (string) ($assessment['relationship_level'] ?? '');
+        if (!in_array($level, ['strong_related', 'contextual_related', 'domain_related'], true)) continue;
+        $feedback[$slotId] = [
+            'relationship_level'=>$level,
+            'reason'=>trim((string) ($assessment['reason'] ?? '')),
+            'visual_type'=>(string) ($assessment['visual_type'] ?? ''),
+            'suggested_caption'=>trim((string) ($assessment['suggested_caption'] ?? '')),
+        ];
+    }
+    return $feedback;
+}
+
+function article_image_replan_vision_feedback(int $postId): array
+{
+    $statement = bueno_database()->prepare(
+        'SELECT slot_identifier,provider_response_text FROM article_image_vision_audit
+         WHERE post_id=:post AND status="completed" ORDER BY id ASC'
+    );
+    $statement->execute([':post'=>$postId]);
+    return article_image_replan_vision_feedback_from_records($statement->fetchAll());
+}
+
+/** Reuse a previously accepted Vision candidate after a replan authorizes its relationship policy. */
+function article_image_prior_vision_accepted_candidates(int $postId, string $slotId, array $allowedRelationshipLevels): array
+{
+    $statement = bueno_database()->prepare(
+        'SELECT provider_response_text,provider_response_json FROM article_image_vision_audit
+         WHERE post_id=:post AND slot_identifier=:slot AND status="completed" ORDER BY id DESC LIMIT 12'
+    );
+    $statement->execute([':post'=>$postId, ':slot'=>$slotId]);
+    $candidates = [];
+    foreach ($statement->fetchAll() as $record) {
+        $assessment = json_decode((string) ($record['provider_response_text'] ?? ''), true);
+        $response = json_decode((string) ($record['provider_response_json'] ?? ''), true);
+        $candidate = is_array($response) ? (array) ($response['_candidate'] ?? []) : [];
+        if (!is_array($assessment) || $candidate === []
+            || (string) ($assessment['decision'] ?? '') !== 'accept'
+            || empty($assessment['contextual_useful']) || empty($assessment['honest_caption_possible'])
+            || !empty($assessment['misleading']) || !empty($assessment['inappropriate'])
+            || !in_array((string) ($assessment['relationship_level'] ?? ''), $allowedRelationshipLevels, true)) continue;
+        $key = trim((string) ($candidate['source_file_url'] ?? $candidate['provider_id'] ?? ''));
+        if ($key !== '') $candidates[$key] = [...$candidate, '_prior_vision_assessment'=>$assessment];
+    }
+    return array_values($candidates);
 }
 
 function article_image_recovery_replan_input(int $postId, int $topicId): array
@@ -3456,13 +3827,32 @@ function article_image_recovery_replan_input(int $postId, int $topicId): array
             if ($result === 'rejected' && $reason !== '') $visionReasons[$slot][] = $reason;
         }
     }
+    $acceptedVisuals = [];
+    $acceptedImages = bueno_database()->prepare(
+        'SELECT role,section_id,caption,multimodal_assessment_json FROM article_images
+         WHERE post_id=:post AND status="downloaded" AND multimodal_accepted=1'
+    );
+    $acceptedImages->execute([':post'=>$postId]);
+    foreach ($acceptedImages->fetchAll() as $image) {
+        $assessment = json_decode((string) ($image['multimodal_assessment_json'] ?? '{}'), true) ?: [];
+        $acceptedVisuals[] = [
+            'slot'=>(string) $image['role'] . ':' . (string) $image['section_id'],
+            'caption'=>(string) ($image['caption'] ?? ''),
+            'visual_subject'=>(string) ($assessment['visual_subject'] ?? ''),
+            'visual_function'=>(string) ($assessment['visual_function'] ?? ''),
+        ];
+    }
     return [...$base,
+        'workflow_version'=>3,
+        'recovery_contract_version'=>2,
         'research_abc'=>array_intersect_key($researchPackage, array_flip(['primary_story','context_topics','curiosity_topics','claims'])),
         'current_coverage'=>$coverage,'attempted_queries'=>$attempted,'candidate_reject_summary'=>$rejectSummary,
-        'vision_rejection_reasons'=>$visionReasons,'budget'=>$budget,'replan_policy'=>$eligibility,
+        'vision_rejection_reasons'=>$visionReasons,'vision_feedback'=>article_image_replan_vision_feedback($postId),
+        'accepted_visuals'=>$acceptedVisuals,
+        'budget'=>$budget,'replan_policy'=>$eligibility,
         'instruction'=>'Replan only missing visual slots. Return exactly one slots[] entry for every current missing slot, copying each canonical slot_id verbatim: '
             . implode(', ', array_values(array_filter(array_map(static fn (array $slot): string => (string) ($slot['slot_id'] ?? ''), (array) ($base['missing_slots'] ?? [])))))
-            . '. Do not omit, duplicate, rename, or add slot_ids. Preserve locked core text. Make hero represent the concrete primary story A, not the general field. Broaden direct queries first; related recovery must name an allowed source-backed relationship.',
+            . '. Do not omit, duplicate, rename, or add slot_ids. Preserve locked core text. Every replan must add value distinct from accepted_visuals: never reuse the same depicted subject, historical context, or visual function. Make hero represent the concrete primary story A, not the general field. Broaden direct queries first. If vision_feedback shows an honest, accepted mechanism/context illustration for a missing inline slot after direct fit failed, use controlled_related with a source-backed relationship instead of replaying the direct strategy. Related recovery must name an allowed source-backed relationship.',
     ];
 }
 
@@ -3617,6 +4007,18 @@ function article_image_apply_recovery_replan(int $operationId): array
                     throw new RuntimeException('Validated recovery replan is not the effective VisualSlot state.');
                 }
                 $role = (string) ($slot['role'] ?? 'inline'); $anchor = (string) ($slot['section_anchor'] ?? '');
+                $stale = bueno_database()->prepare('SELECT id FROM article_images WHERE post_id=:post AND role=:role AND section_id=:section');
+                $stale->execute([':post'=>$postId, ':role'=>$role, ':section'=>$anchor]);
+                $staleImageId = (int) $stale->fetchColumn();
+                if ($staleImageId > 0) {
+                    // A replan replaces the slot contract. Its next candidate must
+                    // not inherit a P07 context block or a caption from the old
+                    // asset, otherwise the renderer could pair new bytes with old
+                    // source-backed context.
+                    bueno_database()->prepare('DELETE FROM article_related_context_blocks WHERE post_id=:post AND image_id=:image')
+                        ->execute([':post'=>$postId, ':image'=>$staleImageId]);
+                    reject_article_source_image($staleImageId);
+                }
                 $image = bueno_database()->prepare('UPDATE article_images SET visual_intent=:need,expected_content=:need,search_queries_json=:queries,status="missing",updated_at=CURRENT_TIMESTAMP WHERE post_id=:post AND role=:role AND section_id=:section');
                 $image->execute([':need'=>$slot['visual_need'],':queries'=>generation_json($slot['search_queries_direct']),':post'=>$postId,':role'=>$role,':section'=>$anchor]);
                 $revised[] = $slotId; unset($slot); break 2;
@@ -3907,13 +4309,30 @@ function article_recovery_validate_generation_operation(array $operation): void
         return;
     }
     if ($type === 'image_recovery_replan') {
-        article_image_shortage_recovery_preflight($input, true, false);
+        // P08 replans direct-only slots as well as related-recovery slots.
+        // Reusing the P06 preflight here made every direct-only missing slot
+        // look ineligible before Gemini could revise its visual strategy.
+        $draftId = (int) ($input['draft_version_id'] ?? 0);
+        $lock = $draftId > 0 ? core_text_lock_state($draftId) : [];
+        if (empty($lock['core_text_locked'])
+            || !hash_equals((string) ($lock['core_hash'] ?? ''), (string) ($input['locked_core_hash'] ?? ''))) {
+            article_recovery_preflight_fail('recovery_preflight_failed', 'Locked core hash changed before recovery replan transport.');
+        }
+        $plan = find_narrative_plan_for_post($postId, (int) $input['topic_id']);
+        if (!is_array($plan) || (int) ($plan['id'] ?? 0) !== (int) ($input['narrative_plan_id'] ?? 0)
+            || (array) ($input['missing_slots'] ?? []) === []) {
+            article_recovery_preflight_fail('recovery_invalid_narrative_plan', 'Recovery replan has no current missing slots or NarrativePlan.');
+        }
         $currentCount = article_image_valid_recovery_replan_count($postId, (int) $input['topic_id']);
         if ($currentCount >= ARTICLE_IMAGE_RECOVERY_REPLAN_MAX_ATTEMPTS) {
             article_recovery_preflight_fail('recovery_replan_limit', 'Maximum current-contract visual recovery replans reached for this article.');
         }
         $policy = article_image_recovery_replan_retry_state(
-            $postId, (int) $input['topic_id'], article_image_coverage_state($postId, (int) $input['topic_id']), $budget, true
+            $postId,
+            (int) $input['topic_id'],
+            article_image_coverage_state($postId, (int) $input['topic_id']),
+            $budget,
+            !article_image_has_pending_recovery($postId)
         );
         if (empty($policy['eligible'])) article_recovery_preflight_fail('recovery_replan_not_eligible', 'Visual recovery replan no longer satisfies coverage or budget gates.');
         return;
@@ -4426,12 +4845,25 @@ function article_image_apply_shortage_recovery(int $operationId, ?callable $down
         try {
             $isHeroRecovery = (string) ($slot['role'] ?? '') === 'hero'
                 && (string) ($recovery['recovery_policy'] ?? '') === 'source_backed_related_hero_v1';
+            $allowsContextualRecovery = !$isHeroRecovery
+                && str_starts_with((string) ($recovery['recovery_policy'] ?? ''), 'source_backed_related_');
             $selected = $isHeroRecovery
                 ? article_image_related_hero_selected($candidate, [...$planned,
                     'direct_exhaustion'=>(array) ($slot['direct_exhaustion'] ?? []),
                 ])
-                : select_source_image_from_results($planned, [$candidate], (string) $candidate['provider_id'], $vision, $context);
+                : select_source_image_from_results(
+                    $planned,
+                    [$candidate],
+                    (string) $candidate['provider_id'],
+                    $vision,
+                    $context,
+                    $allowsContextualRecovery
+                );
+            if ($allowsContextualRecovery) {
+                $selected['multimodal_assessment']['contextual_policy'] = 'ww_contextual_v1';
+            }
             $selected = article_image_honest_copy($selected, (string) $candidate['relationship'], $candidate);
+            article_image_assert_selected_diversity($postId, $selected);
             $downloaded = ($downloader ?? static fn (array $image): array => download_source_image($image))($selected);
             $imageId = persist_article_image($postId, $downloaded, 'recovery:' . $slotId);
             $moduleOperation = prepare_article_additive_module_operation(
@@ -4455,7 +4887,9 @@ function article_image_apply_shortage_recovery(int $operationId, ?callable $down
                 bueno_database()->prepare('UPDATE article_images SET multimodal_accepted=0,updated_at=CURRENT_TIMESTAMP WHERE id=:id')
                     ->execute([':id' => (int) $imageId]);
             }
-            $rejected[] = ['slot_id' => $slotId, 'reason' => 'recovery_apply_failed', 'error' => mb_substr($exception->getMessage(), 0, 500)];
+            $diversity = $exception instanceof ArticleImageSemanticDuplicateException ? $exception->diversity : null;
+            $rejected[] = ['slot_id' => $slotId, 'reason' => $diversity['code'] ?? 'recovery_apply_failed',
+                'diversity'=>$diversity, 'error' => mb_substr($exception->getMessage(), 0, 500)];
         }
     }
     refresh_article_image_rendering($postId);
@@ -4637,7 +5071,7 @@ function render_article_image_record(array $image, bool $hero = false): string
     $detailInline = !empty($presentation['detail_inline']);
     $editorialDescription = $detailInline
         ? htmlspecialchars(article_image_detail_inline_description($image), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
-        : '';
+        : $caption;
     $loading = $hero ? ' loading="eager" fetchpriority="high"' : ' loading="lazy"';
     $responsive = article_image_responsive_attributes(
         $path,
@@ -4655,12 +5089,8 @@ function render_article_image_record(array $image, bool $hero = false): string
         . '" width="' . max(1, (int) ($image['width'] ?? 1))
         . '" height="' . max(1, (int) ($image['height'] ?? 1))
         . '" decoding="async"' . $responsive . $loading . '>';
-    if ($detailInline) {
-        $zoomLabel = htmlspecialchars('Powiększ ilustrację: ' . (string) ($image['alt'] ?? 'grafika artykułu'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-        $html .= '<div class="article-image-media-card' . (!empty($presentation['requires_neutral_media_card']) ? ' article-image-media-card--neutral' : '') . (!empty($presentation['is_tall']) ? ' article-image-media-card--portrait' : '') . '"><a class="article-image-zoom" href="../' . htmlspecialchars($path, ENT_QUOTES, 'UTF-8') . '" data-article-detail-zoom data-article-zoom-caption="' . $editorialDescription . '" aria-label="' . $zoomLabel . '">' . $imageTag . '</a><div class="article-image-zoom__bar" aria-hidden="true">Kliknij, aby powiększyć</div></div>';
-    } else {
-        $html .= $imageTag;
-    }
+    $zoomLabel = htmlspecialchars('Powiększ ilustrację: ' . (string) ($image['alt'] ?? 'grafika artykułu'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $html .= '<div class="article-image-media-card' . (!empty($presentation['requires_neutral_media_card']) ? ' article-image-media-card--neutral' : '') . (!empty($presentation['is_tall']) ? ' article-image-media-card--portrait' : '') . '"><a class="article-image-zoom" href="../' . htmlspecialchars($path, ENT_QUOTES, 'UTF-8') . '" data-article-detail-zoom data-article-zoom-caption="' . $editorialDescription . '" aria-label="' . $zoomLabel . '">' . $imageTag . '<span class="article-image-zoom__bar">Kliknij, aby powiększyć</span></a></div>';
     if ($detailInline) {
         $html .= '<figcaption><p class="article-image-description">' . $editorialDescription . '</p>';
         if ($contextNote !== '') $html .= '<p class="article-image-disclosure">' . $contextNote . '</p>';
@@ -4677,7 +5107,7 @@ function render_article_image_record(array $image, bool $hero = false): string
             $html .= '<small class="article-image-context-note">' . $contextNote . '</small>';
         }
         if ($attribution !== '') {
-            $html .= '<small class="article-image-credit">' . $attribution;
+            $html .= '<details class="article-image-meta"><summary>Źródło i licencja</summary><p class="article-image-credit">' . $attribution;
             if ($source !== '') {
                 $html .= ' · <a href="' . $source . '" rel="noopener noreferrer">źródło</a>';
             }
@@ -4686,7 +5116,7 @@ function render_article_image_record(array $image, bool $hero = false): string
                     ? '<a href="' . $licenseUrl . '" rel="license noopener noreferrer">' . $license . '</a>'
                     : $license);
             }
-            $html .= '</small>';
+            $html .= '</p></details>';
         }
         $html .= '</figcaption>';
     }
@@ -4843,7 +5273,7 @@ function prepare_article_layout_plan_operation(int $postId, int $topicId): int
     if ($draftId <= 0 || !function_exists('core_text_lock_state') || empty(core_text_lock_state($draftId)['core_text_locked'])) {
         throw new RuntimeException('LayoutPlan wymaga zaakceptowanego locked core textu.');
     }
-    $images = array_map(static fn (array $image): array => ['id'=>(int)$image['id'], 'role'=>(string)$image['role'], 'section_id'=>(string)$image['section_id'], 'relationship'=>(string)$image['relationship'], 'visual_intent'=>(string)$image['visual_intent']], list_article_images($postId));
+    $images = array_map(static fn (array $image): array => ['id'=>(int)$image['id'], 'role'=>(string)$image['role'], 'section_id'=>(string)$image['section_id'], 'relationship'=>(string)$image['relationship'], 'visual_intent'=>(string)$image['visual_intent']], article_image_required_records($postId, $topicId));
     $plan = find_narrative_plan_for_post($postId, $topicId);
     $selection = is_array($plan) ? narrative_plan_editorial_payload($plan) : [];
     $visualPlan = is_array($plan) ? article_image_effective_visual_plan($postId, $topicId, $plan) : [];
@@ -4873,7 +5303,7 @@ function article_layout_plan_for_post(int $postId, array &$audit = []): array
 function article_layout_reusable_operation_id(int $postId): ?int
 {
     $requiredInline = [];
-    foreach (list_article_images($postId) as $image) {
+    foreach (article_image_required_records($postId) as $image) {
         if ((string) ($image['role'] ?? '') !== 'inline') continue;
         $requiredInline[(int) $image['id']] = true;
     }
@@ -5002,7 +5432,20 @@ function article_render_text_with_emphasis(string $text, array $phrases): string
 }
 
 /** Deterministic, mobile-safe composition. Each approved image is emitted once. */
-function render_article_blocks_with_layout(array $blocks, array $images, array $plan, array $contextBlocks = [], array &$audit = []): string
+function article_section_is_semantic_callout(array $block): bool
+{
+    return in_array((string) ($block['content_type'] ?? ''), [
+        'short_callout',
+        'takeaway',
+        'summary',
+        'conclusion',
+        'highlight',
+        'key_insight',
+        'key-insight',
+    ], true);
+}
+
+function render_article_blocks_with_layout(array $blocks, array $images, array $plan, array $contextBlocks = [], array &$audit = [], array $afterSectionHtml = []): string
 {
     $plan = article_layout_plan_or_default($plan, $audit);
     $renderable = array_values(array_filter($images, static fn (array $image): bool => (int)($image['editorial_rejected'] ?? 0) !== 1 && (int)($image['is_fallback'] ?? 0) !== 1));
@@ -5092,8 +5535,10 @@ function render_article_blocks_with_layout(array $blocks, array $images, array $
         $contentType = (string) ($block['content_type'] ?? 'prose');
         $sectionText = '';
         foreach ((array) ($block['blocks'] ?? []) as $inner) if ((string) ($inner['type'] ?? '') === 'paragraph') $sectionText .= (string) ($inner['text'] ?? '');
+        $semanticCallout = article_section_is_semantic_callout($block);
         $cardProposed = $callout !== '' || in_array($layout, ['feature','compact'], true);
-        $cardEligible = !$isDynamicV2 || ($cardProposed && in_array($contentType, ['short_callout','curiosity','comparison','unknowns'], true)
+        $cardEligible = !$isDynamicV2 || ($callout !== '' && $semanticCallout)
+            || ($cardProposed && in_array($contentType, ['short_callout','curiosity','comparison','unknowns'], true)
             && mb_strlen($sectionText) <= 500 && $consecutiveCards < 2);
         if (!$cardEligible) {
             if ($callout !== '' || in_array($layout, ['feature','compact'], true)) $audit[] = ['code'=>'card_to_prose_fallback','section_id'=>$section];
@@ -5115,7 +5560,7 @@ function render_article_blocks_with_layout(array $blocks, array $images, array $
         }
         $headingBlocks = [];
         $renderBlock = $block;
-        if ($detailInlineHeading && (string) ($block['type'] ?? '') === 'section') {
+        if ($detailInlineHeading && $callout === '' && (string) ($block['type'] ?? '') === 'section') {
             $bodyBlocks = [];
             $headingLifted = false;
             foreach ((array) ($block['blocks'] ?? []) as $inner) {
@@ -5141,11 +5586,18 @@ function render_article_blocks_with_layout(array $blocks, array $images, array $
             $audit[] = ['code'=>'side_image_wrapped_with_section','section_id'=>$section,'image_id'=>$imageId];
         }
         foreach ($sectionImages as $image) if (!isset($sideImageIds[(int)($image['id'] ?? 0)]) && ($imagePlacements[(int)($image['id'] ?? 0)] ?? 'inline') === 'before_section') $html .= $renderImage($image, $section, 'before_section');
-        $html .= render_article_blocks([$renderBlock], []);
+        $sectionHtml = render_article_blocks([$renderBlock], []);
+        if ($callout !== '') {
+            $html .= '<aside class="article-layout__callout article-layout__callout--' . htmlspecialchars($callout, ENT_QUOTES, 'UTF-8')
+                . '" data-callout-source="semantic">' . $sectionHtml . '</aside>';
+        } else {
+            $html .= $sectionHtml;
+        }
         foreach ($sectionImages as $image) if (!isset($sideImageIds[(int)($image['id'] ?? 0)]) && ($imagePlacements[(int)($image['id'] ?? 0)] ?? 'inline') === 'inline') $html .= $renderImage($image, $section, 'inline');
         $html .= $renderContexts($contextsBySection[$section]['after_image'] ?? []);
         foreach ($sectionImages as $image) if (!isset($sideImageIds[(int)($image['id'] ?? 0)]) && ($imagePlacements[(int)($image['id'] ?? 0)] ?? 'inline') === 'after_section') $html .= $renderImage($image, $section, 'after_section');
         $html .= $renderContexts($contextsBySection[$section]['after_section'] ?? []);
+        $html .= (string) ($afterSectionHtml[$section] ?? '');
         $html .= '</div>';
         if ($section !== '') $renderedSectionCount++;
         if ($contextualHero !== null && $renderedSectionCount === 1) {
@@ -5164,6 +5616,12 @@ function render_article_blocks_with_layout(array $blocks, array $images, array $
     foreach ($inlineBySection as $section => $sectionImages) foreach ($sectionImages as $image) $html .= $renderImage($image, (string)$section, $imagePlacements[(int)($image['id'] ?? 0)] ?? 'inline');
     foreach ($contextsBySection as $sectionContexts) foreach ($sectionContexts as $placementContexts) $html .= $renderContexts($placementContexts);
     return $html . '</div>';
+}
+
+function article_section_dom_id(string $sectionId): string
+{
+    $normalized = preg_replace('/[^A-Za-z0-9_-]+/', '-', trim($sectionId)) ?? '';
+    return 'article-section-' . trim($normalized, '-');
 }
 
 function render_article_blocks(array $blocks, array $images): string
@@ -5189,15 +5647,20 @@ function render_article_blocks(array $blocks, array $images): string
         } elseif ($type === 'quote') {
             $html .= '<blockquote><p>' . $escape((string) $block['text']) . '</p></blockquote>';
         } elseif ($type === 'list') {
+            $presentationList = !empty($block['presentation_list']);
+            if ($presentationList) $html .= '<div class="article-layout__inset-list" data-text-presentation="list-group">';
             $html .= '<ul>';
             foreach ((array) $block['items'] as $item) {
                 $html .= '<li>' . article_render_text_with_emphasis((string) $item, (array) ($block['emphasis_phrases'] ?? [])) . '</li>'
                     . (!empty($block['presentation_list']) ? "\n" : '');
             }
             $html .= '</ul>';
+            if ($presentationList) $html .= '</div>';
         } elseif ($type === 'section') {
             $variant = (string) ($block['variant'] ?? 'default');
-            $html .= '<section id="' . $escape((string) $block['id'])
+            $sectionId = (string) $block['id'];
+            $html .= '<section id="' . $escape(article_section_dom_id($sectionId))
+                . '" data-article-section-id="' . $escape($sectionId)
                 . '" class="article-section article-section--' . $escape($variant) . '">'
                 . render_article_blocks((array) $block['blocks'], $images) . '</section>';
         } elseif ($type === 'illustration') {

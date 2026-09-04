@@ -64,6 +64,21 @@ foreach ($cases as $characters => [$blockCount, $expectedSlots]) {
     }
 }
 
+foreach ([-2, -1, 0, 1, 2] as $offset) {
+    advertising_assert(
+        advertising_slot_count_from_visual_count(4, $offset) === 4 + $offset,
+        "Offset {$offset} nie zachowuje targetu reklam dla W=4."
+    );
+}
+$fourSectionBoundaries = advertising_plan_article_boundaries(
+    advertising_fixture_blocks(6963, 4),
+    array_replace($enabledPreview, ['max_inline_slots' => 2])
+);
+advertising_assert(
+    count($fourSectionBoundaries) === 2,
+    'Artykuł 4/4 z czterema sekcjami nie otrzymuje dwóch bezpiecznych granic inline.'
+);
+
 $unsafe = [
     ['type' => 'paragraph', 'text' => str_repeat('a', 900)],
     ['type' => 'heading', 'level' => 2, 'text' => 'Sekcja'],

@@ -736,6 +736,30 @@ function review_quality_risk(int $checkId, string $decision, string $reason): vo
         ':passed' => $passed ? 1 : 0,
         ':id' => $checkId,
     ]);
+    if ($passed) {
+        quality_resume_after_human_risk_approval($check);
+    }
+}
+
+/** A human-approved high-risk QC resumes only the safe, remaining workflow stages. */
+function quality_resume_after_human_risk_approval(array $check): void
+{
+    if (generation_mode() !== 'api'
+        || !function_exists('create_generation_workflow_batch')
+        || !function_exists('generation_batch_launch_worker')) {
+        return;
+    }
+    $draft = find_article_draft_by_id((int) ($check['draft_version_id'] ?? 0));
+    $topicId = (int) ($draft['topic_id'] ?? 0);
+    if ($topicId <= 0) return;
+
+    $workflow = create_generation_workflow_batch(
+        [$topicId],
+        'generate_all',
+        'human-risk-approved-qc-' . (int) $check['id'],
+        'full-auto'
+    );
+    if (is_array($workflow['batch'] ?? null)) generation_batch_launch_worker();
 }
 
 /** Routes QC failures to a bounded automatic repair stage without weakening any hard block. */
@@ -867,6 +891,8 @@ function article_image_coverage_state(int $postId, ?int $topicId = null, bool $r
     $images = $imagesStatement->fetchAll();
     $filled = [];
     $missing = [];
+    $diversityAccepted = [];
+    $diversityRejected = [];
     $heroStatus = 'missing';
     foreach ($slots as $slot) {
         $role = (string) ($slot['role'] ?? 'inline');
@@ -934,8 +960,26 @@ function article_image_coverage_state(int $postId, ?int $topicId = null, bool $r
             }
         }
         $entry = ['slot_id' => (string) ($slot['slot_id'] ?? ''), 'role' => $role, 'section_anchor' => $anchor, 'status' => $status];
-        if (in_array($status, ['direct_ok', 'broader_direct_ok', 'related_supported', 'controlled_related_supported'], true)) $filled[] = $entry;
-        else $missing[] = $entry;
+        if (in_array($status, ['direct_ok', 'broader_direct_ok', 'related_supported', 'controlled_related_supported'], true)) {
+            foreach ($diversityAccepted as $accepted) {
+                $duplicate = article_image_semantic_duplicate_reason((array) $image, $accepted);
+                if ($duplicate === null) continue;
+                $status = (string) $duplicate['code'];
+                $entry['status'] = $status;
+                $entry['duplicate_against_image_id'] = (int) $duplicate['against_image_id'];
+                $entry['diversity'] = $duplicate;
+                $diversityRejected[] = $entry;
+                break;
+            }
+            if (in_array($status, ['direct_ok', 'broader_direct_ok', 'related_supported', 'controlled_related_supported'], true)) {
+                $filled[] = $entry;
+                if (is_array($image)) $diversityAccepted[] = $image;
+            } else {
+                $missing[] = $entry;
+            }
+        } else {
+            $missing[] = $entry;
+        }
         if ($role === 'hero') $heroStatus = $status;
     }
     $draftStatement = bueno_database()->prepare(
@@ -962,6 +1006,7 @@ function article_image_coverage_state(int $postId, ?int $topicId = null, bool $r
         'final_article_length'=>(int) $targetState['final_article_length'], 'visual_slot_count'=>(int) $targetState['visual_slot_count'],
         'visual_deficit'=>(int) $targetState['visual_deficit'], 'image_plan_expansion_required'=>(int) $targetState['visual_deficit'] > 0,
         'publication_visual_floor'=>$publicationFloor, 'publication_floor_met'=>$publicationFloorMet,
+        'diversity_rejected_slots'=>$diversityRejected,
         'narrative_plan_id' => is_array($plan) ? (int) ($plan['id'] ?? 0) : null];
 }
 
@@ -1077,7 +1122,7 @@ function assert_post_quality_allows_publication(int $postId): void
     );
     $batchStmt->execute([':post_id' => $postId]);
     $batchItem = $batchStmt->fetch();
-    if (is_array($batchItem) && (string) $batchItem['status'] === 'manual_review') {
+    if (is_array($batchItem) && (string) $batchItem['status'] === 'manual_review' && empty($coverage['coverage_complete'])) {
         throw new RuntimeException(
             'Publikacja zablokowana: artykuł wymaga przeglądu redakcyjnego (budżet Gemini wyczerpany).'
         );
@@ -1100,9 +1145,29 @@ function assert_post_quality_allows_publication(int $postId): void
         throw new RuntimeException('Publikacja zablokowana: brak pozytywnego finalnego QC multimodalnego.');
     }
     $budget = gemini_article_budget_state($postId);
-    if ((int) ($budget['used_calls'] ?? 0) > GEMINI_ARTICLE_CALL_LIMIT || (int) ($budget['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT) > GEMINI_ARTICLE_CALL_LIMIT) {
+    $budgetMax = gemini_article_budget_effective_max($budget);
+    if ((int) ($budget['used_calls'] ?? 0) > $budgetMax
+        || ((int) ($budget['max_calls'] ?? GEMINI_ARTICLE_CALL_LIMIT) > GEMINI_ARTICLE_CALL_LIMIT
+            && !gemini_article_budget_has_authorized_extension($budget))) {
         throw new RuntimeException('Publikacja zablokowana: przekroczono GeminiBudget ' . GEMINI_ARTICLE_CALL_LIMIT . '.');
     }
+}
+
+function final_multimodal_qc_allowed_repair_operations(): array
+{
+    return ['none','caption','heading','transition_paragraph','placement','context_block','additive_related_module','targeted_correction'];
+}
+
+function final_multimodal_qc_normalize_result(array $result): array
+{
+    $repairs = array_values((array) ($result['allowed_repair_operations'] ?? []));
+    if (in_array('none', $repairs, true)) {
+        if (count($repairs) !== 1) {
+            throw new RuntimeException('Final QC nie może łączyć braku napraw z operacjami naprawczymi.');
+        }
+        $result['allowed_repair_operations'] = [];
+    }
+    return $result;
 }
 
 function final_multimodal_qc_schema(): array
@@ -1113,7 +1178,7 @@ function final_multimodal_qc_schema(): array
         'scores'=>['type'=>'object','properties'=>$scores,'required'=>array_keys($scores),'additionalProperties'=>false],
         'decision'=>['type'=>'string','enum'=>['PASS','PASS_WITH_MINOR_NOTES','FAIL']],
         'notes'=>['type'=>'array','items'=>['type'=>'string']],
-        'allowed_repair_operations'=>['type'=>'array','items'=>['type'=>'string']],
+        'allowed_repair_operations'=>['type'=>'array','items'=>['type'=>'string','enum'=>final_multimodal_qc_allowed_repair_operations()]],
         'justification'=>['type'=>'string'],
     ],'required'=>['scores','decision','notes','allowed_repair_operations','justification'],'additionalProperties'=>false];
 }
@@ -1147,7 +1212,7 @@ function prepare_final_multimodal_qc_operation(int $postId, int $topicId, int $d
     $input = ['post_id'=>$postId,'draft_version_id'=>$draftVersionId,'workflow_version'=>2,'locked_core'=>core_text_lock_state($draftVersionId),
         'editorial_research'=>array_intersect_key($research, array_flip(['primary_story','context_topics','curiosity_topics','source_claims','source_map'])),
         'narrative_selection'=>is_array($plan) ? narrative_plan_editorial_payload($plan) : [],
-        'images'=>list_article_images($postId),'related_context_blocks'=>article_related_context_blocks_for_post($postId),
+        'images'=>article_image_required_records($postId, $topicId),'related_context_blocks'=>article_related_context_blocks_for_post($postId),
         'layout_plan'=>article_layout_plan_for_post($postId, $layoutAudit),'layout_audit'=>$layoutAudit,
         'coverage'=>article_image_coverage_state($postId, $topicId),
         'dynamic_sections'=>(array) ($draftJson['sections'] ?? []),
@@ -1165,9 +1230,10 @@ function complete_final_multimodal_qc_operation(int $operationId): array
     $input = json_decode((string)$operation['input_json'], true) ?: [];
     $result = json_decode((string)$operation['output_json'], true) ?: [];
     validate_generation_value($result, final_multimodal_qc_schema());
+    $result = final_multimodal_qc_normalize_result($result);
     $preflight = final_multimodal_qc_preflight((int)$operation['post_id'], (int)($input['draft_version_id'] ?? 0));
     $decision = $preflight['passed'] ? (string)$result['decision'] : 'FAIL';
-    $allowed = ['caption','heading','transition_paragraph','placement','context_block','additive_related_module','targeted_correction'];
+    $allowed = final_multimodal_qc_allowed_repair_operations();
     foreach ((array)$result['allowed_repair_operations'] as $repair) if (!in_array((string)$repair, $allowed, true)) throw new RuntimeException('Final QC zaproponowało niedozwoloną naprawę.');
     bueno_database()->prepare('UPDATE final_multimodal_qc_runs SET status="completed",decision=:decision,result_json=:result,deterministic_gates_json=:gates,completed_at=CURRENT_TIMESTAMP WHERE generation_operation_id=:operation')->execute([':decision'=>$decision,':result'=>generation_json($result),':gates'=>generation_json($preflight),':operation'=>$operationId]);
     return ['decision'=>$decision,'preflight'=>$preflight,'result'=>$result];

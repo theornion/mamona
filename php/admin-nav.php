@@ -35,8 +35,7 @@ try {
             <li><a href="admin-topic-trash.php"<?php echo admin_nav_class('topic-trash', $adminActive); ?>><span aria-hidden="true">04</span>Kosz <strong class="admin-nav-count"><?php echo $adminNavCounts['topic-trash']; ?></strong></a></li>
         </ul></section>
         <section class="admin-nav-group" aria-labelledby="nav-tools"><h2 id="nav-tools">Narzędzia zaawansowane</h2><ul class="admin-nav-links">
-            <li><a href="admin-generation.php"<?php echo admin_nav_class('generation', $adminActive); ?>>Operacje API / Diagnostyka</a></li>
-            <li><a href="admin-editorial-queue.php"<?php echo admin_nav_class('editorial', $adminActive); ?>>Procesy / Historia</a></li>
+            <li><a href="admin-monetization.php"<?php echo admin_nav_class('monetization', $adminActive); ?>>Ustawienia monetyzacji</a></li>
         </ul></section>
         <section class="admin-nav-group" aria-labelledby="nav-content"><h2 id="nav-content">Treści</h2><ul class="admin-nav-links">
             <li><a href="admin-posts.php"<?php echo admin_nav_class('posts', $adminActive); ?>>Posty i kategorie</a></li>

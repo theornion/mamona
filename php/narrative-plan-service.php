@@ -99,6 +99,7 @@ function prepare_narrative_plan_operation(int $topicId, int $researchPackageId):
             'visual_slots_planned musi dokładnie odpowiadać liczbie slotów: jeden hero plus wszystkie inline_slots. Dla target_length 5000–5999 zaplanuj dokładnie 3 sloty, a dla 6000–10000 dokładnie 4 (jeden hero i trzy inline). Każda sekcja z visual_slot_required=true musi mieć odpowiadający inline_slot z tym samym section_anchor i topic_source.',
             'Hero musi reprezentować sedno primary story A: konkretny obiekt, metodę, zjawisko albo mierzoną aktywność opisaną w researchu. Nie zastępuj sedna ogólnym obrazem dziedziny ani dekoracyjnym schematem.',
             'For each visual slot, PREFER 3–5 diverse direct search queries when useful, but provide at least 1.',
+            'For every slot with acceptable_related=false, return search_queries_related as an empty array.',
         ],
     ];
 
@@ -531,7 +532,9 @@ function narrative_plan_draft_illustration_contract(array $narrativePlan): array
             'slot_id' => (string) $slot['slot_id'],
             'must_be_direct' => (bool) $slot['must_be_direct'],
             'acceptable_related' => (bool) $slot['acceptable_related'],
-            'search_queries_related' => array_values((array) $slot['search_queries_related']),
+            'search_queries_related' => !empty($slot['acceptable_related'])
+                ? array_values((array) $slot['search_queries_related'])
+                : [],
         ];
     };
     $projectedInline = [];
@@ -694,6 +697,39 @@ function narrative_plan_normalize_curiosity_omission(array &$output): bool
     }
     $output['curiosity_omitted_reason'] = '';
     return true;
+}
+
+/** A slot that disallows related media must not retain inert related queries. */
+function narrative_plan_normalize_visual_related_query_policy(array &$output): array
+{
+    $visual =& $output['visual_plan'];
+    if (!is_array($visual)) return [];
+    $normalized = [];
+    foreach (['hero_slot'] as $field) {
+        $slot = (array) ($visual[$field] ?? []);
+        if ($slot !== [] && empty($slot['acceptable_related']) && (array) ($slot['search_queries_related'] ?? []) !== []) {
+            $visual[$field]['search_queries_related'] = [];
+            $normalized[] = (string) ($slot['slot_id'] ?? $field);
+        }
+    }
+    foreach ((array) ($visual['inline_slots'] ?? []) as $index => $slot) {
+        $slot = (array) $slot;
+        if (empty($slot['acceptable_related']) && (array) ($slot['search_queries_related'] ?? []) !== []) {
+            $visual['inline_slots'][$index]['search_queries_related'] = [];
+            $normalized[] = (string) ($slot['slot_id'] ?? ('inline-' . $index));
+        }
+    }
+    return $normalized;
+}
+
+function narrative_plan_record_visual_related_query_policy_normalization(array $operation, array $slotIds): void
+{
+    $usage = json_decode((string) ($operation['usage_json'] ?? '{}'), true) ?: [];
+    $usage['visual_related_query_policy_normalization'] = [
+        'applied' => true, 'slot_ids' => array_values($slotIds), 'canonical_value' => [], 'at' => gmdate('c'),
+    ];
+    bueno_database()->prepare('UPDATE generation_operations SET usage_json=:usage, updated_at=CURRENT_TIMESTAMP WHERE id=:id')
+        ->execute([':usage' => generation_json($usage), ':id' => (int) $operation['id']]);
 }
 
 /** Normalize provider-friendly section identifiers to renderer-safe kebab-case and update every reference atomically. */
@@ -916,15 +952,17 @@ function complete_narrative_plan_operation(int $operationId, string $rawResponse
             $schema = json_decode((string) $operation['output_schema_json'], true, 128, JSON_THROW_ON_ERROR);
             validate_generation_value($output, $schema);
             $curiosityNormalized = narrative_plan_normalize_curiosity_omission($output);
+            $relatedQueryPolicyNormalized = narrative_plan_normalize_visual_related_query_policy($output);
             $sectionIdsNormalized = narrative_plan_normalize_section_ids($output);
             $visualCeilingNormalized = narrative_plan_normalize_visual_ceiling($output);
             $visualFloorResearchSlotIds = [];
             $visualFloorNormalized = narrative_plan_normalize_visual_floor($output, $operation, $visualFloorResearchSlotIds);
-            if ($curiosityNormalized || $sectionIdsNormalized !== [] || $visualCeilingNormalized || $visualFloorNormalized !== []) {
+            if ($curiosityNormalized || $relatedQueryPolicyNormalized !== [] || $sectionIdsNormalized !== [] || $visualCeilingNormalized || $visualFloorNormalized !== []) {
                 bueno_database()->prepare('UPDATE generation_operations SET output_json=:output,updated_at=CURRENT_TIMESTAMP WHERE id=:id')
                     ->execute([':output'=>generation_json($output), ':id'=>$operationId]);
             }
             if ($curiosityNormalized) narrative_plan_record_curiosity_omission_normalization($operation);
+            if ($relatedQueryPolicyNormalized !== []) narrative_plan_record_visual_related_query_policy_normalization($operation, $relatedQueryPolicyNormalized);
             if ($visualCeilingNormalized || $visualFloorNormalized !== []) {
                 $currentOperation = find_generation_operation($operationId);
                 $usage = is_array($currentOperation) ? (json_decode((string) ($currentOperation['usage_json'] ?? '{}'), true) ?: []) : [];
@@ -972,6 +1010,7 @@ function complete_narrative_plan_operation(int $operationId, string $rawResponse
     $schema = json_decode((string) $operation['output_schema_json'], true, 128, JSON_THROW_ON_ERROR);
     validate_generation_value($output, $schema);
     $curiosityNormalized = narrative_plan_normalize_curiosity_omission($output);
+    $relatedQueryPolicyNormalized = narrative_plan_normalize_visual_related_query_policy($output);
     $sectionIdsNormalized = narrative_plan_normalize_section_ids($output);
     $visualCeilingNormalized = narrative_plan_normalize_visual_ceiling($output);
     $visualFloorResearchSlotIds = [];
@@ -1000,6 +1039,9 @@ function complete_narrative_plan_operation(int $operationId, string $rawResponse
                 ...(is_array($providerMetadata['usage'] ?? null) ? $providerMetadata['usage'] : []),
                 ...($curiosityNormalized ? ['curiosity_omission_normalization'=>[
                     'applied'=>true,'reason'=>'selected_curiosity_topics_present','canonical_value'=>'','at'=>gmdate('c'),
+                ]] : []),
+                ...($relatedQueryPolicyNormalized !== [] ? ['visual_related_query_policy_normalization'=>[
+                    'applied'=>true,'slot_ids'=>array_values($relatedQueryPolicyNormalized),'canonical_value'=>[],'at'=>gmdate('c'),
                 ]] : []),
                 ...($visualFloorNormalized !== [] ? ['visual_floor_normalization'=>[
                     'applied'=>true,'added_slot_ids'=>$visualFloorNormalized,

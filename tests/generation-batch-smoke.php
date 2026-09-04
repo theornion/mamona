@@ -120,7 +120,8 @@ try {
     batch_assert(count(list_article_images($postIds[0])) === 4, 'Nie zapisano planu hero i ilustracji inline.');
     $database->prepare('UPDATE editorial_topics SET automatic_eligible = 1 WHERE id = :id')->execute([':id' => $topicIds[0]]);
     $workflowStatus = generation_workflow_statuses([$topicIds[0]]);
-    batch_assert(count($workflowStatus) === 1 && ($workflowStatus[0]['steps']['images']['status'] ?? '') === 'manual_review', 'Incomplete image coverage has unexpected workflow state: ' . generation_json($workflowStatus));
+    batch_assert(count($workflowStatus) === 1 && ($workflowStatus[0]['steps']['images']['status'] ?? '') === 'manual_review'
+        && (int) ($workflowStatus[0]['progress'] ?? -1) === (int) ($workflowStatus[0]['steps']['images']['progress'] ?? -2), 'Incomplete image coverage has unexpected workflow state or falsely complete progress: ' . generation_json($workflowStatus));
     batch_assert($workflowStatus[0]['proposal_url'] !== null, 'Kompletny temat powinien być dostępny do przeglądu.');
     $storedPlan = find_narrative_plan_for_topic($topicIds[0]);
     $postBoundPlan = find_narrative_plan_for_post((int) $postIds[0], (int) $topicIds[0]);

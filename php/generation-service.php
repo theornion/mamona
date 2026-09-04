@@ -19,12 +19,55 @@ final class GenerationFieldConstraintException extends InvalidArgumentException
     }
 }
 
+final class GeminiTransportConfigurationException extends RuntimeException
+{
+}
+
+/**
+ * Detect only the known dead local proxy inherited by some desktop shells.
+ * Valid corporate/user proxy configuration must remain untouched.
+ *
+ * @param array<string,string>|null $environment injectable only for regression tests
+ * @return array{variable:string,endpoint:string}|null
+ */
+function gemini_invalid_local_proxy_endpoint(?array $environment = null): ?array
+{
+    foreach (['HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY'] as $variable) {
+        $endpoint = trim((string) ($environment === null ? getenv($variable) : ($environment[$variable] ?? '')));
+        if ($endpoint === '') continue;
+        $parts = parse_url($endpoint);
+        if (!is_array($parts)) continue;
+        $host = strtolower(trim((string) ($parts['host'] ?? ''), '[]'));
+        $port = (int) ($parts['port'] ?? 0);
+        if (in_array($host, ['127.0.0.1', '::1', 'localhost'], true) && $port === 9) {
+            return ['variable' => $variable, 'endpoint' => $endpoint];
+        }
+    }
+    return null;
+}
+
+function gemini_assert_transport_environment(): void
+{
+    while (($proxy = gemini_invalid_local_proxy_endpoint()) !== null) {
+        // Port 9 on loopback is a known dead desktop-shell proxy, not a valid
+        // routing choice. Clear only this exact unusable value for the worker.
+        putenv($proxy['variable']);
+        error_log('Gemini transport: cleared unavailable local proxy from ' . $proxy['variable'] . '.');
+    }
+}
+
 function generation_error_classification(Throwable $exception, ?int $httpStatus = null): array
 {
+    if ($exception instanceof GeminiTransportConfigurationException) {
+        return ['class' => 'transport_configuration', 'retryable' => false];
+    }
     if ($exception instanceof InvalidArgumentException || $exception instanceof JsonException) {
         return ['class' => 'validation_contract', 'retryable' => false];
     }
     $message = mb_strtolower($exception->getMessage());
+    if (str_contains($message, 'gemini transport configuration error:')) {
+        return ['class' => 'transport_configuration', 'retryable' => false];
+    }
     $retryable = $httpStatus === 0 || $httpStatus === 408 || $httpStatus === 429
         || ($httpStatus !== null && $httpStatus >= 500 && $httpStatus <= 599)
         || str_contains($message, 'timeout') || str_contains($message, 'timed out')
@@ -951,6 +994,7 @@ function openai_error_details(array $response): array
 
 function gemini_curl_transport(array $payload, string $apiKey, string $operationKey, string $model): array
 {
+    gemini_assert_transport_environment();
     $baseUrl = rtrim((string) app_config('gemini_api_base_url'), '/');
     if ($baseUrl === '' || !str_starts_with($baseUrl, 'https://')) {
         throw new RuntimeException('GEMINI_API_BASE_URL musi być poprawnym adresem HTTPS.');

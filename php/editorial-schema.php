@@ -54,6 +54,7 @@ const ARTICLE_IMAGE_VISION_AUDIT_MIGRATION = '20260811_049_article_image_vision_
 const ARTICLE_IMAGE_REJECTED_REVIEW_MIGRATION = '20260825_050_article_image_rejected_review';
 const TOPIC_GROUPING_CANDIDATES_REMOVAL_MIGRATION = '20260829_051_topic_grouping_candidates_removal';
 const GEMINI_ARTICLE_BUDGET_31_MIGRATION = '20260830_052_gemini_article_budget_31';
+const GEMINI_ARTICLE_MANUAL_BUDGET_EXTENSION_MIGRATION = '20260831_053_gemini_article_manual_budget_extension';
 
 function database_table_columns(PDO $database, string $table): array
 {
@@ -1797,6 +1798,15 @@ function run_schema_migrations(PDO $database): void
                      updated_at=CURRENT_TIMESTAMP
                  WHERE max_calls=30'
             )->execute([':max_calls' => GEMINI_ARTICLE_CALL_LIMIT]);
+        }
+    );
+    apply_schema_migration(
+        $database,
+        GEMINI_ARTICLE_MANUAL_BUDGET_EXTENSION_MIGRATION,
+        static function (PDO $database): void {
+            database_add_column_if_missing($database, 'article_generation_budget', 'manual_extension_calls', 'INTEGER NOT NULL DEFAULT 0');
+            database_add_column_if_missing($database, 'article_generation_budget', 'manual_extension_reason', 'TEXT NOT NULL DEFAULT ""');
+            database_add_column_if_missing($database, 'article_generation_budget', 'manual_extension_authorized_at', 'TEXT');
         }
     );
 }

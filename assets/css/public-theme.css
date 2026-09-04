@@ -539,6 +539,8 @@ body:not(.admin-page) .bueno-post-page {
 
 body:not(.admin-page) .bueno-post-page > .news-feed-heading {
     max-width: 58rem;
+    /* The first article heading supplies the two-gap separation itself. */
+    margin-bottom: 0;
 }
 
 body:not(.admin-page) .post-byline {
@@ -556,14 +558,16 @@ body:not(.admin-page) .post-page-body {
     width: 100%;
     max-width: var(--mamona-reading);
     margin: 0 auto 3rem;
+    --mamona-article-heading-copy-gap: 0.75em;
     font-size: clamp(1.04rem, 1.2vw, 1.13rem);
     line-height: 1.82;
     color: #e7f2f7;
 }
 
 body:not(.admin-page) .post-page-body :where(h2, h3) {
-    margin-top: 2.8em;
-    margin-bottom: 0.75em;
+    /* A section title sits two text gaps from the preceding prose or caption. */
+    margin-top: calc(var(--mamona-article-heading-copy-gap) * 2);
+    margin-bottom: var(--mamona-article-heading-copy-gap);
     line-height: 1.12;
 }
 
@@ -695,20 +699,28 @@ body:not(.admin-page) .article-illustration {
    section, but the following section always starts in a clean flow context. */
 body:not(.admin-page) .article-layout__section {
     display: flow-root;
+    position: relative;
+    isolation: isolate;
     background: transparent;
     color: inherit;
+}
+
+body:not(.admin-page) .article-layout__section .article-section {
+    position: relative;
+    z-index: 1;
 }
 
 /* A detail-inline figure starts with prose, not its section heading: the title
    owns the full reading column, then the following paragraph wraps the media. */
 body:not(.admin-page) .article-layout__section--detail-inline-heading > h2 {
-    margin: 0 auto 1.25rem;
+    margin: calc(var(--mamona-article-heading-copy-gap) * 2) auto var(--mamona-article-heading-copy-gap);
     text-align: center;
     white-space: nowrap;
 }
 
-body:not(.admin-page) .article-layout__section .article-section p {
+body:not(.admin-page) .article-layout__section .article-section :where(p, ul, ol, li) {
     line-height: 1.72;
+    text-align: left !important;
 }
 
 body:not(.admin-page) .article-layout__section .article-section p + p {
@@ -753,6 +765,11 @@ body:not(.admin-page) .article-layout__image--detail-inline {
     position: relative;
 }
 
+body:not(.admin-page) .article-layout__image--side {
+    position: relative;
+    z-index: 2;
+}
+
 body:not(.admin-page) .article-illustration--detail-inline {
     width: 100%;
     max-width: none;
@@ -761,6 +778,8 @@ body:not(.admin-page) .article-illustration--detail-inline {
 }
 
 body:not(.admin-page) .article-image-media-card {
+    position: relative;
+    z-index: 0;
     overflow: hidden;
     border: 1px solid rgba(145, 205, 227, 0.24);
     border-radius: 0.75rem;
@@ -773,9 +792,13 @@ body:not(.admin-page) .article-image-media-card--neutral {
 
 body:not(.admin-page) .article-image-zoom {
     position: relative;
+    z-index: 1;
     display: block;
     color: inherit;
     cursor: zoom-in;
+    text-decoration: none;
+    border-bottom: 0 !important;
+    pointer-events: auto;
 }
 
 body:not(.admin-page) .article-image-zoom img {
@@ -788,9 +811,16 @@ body:not(.admin-page) .article-image-zoom img {
 }
 
 body:not(.admin-page) .article-image-zoom__bar {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
     padding: 0.42rem 0.65rem;
-    border-top: 1px solid rgba(145, 205, 227, 0.18);
-    background: rgba(4, 12, 26, 0.5);
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    /* Must stay opaque even when the image card uses the neutral media mat. */
+    background-color: #040c1a !important;
+    background-image: none !important;
     color: #b9d7e4;
     font-family: "Cascadia Code", Consolas, monospace;
     font-size: 0.67rem;
@@ -800,15 +830,26 @@ body:not(.admin-page) .article-image-zoom__bar {
 }
 
 body:not(.admin-page) .article-illustration--detail-inline.article-illustration--portrait {
-    width: min(100%, 26rem);
+    inline-size: fit-content;
+    width: fit-content;
+    max-width: min(100%, 26rem);
     margin-inline: auto;
+}
+
+body:not(.admin-page) .article-image-media-card--portrait,
+body:not(.admin-page) .article-illustration--detail-inline.article-illustration--portrait .article-image-zoom {
+    width: fit-content;
+    max-width: 100%;
 }
 
 body:not(.admin-page) .article-illustration--detail-inline.article-illustration--portrait .article-image-zoom img {
     width: auto;
     max-width: 100%;
+    height: auto;
     max-height: min(68vh, 42rem);
     margin-inline: auto;
+    aspect-ratio: auto;
+    object-fit: contain;
 }
 
 body:not(.admin-page) .article-illustration--detail-inline figcaption {
@@ -832,9 +873,13 @@ body:not(.admin-page) .article-illustration--detail-inline .article-image-disclo
 }
 
 body:not(.admin-page) .article-image-meta {
+    position: relative;
+    z-index: 1;
     margin-top: 0.55rem;
     color: #b6ceda;
     font-size: 0.75rem;
+    min-width: 0;
+    max-width: 100%;
 }
 
 body:not(.admin-page) .article-image-meta summary {
@@ -846,6 +891,71 @@ body:not(.admin-page) .article-image-meta p {
     margin-top: 0.45rem !important;
 }
 
+body:not(.admin-page) .article-image-meta :where(summary, p) {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+body:not(.admin-page) .article-layout__callout {
+    clear: both;
+    box-sizing: border-box;
+    width: 100%;
+    max-width: var(--mamona-reading);
+    margin: 2rem auto;
+    padding: clamp(1.25rem, 3vw, 2rem);
+    border: 1px solid rgba(91, 220, 242, 0.3);
+    border-left: 0.3rem solid var(--mamona-cyan);
+    border-radius: var(--mamona-radius);
+    background: linear-gradient(135deg, rgba(8, 38, 73, 0.94), rgba(6, 23, 48, 0.94));
+    color: #e6faff;
+    text-align: left;
+}
+
+body:not(.admin-page) .article-layout__callout .article-section {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+    color: inherit;
+}
+
+body:not(.admin-page) .article-layout__callout .article-section :where(p, ul, ol, li, h2, h3, h4) {
+    text-align: left !important;
+}
+
+body:not(.admin-page) .article-layout__callout .article-section :where(h2, h3, h4) {
+    margin-top: 0;
+}
+
+body:not(.admin-page) .article-layout__inset-list {
+    box-sizing: border-box;
+    margin: 1.5rem 0;
+    padding: clamp(1.25rem, 2.2vw, 1.75rem);
+    border: 1px solid rgba(91, 220, 242, 0.16);
+    border-radius: var(--mamona-radius);
+    background: rgba(3, 17, 35, 0.76);
+    color: #dcebf2;
+}
+
+body:not(.admin-page) .article-layout__inset-list ul {
+    margin: 0;
+    padding-left: 1.35rem;
+    list-style: disc;
+    list-style-position: outside;
+}
+
+body:not(.admin-page) .article-layout__inset-list li {
+    text-align: left !important;
+}
+
+body:not(.admin-page) .article-layout__inset-list li::marker {
+    color: var(--mamona-cyan);
+}
+
 body:not(.admin-page) .article-detail-lightbox {
     position: fixed;
     z-index: 10050;
@@ -853,6 +963,7 @@ body:not(.admin-page) .article-detail-lightbox {
     display: grid;
     place-items: center;
     padding: clamp(1rem, 4vw, 3rem);
+    overflow: auto;
     background: rgba(1, 6, 15, 0.92);
 }
 
@@ -862,42 +973,52 @@ body:not(.admin-page) .article-detail-lightbox[hidden] {
 
 body:not(.admin-page) .article-detail-lightbox__panel {
     position: relative;
-    width: min(94vw, 72rem);
-    max-height: 92vh;
-    overflow: auto;
-    padding: 1rem;
-    border: 1px solid rgba(145, 205, 227, 0.3);
-    border-radius: 0.9rem;
-    background: #09182a;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: fit-content;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
 }
 
 body:not(.admin-page) .article-detail-lightbox__image {
     display: block;
-    width: min(100%, 42rem);
+    width: auto;
     max-width: 100%;
-    max-height: none;
-    margin: 0 auto;
-    background: #f3f7fa;
+    max-height: calc(100vh - 6rem);
+    margin: 0;
+    background: transparent;
     object-fit: contain;
 }
 
 body:not(.admin-page) .article-detail-lightbox__caption {
+    width: 100%;
     margin: 0.8rem 0 0;
     color: #d4e4eb;
     font-size: 0.88rem;
     line-height: 1.5;
+    text-align: center;
 }
 
 body:not(.admin-page) .article-detail-lightbox__close {
-    position: sticky;
-    top: 0;
-    float: right;
-    margin: 0 0 0.65rem 0.65rem;
-    border: 1px solid rgba(145, 205, 227, 0.4);
-    border-radius: 999px;
-    background: #102a43;
+    position: fixed;
+    top: clamp(0.75rem, 2vw, 1.5rem);
+    right: clamp(0.75rem, 2vw, 1.5rem);
+    z-index: 1;
+    display: grid;
+    width: 2.5rem;
+    height: 2.5rem;
+    padding: 0;
+    place-items: center;
+    border: 0;
+    border-radius: 0.35rem;
+    background: rgba(4, 12, 26, 0.68);
     color: #f5fbff;
     cursor: pointer;
+    font-size: 2rem;
+    line-height: 1;
 }
 
 body:not(.admin-page) .article-mini-gallery .article-illustration--full {
@@ -1233,6 +1354,14 @@ body:not(.admin-page) :where(.cat-slide, .burger-slide) {
     body:not(.admin-page) .article-layout__image--detail-inline.article-layout__image--side-left {
         float: left;
         margin-right: 2rem;
+    }
+
+    body:not(.admin-page) .article-layout__image--side-right .article-illustration :where(figcaption, .article-image-description, .article-image-disclosure, .article-image-meta, .article-image-meta summary, .article-image-credit) {
+        text-align: right !important;
+    }
+
+    body:not(.admin-page) .article-layout__image--side-left .article-illustration :where(figcaption, .article-image-description, .article-image-disclosure, .article-image-meta, .article-image-meta summary, .article-image-credit) {
+        text-align: left !important;
     }
 
     body:not(.admin-page) .article-layout__image--side > :where(.article-illustration--left, .article-illustration--right) {

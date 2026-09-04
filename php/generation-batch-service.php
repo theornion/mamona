@@ -829,6 +829,10 @@ function generation_workflow_statuses(mixed $rawTopicIds): array
             : ($qualityWaiting || $researchWaiting ? 'waiting_review'
             : ($allStagesReady ? 'ready' : 'eligible')))));
         $progress = (int) ($row['progress_percent'] ?? 0);
+        if ($jobStatus === 'manual_review' && (string) ($row['job_stage'] ?? '') === 'images'
+            && is_array($coverage) && count($coverage['required_slots']) > 0) {
+            $progress = (int) floor(100 * count($coverage['filled_slots']) / count($coverage['required_slots']));
+        }
         $availableAt = !empty($row['next_retry_at'] ?? null)
             ? gmdate('c', strtotime((string) $row['next_retry_at'] . ' UTC'))
             : (!empty($row['available_at']) ? gmdate('c', strtotime((string) $row['available_at'] . ' UTC')) : null);
@@ -1943,7 +1947,7 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
             $replan = null;
             $replanEligibility = article_image_recovery_replan_retry_state(
                 $postId, (int) $item['topic_id'], $coverage,
-                gemini_article_budget_state($postId), true
+                gemini_article_budget_state($postId), !article_image_has_pending_recovery($postId)
             );
             if (!empty($replanEligibility['eligible'])) {
                 try {
@@ -2139,16 +2143,19 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
             generation_batch_audit((int) $item['batch_id'], $itemId, generation_batch_is_autonomous($item) ? 'auto_retry_scheduled' : 'rate_limited', 'worker', ['delay_seconds' => $delay]);
         } else {
             $contractError = str_starts_with($message, 'Nieprawidłowa odpowiedź Gemini API:');
+            $transportConfigurationError = $classification['class'] === 'transport_configuration';
             $visualPlanContractMismatch = $stage === 'draft'
                 && (str_starts_with($message, 'VisualPlan ') || str_starts_with($message, 'NarrativePlan '));
-            $display = $contractError
+            $display = $transportConfigurationError
+                ? 'Konfiguracja transportu Gemini wskazuje niedostępny lokalny proxy; popraw środowisko procesu przed ręcznym wznowieniem.'
+                : ($contractError
                 ? 'Błąd formatu odpowiedzi Gemini wymaga ręcznego wznowienia po poprawie kontraktu.'
-                : 'Nieponawialny błąd Gemini wymaga ręcznego wznowienia po usunięciu przyczyny.';
+                : 'Nieponawialny błąd Gemini wymaga ręcznego wznowienia po usunięciu przyczyny.');
             if ($visualPlanContractMismatch) {
                 $display = 'Niespójny kontrakt VisualPlan został zatrzymany przed wywołaniem Gemini; wymagana naprawa artefaktu.';
             }
             generation_batch_update_item($itemId, [
-                'status' => 'failed', 'outcome' => $visualPlanContractMismatch ? 'visual_plan_contract_mismatch' : ($contractError ? 'validation_contract' : 'non_retryable_provider_error'),
+                'status' => 'failed', 'outcome' => $transportConfigurationError ? 'transport_configuration' : ($visualPlanContractMismatch ? 'visual_plan_contract_mismatch' : ($contractError ? 'validation_contract' : 'non_retryable_provider_error')),
                 'available_at' => gmdate('Y-m-d H:i:s'), 'next_retry_at' => null,
                 'wait_reason' => $display, 'error_message' => $message,
             ]);

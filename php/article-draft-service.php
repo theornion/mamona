@@ -1428,6 +1428,9 @@ function article_draft_normalize_narrative_visual_slot_identity(array $narrative
             throw new InvalidArgumentException('visual_plan_slot_mapping_ambiguous: ' . $kind);
         }
         $canonical = $matches[0];
+        if (empty($canonical['acceptable_related'])) {
+            $actual['search_queries_related'] = [];
+        }
         foreach (['slot_id', 'role', 'section_id', 'must_be_direct', 'acceptable_related', 'search_queries', 'search_queries_related'] as $field) {
             $missing = !array_key_exists($field, $actual) || $actual[$field] === null
                 || (is_string($actual[$field]) && trim($actual[$field]) === '');

@@ -37,6 +37,8 @@ check(str_contains($js, 'serverOffset = Date.parse(payload.server_time) - Date.n
 check(str_contains($js, 'networkFailures++') && str_contains($js, 'Math.pow(2'), 'Network retry does not use controlled backoff.');
 foreach (['W kolejce', 'Aktywne przetwarzanie', 'Limit API', 'Wymaga decyzji', 'Błąd ponawialny', 'Błąd trwały'] as $label) check(str_contains($js, $label), 'Missing state message: ' . $label);
 check(str_contains($api, "'server_time' => gmdate('c')") && str_contains($service, "'next_retry_at' => \$availableAt"), 'API does not expose server and canonical resume time.');
+check(str_contains($api, 'topics_api_try_dispatch_due_items') && str_contains($api, "'status_dispatch_warning' => \$dispatchWarning"), 'Status poll can still fail when dispatch is temporarily unavailable.');
+check(str_contains($js, "payload.status_dispatch_warning === 'worker_busy'") && str_contains($js, 'Stan jest odświeżany; worker nadal przetwarza zadanie.'), 'Client does not distinguish a live worker lock from a lost status synchronization.');
 check(!str_contains($service, "'Oczekiwanie na limit API ('"), 'SSR reason must not contain a second independent countdown.');
 check(str_contains($page, 'if ($state[\'proposal_url\'])') && str_contains($page, 'Otwórz propozycję do przeglądu'), 'Topic card has no direct link to a reviewable draft.');
 check(str_contains($page, 'return_topic_id') && str_contains($page, "'#topic-' . \$returnTopicId"), 'Akcje karty nie zachowują stabilnego anchoru tematu.');
@@ -63,4 +65,5 @@ check(str_contains($css, '#topic-search') && str_contains($css, 'min-height:44px
 check(str_contains($css, '.topic-card-actions button:not(.topic-generate-all)') && str_contains($css, ':disabled'), 'Brak lokalnej hierarchii secondary/primary przycisków karty.');
 check(str_contains($css, '.topic-control-card[hidden]{display:none!important}'), 'CSS nadpisuje atrybut hidden i pozostawia odfiltrowane karty na ekranie.');
 check(str_contains($js, "'Grafiki: '") && str_contains($js, "' · wyszukiwanie zakończone'"), 'UI nadal myli ukończenie fazy images z pełnym coverage.');
+check(str_contains($page, "'Grafiki: ' . (int) (\$state['job']['image_completed'] ?? 0)"), 'SSR does not show actual image coverage.');
 echo "TOPIC_WORKFLOW_UI_SMOKE_OK\n";

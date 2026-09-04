@@ -281,7 +281,9 @@ admin_page_open('Grupowanie tematów', 'topics');
                 </ol>
                 <?php if (is_array($state['job'])): ?>
                     <div class="topic-job-status<?php echo $state['job']['status'] === 'failed' ? ' is-error' : ''; ?>">
-                        <strong><?php echo escape_html((string) $state['job']['stage']); ?> · <?php echo (int) $state['job']['progress']; ?>%</strong>
+                        <strong><?php echo (string) $state['job']['stage'] === 'images' && (int) ($state['job']['image_total'] ?? 0) > 0
+                            ? 'Grafiki: ' . (int) ($state['job']['image_completed'] ?? 0) . '/' . (int) $state['job']['image_total']
+                            : escape_html((string) $state['job']['stage']) . ' · ' . (int) $state['job']['progress'] . '%'; ?></strong>
                         <progress max="100" value="<?php echo (int) $state['job']['progress']; ?>"><?php echo (int) $state['job']['progress']; ?>%</progress>
                         <?php if ($state['job']['reason'] !== ''): ?><span><?php echo escape_html((string) $state['job']['reason']); ?></span><?php endif; ?>
                         <?php if (($state['job']['technical_error'] ?? '') !== '' && $state['job']['technical_error'] !== $state['job']['reason']): ?><details><summary>Szczegóły techniczne</summary><code><?php echo escape_html((string) $state['job']['technical_error']); ?></code></details><?php endif; ?>

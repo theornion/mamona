@@ -117,6 +117,26 @@ $beforeNormalization = serialize($unchangedHeroDraft);
 article_draft_normalize_narrative_visual_slot_identity($hero287Plan, $unchangedHeroDraft);
 visual_plan_schema_assert(serialize($unchangedHeroDraft) === $beforeNormalization, 'Canonical slot został niepotrzebnie zmieniony.');
 
+$forbiddenRelatedPlan = $hero287Plan;
+$forbiddenRelatedVisual = json_decode((string) $forbiddenRelatedPlan['visual_plan_json'], true, 128, JSON_THROW_ON_ERROR);
+$forbiddenRelatedVisual['hero_slot']['search_queries_related'] = ['unusable related hero query'];
+$forbiddenRelatedPlan['visual_plan_json'] = generation_json($forbiddenRelatedVisual);
+$forbiddenRelatedOutput = ['visual_plan' => $forbiddenRelatedVisual];
+visual_plan_schema_assert(
+    narrative_plan_normalize_visual_related_query_policy($forbiddenRelatedOutput) === ['hero_image_eclipse']
+    && $forbiddenRelatedOutput['visual_plan']['hero_slot']['search_queries_related'] === [],
+    'NarrativePlan must remove policy-forbidden related queries.'
+);
+$forbiddenRelatedContract = narrative_plan_draft_illustration_contract($forbiddenRelatedPlan);
+$forbiddenRelatedDraft = ['illustration_plan' => $forbiddenRelatedContract['illustration_plan']];
+$forbiddenRelatedDraft['illustration_plan']['hero']['search_queries_related'] = ['provider leaked related query'];
+article_draft_normalize_narrative_visual_slot_identity($forbiddenRelatedPlan, $forbiddenRelatedDraft);
+visual_plan_schema_assert(
+    $forbiddenRelatedContract['illustration_plan']['hero']['search_queries_related'] === []
+    && $forbiddenRelatedDraft['illustration_plan']['hero']['search_queries_related'] === [],
+    'Stored draft replay must remove policy-forbidden related queries.'
+);
+
 $overflowDraft = ['illustration_plan' => $validIllustrationPlan];
 $overflowDraft['illustration_plan']['inline'][] = $overflowDraft['illustration_plan']['inline'][1];
 visual_plan_schema_assert(

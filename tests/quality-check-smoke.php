@@ -150,6 +150,13 @@ quality_smoke_assert(str_contains($instructionText, 'risk_handling: 0–5'), 'Pr
 quality_smoke_assert(generation_error_classification(new InvalidArgumentException('zakres'))['retryable'] === false, 'Walidacja jest błędnie retryable.');
 foreach ([429, 500, 599] as $status) quality_smoke_assert(generation_error_classification(new RuntimeException('transport'), $status)['retryable'] === true, "HTTP {$status} nie jest retryable.");
 quality_smoke_assert(generation_error_classification(new RuntimeException('timeout'))['retryable'] === true, 'Timeout nie jest retryable.');
+$deadProxy = gemini_invalid_local_proxy_endpoint(['HTTPS_PROXY' => 'http://127.0.0.1:9']);
+quality_smoke_assert($deadProxy === ['variable' => 'HTTPS_PROXY', 'endpoint' => 'http://127.0.0.1:9'], 'Znany niedziałający lokalny proxy nie został wykryty.');
+quality_smoke_assert(gemini_invalid_local_proxy_endpoint(['HTTPS_PROXY' => 'http://127.0.0.1:8080']) === null, 'Inny lokalny proxy został błędnie zablokowany.');
+quality_smoke_assert((generation_error_classification(new GeminiTransportConfigurationException('proxy'))['class'] ?? '') === 'transport_configuration', 'Błędny lokalny proxy nie otrzymał odrębnej klasy konfiguracji transportu.');
+putenv('HTTPS_PROXY=http://127.0.0.1:9');
+gemini_assert_transport_environment();
+quality_smoke_assert(getenv('HTTPS_PROXY') === false || getenv('HTTPS_PROXY') === '', 'Znany martwy lokalny proxy nie został usunięty przed wywołaniem Gemini.');
 
 $database = bueno_database();
 $originalMode = generation_mode();
@@ -204,6 +211,17 @@ try {
             'evidence' => [['source_id' => 'S1', 'excerpt' => $numberedSource['title']]],
             'confidence' => 'high',
         ]],
+        'primary_story' => [
+            'id'=>'A','title'=>'Kontrolowany pomiar laboratoryjny',
+            'main_question'=>'Co opisuje kontrolowany pomiar?',
+            'why_now'=>'Nowe źródło przedstawia wynik pomiaru.',
+            'reader_value'=>'Czytelnik poznaje zakres i ograniczenia wyniku.',
+            'claim_ids'=>['C1'],'visual_directions'=>['aparatura laboratoryjna'],
+        ],
+        'context_topics' => [],
+        'curiosity_topics' => [],
+        'source_claims' => ['C1'],
+        'source_map' => [['claim_id'=>'C1','source_ids'=>['S1']]],
         'shared_facts' => [],
         'contradictions' => [],
         'unknowns' => ['Nie jest znany pełny zestaw danych.'],
@@ -288,7 +306,10 @@ try {
     ], 'controlled laboratory measurement');
     $db = bueno_database();
     $db->prepare('INSERT INTO final_multimodal_qc_runs (post_id,draft_version_id,status,decision,result_json,deterministic_gates_json,completed_at) VALUES (:post,:draft,"completed","PASS","{}","[]",CURRENT_TIMESTAMP)')->execute([':post'=>$postId, ':draft'=>(int)$cleanDraft['id']]);
-    assert_post_quality_allows_publication($postId);
+    quality_smoke_expect(
+        static fn () => assert_post_quality_allows_publication($postId),
+        'nie pochodzi z rzeczywistego wywołania modelu'
+    );
 
     $invalidCheckOperationId = prepare_quality_check_operation((int) $cleanDraft['id']);
     $operationIds[] = $invalidCheckOperationId;
@@ -439,7 +460,7 @@ try {
     );
     quality_smoke_expect(
         static fn () => change_post_editorial_status($postId, 'scheduled', 'Test blokady jakości'),
-        'blokuje kontrola jakości'
+        'nie pochodzi z rzeczywistego wywołania modelu'
     );
     quality_smoke_assert(find_post($postId, true)['status'] === 'idea', 'Blokada nie zatrzymała zmiany statusu.');
 

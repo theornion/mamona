@@ -2,6 +2,9 @@
 
 declare(strict_types=1);
 
+const ADVERTISING_MIN_ARTICLE_SLOTS = 2;
+const ADVERTISING_MAX_ARTICLE_SLOTS = 6;
+
 /**
  * Neutral advertising layout layer.
  *
@@ -99,6 +102,15 @@ function advertising_config(array $overrides = []): array
 {
     $environment = strtolower((string) (getenv('CMS_ENV') ?: 'development'));
     $developmentPreview = $environment !== 'production';
+    $configuredSlotOffset = 0;
+    if (function_exists('get_advertising_settings')) {
+        try {
+            $settings = get_advertising_settings();
+            $configuredSlotOffset = (int) ($settings['ad_slot_offset'] ?? $configuredSlotOffset);
+        } catch (Throwable) {
+            // Database settings are optional until the application schema is initialized.
+        }
+    }
     $config = [
         // Local/development builds show layout placeholders by default.
         // Production remains opt-in and provider activation still requires CMP.
@@ -108,8 +120,10 @@ function advertising_config(array $overrides = []): array
             'CMS_ADS_ALLOWED_PLACEMENTS',
             ['page-top', 'feed-inline', 'article-inline', 'post-article']
         ),
-        'max_slots_per_page' => advertising_environment_int('CMS_ADS_MAX_SLOTS_PER_PAGE', 5, 0, 8),
-        'max_inline_slots' => advertising_environment_int('CMS_ADS_MAX_INLINE_SLOTS', 3, 0, 3),
+        // Article-specific capacity is derived later from the canonical VisualPlan.
+        'max_slots_per_page' => 6,
+        'max_inline_slots' => 4,
+        'ad_slot_offset' => max(-2, min(2, $configuredSlotOffset)),
         'minimum_blocks_between_slots' => advertising_environment_int(
             'CMS_ADS_MIN_BLOCK_GAP',
             2,
@@ -233,7 +247,8 @@ function advertising_article_inline_limit(int $characterCount, ?array $config = 
         $characterCount < 1800 => 0,
         $characterCount < 2600 => 1,
         $characterCount < 3700 => 2,
-        default => 3,
+        $characterCount < 5200 => 3,
+        default => 4,
     };
 
     return min(
@@ -279,30 +294,39 @@ function advertising_plan_article_boundaries(array $blocks, ?array $config = nul
         return [];
     }
 
-    $selected = [];
     $minimumGap = max(1, (int) ($config['minimum_blocks_between_slots'] ?? 2));
-    for ($slot = 1; $slot <= $limit; $slot++) {
-        $target = (int) round($total * $slot / ($limit + 1));
-        $bestIndex = null;
-        $bestDistance = PHP_INT_MAX;
-        foreach ($candidates as $index => $charactersBefore) {
-            if ($selected !== [] && $index - end($selected) < $minimumGap) {
-                continue;
+    $candidateIndexes = array_keys($candidates);
+    $states = array_fill(0, $limit + 1, []);
+    foreach ($candidateIndexes as $candidatePosition => $candidateIndex) {
+        $charactersBefore = $candidates[$candidateIndex];
+        $target = (int) round($total / ($limit + 1));
+        $states[1][$candidatePosition] = [
+            'cost' => abs($charactersBefore - $target),
+            'indexes' => [$candidateIndex],
+        ];
+        for ($count = 2; $count <= $limit; $count++) {
+            $slotTarget = (int) round($total * $count / ($limit + 1));
+            $best = null;
+            foreach ($states[$count - 1] as $previousPosition => $state) {
+                $previousIndex = $candidateIndexes[$previousPosition];
+                if ($candidateIndex - $previousIndex < $minimumGap) continue;
+                $next = [
+                    'cost' => $state['cost'] + abs($charactersBefore - $slotTarget),
+                    'indexes' => [...$state['indexes'], $candidateIndex],
+                ];
+                if ($best === null || $next['cost'] < $best['cost']) $best = $next;
             }
-            $distance = abs($charactersBefore - $target);
-            if ($distance < $bestDistance) {
-                $bestIndex = $index;
-                $bestDistance = $distance;
-            }
-        }
-        if ($bestIndex !== null) {
-            $selected[] = $bestIndex;
+            if ($best !== null) $states[$count][$candidatePosition] = $best;
         }
     }
 
-    sort($selected);
+    for ($count = $limit; $count >= 1; $count--) {
+        if ($states[$count] === []) continue;
+        usort($states[$count], static fn (array $left, array $right): int => $left['cost'] <=> $right['cost']);
+        return $states[$count][0]['indexes'];
+    }
 
-    return $selected;
+    return [];
 }
 
 function render_article_blocks_with_advertising(
@@ -325,4 +349,92 @@ function render_article_blocks_with_advertising(
     }
 
     return $html;
+}
+
+/** Count canonical FinalVisualPlan coverage slots, never arbitrary HTML images. */
+function advertising_article_visual_count(int $postId): int
+{
+    if ($postId < 1 || !function_exists('article_image_coverage_state')) {
+        return 0;
+    }
+
+    $coverage = article_image_coverage_state($postId, null, false);
+
+    return count((array) ($coverage['filled_slots'] ?? []));
+}
+
+/** Single source of truth for article ad capacity: clamp(W + global offset, 2, 6). */
+function advertising_article_slot_count(int $postId, ?array $config = null): int
+{
+    $config ??= advertising_config();
+    $visualCount = advertising_article_visual_count($postId);
+    $offset = (int) ($config['ad_slot_offset'] ?? 0);
+
+    return advertising_slot_count_from_visual_count($visualCount, $offset);
+}
+
+function advertising_slot_count_from_visual_count(int $visualCount, int $offset): int
+{
+    return max(
+        ADVERTISING_MIN_ARTICLE_SLOTS,
+        min(ADVERTISING_MAX_ARTICLE_SLOTS, $visualCount + $offset)
+    );
+}
+
+/** Prepare one article-wide ad budget for public and private renderers. */
+function advertising_article_render_config(
+    int $postId,
+    bool $preview = false,
+    ?array $config = null
+): array {
+    $config = advertising_config($config ?? []);
+    if ($preview && !empty($config['enabled'])) $config['preview'] = true;
+
+    $targetAds = advertising_article_slot_count($postId, $config);
+    $config['max_slots_per_page'] = $targetAds;
+    $adBudget = $targetAds;
+    $allowed = (array) ($config['allowed_placements'] ?? []);
+    foreach (['page-top', 'post-article'] as $placement) {
+        if ($adBudget > 0 && in_array($placement, $allowed, true)) $adBudget--;
+    }
+    $config['max_inline_slots'] = min(max(0, $targetAds), $adBudget);
+
+    return $config;
+}
+
+function render_article_blocks_with_layout_and_advertising(
+    array $blocks,
+    array $images,
+    array $layoutPlan,
+    array $contextBlocks = [],
+    ?array $config = null,
+    ?AdProviderAdapter $provider = null,
+    array &$layoutAudit = []
+): string {
+    $config ??= advertising_config();
+    $boundaries = advertising_plan_article_boundaries($blocks, $config);
+    $afterSectionHtml = [];
+    $slot = 0;
+
+    foreach (array_values($blocks) as $index => $block) {
+        if (!in_array($index, $boundaries, true) || (string) ($block['type'] ?? '') !== 'section') {
+            continue;
+        }
+        $section = (string) ($block['id'] ?? '');
+        if ($section === '') {
+            continue;
+        }
+        $slot++;
+        $afterSectionHtml[$section] = ($afterSectionHtml[$section] ?? '')
+            . render_ad_slot('article-inline', $slot, true, $config, $provider);
+    }
+
+    return render_article_blocks_with_layout(
+        $blocks,
+        $images,
+        $layoutPlan,
+        $contextBlocks,
+        $layoutAudit,
+        $afterSectionHtml
+    );
 }

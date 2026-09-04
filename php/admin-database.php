@@ -151,6 +151,7 @@ function bueno_database(): PDO
     seed_contact_settings($database);
     seed_social_media($database);
     ensure_site_style_settings($database);
+    ensure_advertising_settings($database);
 
     return $database;
 }
@@ -589,6 +590,83 @@ function reset_site_style_settings(): void
     $database = bueno_database();
     $database->exec('DELETE FROM site_style_settings');
     ensure_site_style_settings($database);
+}
+
+function advertising_setting_definitions(): array
+{
+    return [
+        'ad_slot_offset' => ['default' => '0', 'min' => -2, 'max' => 2],
+    ];
+}
+
+function ensure_advertising_settings(PDO $database): void
+{
+    $database->exec(
+        'CREATE TABLE IF NOT EXISTS advertising_settings (
+            setting_key TEXT PRIMARY KEY,
+            setting_value TEXT NOT NULL DEFAULT "",
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )'
+    );
+
+    $statement = $database->prepare(
+        'INSERT OR IGNORE INTO advertising_settings (setting_key, setting_value) VALUES (:setting_key, :setting_value)'
+    );
+    foreach (advertising_setting_definitions() as $key => $definition) {
+        $statement->execute([
+            ':setting_key' => $key,
+            ':setting_value' => (string) $definition['default'],
+        ]);
+    }
+}
+
+function get_advertising_settings(): array
+{
+    $settings = [];
+    foreach (advertising_setting_definitions() as $key => $definition) {
+        $settings[$key] = (string) $definition['default'];
+    }
+
+    $rows = bueno_database()->query('SELECT setting_key, setting_value FROM advertising_settings')->fetchAll();
+    foreach ($rows as $row) {
+        $key = (string) ($row['setting_key'] ?? '');
+        if (array_key_exists($key, $settings)) {
+            $settings[$key] = (string) ($row['setting_value'] ?? '');
+        }
+    }
+
+    return $settings;
+}
+
+function update_advertising_settings(array $changes): void
+{
+    $definitions = advertising_setting_definitions();
+    $database = bueno_database();
+    $statement = $database->prepare(
+        'INSERT INTO advertising_settings (setting_key, setting_value, updated_at)
+         VALUES (:setting_key, :setting_value, CURRENT_TIMESTAMP)
+         ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = CURRENT_TIMESTAMP'
+    );
+
+    $database->beginTransaction();
+    try {
+        foreach ($changes as $key => $value) {
+            if (!is_string($key) || !isset($definitions[$key])) {
+                continue;
+            }
+            $definition = $definitions[$key];
+            $offset = filter_var($value, FILTER_VALIDATE_INT);
+            if ($offset === false) {
+                throw new InvalidArgumentException('Offset reklamowy musi byc liczba calkowita.');
+            }
+            $offset = max((int) $definition['min'], min((int) $definition['max'], (int) $offset));
+            $statement->execute([':setting_key' => $key, ':setting_value' => (string) $offset]);
+        }
+        $database->commit();
+    } catch (Throwable $exception) {
+        $database->rollBack();
+        throw $exception;
+    }
 }
 
 function seed_social_media(PDO $database): void
@@ -1509,11 +1587,8 @@ function render_post_page_html(array $post, bool $preview = false): string
     $template = preg_replace('/<title>.*?<\/title>/s', $head, $template, 1) ?? $template;
     $contentBlocks = json_decode((string) ($post['content_blocks'] ?? '[]'), true);
     $articleImages = list_article_images((int) $post['id']);
-    $adConfig = advertising_config();
-    if ($preview && !empty($adConfig['enabled'])) {
-        $adConfig['preview'] = true;
-    }
-    $adBudget = max(0, (int) ($adConfig['max_slots_per_page'] ?? 0));
+    $adConfig = advertising_article_render_config((int) $post['id'], $preview);
+    $adBudget = (int) ($adConfig['max_slots_per_page'] ?? 0);
     $allowedAdPlacements = (array) ($adConfig['allowed_placements'] ?? []);
     $renderPageTopAd = $adBudget > 0 && in_array('page-top', $allowedAdPlacements, true);
     $adBudget -= $renderPageTopAd ? 1 : 0;
@@ -1521,10 +1596,19 @@ function render_post_page_html(array $post, bool $preview = false): string
     $adBudget -= $renderPostArticleAd ? 1 : 0;
     $adConfig['max_inline_slots'] = min((int) ($adConfig['max_inline_slots'] ?? 0), $adBudget);
     $renderedContentOverride = $preview ? ($post['rendered_content_override'] ?? null) : null;
+    $layoutAudit = [];
     $content = is_string($renderedContentOverride)
         ? $renderedContentOverride
         : (is_array($contentBlocks) && $contentBlocks !== []
-            ? render_article_blocks_with_advertising($contentBlocks, $articleImages, $adConfig)
+            ? render_article_blocks_with_layout_and_advertising(
+                $contentBlocks,
+                $articleImages,
+                article_layout_plan_for_post((int) $post['id'], $layoutAudit),
+                article_related_context_blocks_for_post((int) $post['id']),
+                $adConfig,
+                null,
+                $layoutAudit
+            )
             : nl2br(htmlspecialchars((string) $post['content'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')));
     $contentImages = post_content_image_items($post);
     $hasMainImage = trim((string) ($post['image_path'] ?? '')) !== ''
@@ -1670,7 +1754,7 @@ HTML;
         1
     ) ?? $template;
 
-    $articleDetailScript = '<script defer src="../assets/js/article-detail-lightbox.js?v=cms-detail-inline-20260827"></script>';
+    $articleDetailScript = '<script defer src="../assets/js/article-detail-lightbox.js?v=cms-detail-inline-20260831-3"></script>';
     if ($galleryLink !== '') {
         $template = preg_replace(
             '/<script defer src="\.\.\/assets\/js\/news-feed\.js\?v=[^"]+"><\/script>/',

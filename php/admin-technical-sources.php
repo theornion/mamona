@@ -17,14 +17,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         $action = (string) ($_POST['action'] ?? '');
         $sourceId = filter_input(INPUT_POST, 'source_id', FILTER_VALIDATE_INT) ?: 0;
+        $redirectQuery = 'saved=1';
+        $notice = 'Źródło zostało zapisane.';
         if ($action === 'save_source') {
             save_technical_source($_POST, $sourceId);
         } elseif ($action === 'toggle_source') {
             set_technical_source_active($sourceId, (string) ($_POST['active'] ?? '') === '1');
+        } elseif ($action === 'delete_source') {
+            $deletedSource = delete_technical_source($sourceId);
+            $redirectQuery = 'deleted=1';
+            $notice = sprintf(
+                'Usunięto źródło „%s”. Powiązanych wpisów discovered_feed_items: %d.',
+                (string) $deletedSource['source_name'],
+                (int) $deletedSource['discovered_feed_item_count']
+            );
         } else {
             throw new InvalidArgumentException('Nieprawidłowa akcja.');
         }
-        header('Location: admin-technical-sources.php?saved=1', true, 303);
+        $_SESSION['technical_source_notice'] = $notice;
+        header('Location: admin-technical-sources.php?' . $redirectQuery, true, 303);
     } catch (Throwable $exception) {
         $_SESSION['technical_source_error'] = $exception->getMessage();
         header('Location: admin-technical-sources.php?error=1', true, 303);
@@ -33,7 +44,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $sources = list_technical_sources();
+$notice = (string) ($_SESSION['technical_source_notice'] ?? '');
 $error = (string) ($_SESSION['technical_source_error'] ?? '');
+unset($_SESSION['technical_source_notice']);
 unset($_SESSION['technical_source_error']);
 
 function technical_source_form(array $source = []): void
@@ -87,6 +100,7 @@ admin_page_open('Źródła techniczne', 'sources');
         <p>Kontrolowana lista oficjalnych kanałów RSS i API. Nie zapisuj tutaj endpointów zawierających klucze lub tokeny.</p>
     </header>
     <?php if (isset($_GET['saved'])): ?><p class="admin-notice is-success" role="status">Źródło zostało zapisane.</p><?php endif; ?>
+    <?php if ($notice !== ''): ?><p class="admin-notice is-success" role="status"><?php echo escape_html($notice); ?></p><?php endif; ?>
     <?php if ($error !== ''): ?><p class="admin-notice is-error" role="alert"><?php echo escape_html($error); ?></p><?php endif; ?>
 
     <details class="technical-source-add">
@@ -96,6 +110,7 @@ admin_page_open('Źródła techniczne', 'sources');
 
     <div class="technical-source-list">
         <?php foreach ($sources as $source): ?>
+            <?php $sourceId = (int) ($source['id'] ?? 0); ?>
             <article class="technical-source-card<?php echo (int) $source['is_active'] === 1 ? '' : ' is-disabled'; ?>">
                 <header>
                     <div>
@@ -121,6 +136,21 @@ admin_page_open('Źródła techniczne', 'sources');
                 </dl>
                 <?php if (trim((string) $source['last_error']) !== ''): ?><p class="editorial-error"><strong>Ostatni błąd:</strong> <?php echo escape_html((string) $source['last_error']); ?></p><?php endif; ?>
                 <details><summary>Edytuj konfigurację</summary><?php technical_source_form($source); ?></details>
+                <?php if ($sourceId > 0): ?>
+                    <?php $deleteWarning = 'Czy na pewno chcesz usunąć źródło „' . (string) $source['name'] . '”? Tej operacji nie można łatwo cofnąć.'; ?>
+                    <form
+                        method="post"
+                        action="admin-technical-sources.php"
+                        class="technical-source-delete"
+                        onsubmit="return confirm(<?php echo json_encode($deleteWarning, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>);"
+                    >
+                        <input type="hidden" name="csrf" value="<?php echo escape_html(admin_csrf_token()); ?>">
+                        <input type="hidden" name="action" value="delete_source">
+                        <input type="hidden" name="source_id" value="<?php echo $sourceId; ?>">
+                        <p class="technical-source-delete-warning">Ta operacja trwale usuwa rekord źródła. Nie ma cofnięcia jednym kliknięciem.</p>
+                        <button class="admin-danger-action" type="submit">Usuń źródło</button>
+                    </form>
+                <?php endif; ?>
             </article>
         <?php endforeach; ?>
     </div>

@@ -87,6 +87,45 @@ function find_technical_source(int $sourceId): ?array
     return is_array($source) ? $source : null;
 }
 
+function delete_technical_source(int $sourceId): array
+{
+    $database = bueno_database();
+    $database->beginTransaction();
+    try {
+        $statement = $database->prepare('SELECT id, name FROM technical_sources WHERE id = :id');
+        $statement->execute([':id' => $sourceId]);
+        $source = $statement->fetch();
+        if (!is_array($source)) {
+            throw new RuntimeException('Nie znaleziono źródła.');
+        }
+
+        $countStatement = $database->prepare(
+            'SELECT COUNT(*) FROM discovered_feed_items WHERE technical_source_id = :id'
+        );
+        $countStatement->execute([':id' => $sourceId]);
+        $discoveredFeedItemCount = (int) $countStatement->fetchColumn();
+
+        $deleteStatement = $database->prepare('DELETE FROM technical_sources WHERE id = :id');
+        $deleteStatement->execute([':id' => $sourceId]);
+        if ($deleteStatement->rowCount() !== 1) {
+            throw new RuntimeException('Nie usunięto źródła.');
+        }
+
+        $database->commit();
+
+        return [
+            'source_id' => (int) $source['id'],
+            'source_name' => (string) $source['name'],
+            'discovered_feed_item_count' => $discoveredFeedItemCount,
+        ];
+    } catch (Throwable $exception) {
+        if ($database->inTransaction()) {
+            $database->rollBack();
+        }
+        throw $exception;
+    }
+}
+
 function save_technical_source(array $input, int $sourceId = 0): int
 {
     $source = normalize_technical_source($input);

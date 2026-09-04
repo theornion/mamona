@@ -823,7 +823,7 @@ $sectionBlocks = [
     ],
 ];
 $sectionHtml = render_article_blocks($sectionBlocks, []);
-assert_test(str_contains($sectionHtml, '<section id="lead"'), 'Sekcja renderuje się z atrybutem id');
+assert_test(str_contains($sectionHtml, '<section id="article-section-lead" data-article-section-id="lead"'), 'Sekcja renderuje bezpieczny, namespaced atrybut id');
 assert_test(str_contains($sectionHtml, 'Treść sekcji lead.'), 'Sekcja zawiera treść wewnętrznych bloków');
 
 // ============================================================
