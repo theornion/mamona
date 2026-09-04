@@ -2677,6 +2677,7 @@ function article_image_search_audit_has_pending_recovery(array $audit): bool
             'vision_budget_reserved_for_p06_p07_p08_p09',
             'local_candidate_check_limit_per_missing_slot',
         ], true)) return true;
+        if ($result === 'deferred' && str_starts_with($reason, 'vision_transport_retryable:')) return true;
         if ($result === 'search_error' && (str_contains($reason, 'provider_rate_limited')
             || str_contains($reason, 'http 429') || str_contains($reason, 'timeout'))) return true;
         if ($result === 'rejected' && !empty($entry['local_reject'])
@@ -3080,6 +3081,7 @@ function fulfill_article_source_images(
             ? (json_decode((string) ($image['search_audit_json'] ?? '[]'), true) ?: [])
             : [];
         $completed = false;
+        $visionTransportDeferred = false;
         $slotKey = $planned['role'] . ':' . $planned['section_id'];
         $visionShortlistRemaining = $slotVisionAllowances === null
             ? max(1, min(3, $visionCandidateLimitPerSlot))
@@ -3208,6 +3210,8 @@ function fulfill_article_source_images(
                     $summary['vision_calls_attempted'] += $realVisionCalls;
                     $visionShortlistRemaining = max(0, $visionShortlistRemaining - $realVisionCalls);
                     $watermarkRejected = str_starts_with($exception->getMessage(), 'watermark_rejected:');
+                    $visionTransportFailure = preg_match('/Gemini Vision.*HTTP (?:429|5\d\d)|timeout|timed out/i', $exception->getMessage()) === 1;
+                    $visionTransportDeferred = $visionTransportDeferred || $visionTransportFailure;
                     $diversity = $exception instanceof ArticleImageSemanticDuplicateException ? $exception->diversity : null;
                     if ($realVisionCalls > 0 && $seriesKey !== '' && $exception instanceof ArticleImageVisionRejectedException
                         && article_image_assessment_is_severe_reject($exception->assessment)) {
@@ -3215,8 +3219,8 @@ function fulfill_article_source_images(
                     }
                     $audit[] = ['query' => $query, 'level' => $level, 'query_origin'=>$queryOrigin, 'source' => (string) ($result['provider'] ?? ''),
                         'url' => (string) ($result['source_file_url'] ?? ''),
-                        'result' => $watermarkRejected ? 'watermark_rejected' : 'rejected',
-                        'reason' => $diversity['code'] ?? $exception->getMessage(),
+                        'result' => $visionTransportFailure ? 'deferred' : ($watermarkRejected ? 'watermark_rejected' : 'rejected'),
+                        'reason' => $visionTransportFailure ? 'vision_transport_retryable: ' . $exception->getMessage() : ($diversity['code'] ?? $exception->getMessage()),
                         'diversity' => $diversity,
                         'candidate_checked'=>true, 'local_reject'=>$realVisionCalls === 0,
                         'local_reject_reason'=>$realVisionCalls === 0 ? $exception->getMessage() : '',
@@ -3231,6 +3235,11 @@ function fulfill_article_source_images(
                 }
         }
         if ($completed) {
+            continue;
+        }
+        if ($visionTransportDeferred) {
+            persist_article_image($postId, [...$planned, 'status' => 'manual_review', 'search_audit' => $audit]);
+            $summary['missing']++;
             continue;
         }
         $audit[] = ['query' => '', 'level' => 'exhausted', 'source' => '', 'result' => 'missing',

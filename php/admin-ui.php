@@ -36,7 +36,7 @@ function admin_page_open(string $title, string $active): void
     $pageLabel = $pageLabels[$active] ?? $title;
     $nextStep = $nextSteps[$active] ?? null;
     ?><!doctype html>
-<html lang="pl">
+<html lang="pl" class="admin-ui">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -44,7 +44,7 @@ function admin_page_open(string $title, string $active): void
     <title><?php echo escape_html($title); ?> | CMS</title>
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="stylesheet" href="../assets/css/main.css?v=bueno-release-20260721c">
-    <link rel="stylesheet" href="../assets/css/admin.css?v=admin-nav-align-20260903a">
+    <link rel="stylesheet" href="../assets/css/admin.css?v=admin-density-20260904a">
 </head>
 <body class="is-preload admin-page admin-page-<?php echo escape_html($active); ?>">
     <a class="admin-skip-link" href="#admin-content">Przejdź do treści</a>
@@ -100,7 +100,7 @@ function admin_page_close(): void
     <script src="../assets/js/admin-generation.js?v=bueno-release-20260724a"></script>
     <script src="../assets/js/admin-content-studio.js?v=bueno-release-20260731b"></script>
     <script src="../assets/js/topic-filter-state.js?v=topics-filter-20260801a"></script>
-    <script src="../assets/js/admin-editorial-topics.js?v=topics-filter-20260801a"></script>
+    <script src="../assets/js/admin-editorial-topics.js?v=topics-live-sync-20260904e"></script>
 </body>
 </html>
     <?php

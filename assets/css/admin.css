@@ -1,4 +1,8 @@
 /* Mamona admin design system. Intentionally loaded only by admin layouts. */
+html.admin-ui {
+    font-size:90%;
+}
+
 body.admin-page {
     --admin-bg:#04100d;
     --admin-surface:#0a1915;
@@ -309,7 +313,7 @@ body.admin-page-topics .topic-action-toolbar .topic-trash-selected{display:inlin
 body.admin-page-topics .topic-action-toolbar .topic-trash-selected span[aria-hidden]{font-size:.9rem;line-height:1}
 body.admin-page-topics .topic-trash-link{padding:.35rem .25rem;font-size:.7rem;white-space:nowrap}
 body.admin-page-topics .topic-trash-bulk-form{display:none}
-body.admin-page-topics .topic-workflow-path{margin:.38rem 0}
+body.admin-page-topics .topic-workflow-path{margin:.38rem 0}body.admin-page-topics .topic-workflow-path li.is-active{color:#d6ff8e;font-weight:800;text-shadow:0 0 .6rem rgba(125,255,187,.4)}
 body.admin-page-topics .topic-card-actions{margin:.4rem 0 .18rem;padding-top:.42rem}
 body.admin-page-topics .topic-proposal-link{margin:.2rem 0}
 body.admin-page-topics .topic-control-card>details{margin-top:.3rem}

@@ -304,6 +304,11 @@ function generation_topics_workflow_payload(array $topics): array
                 'gemini_call_budget' => $status['gemini_call_budget'] ?? 15,
                 'image_completed' => $status['steps']['images']['completed'] ?? 0,
                 'image_total' => $status['steps']['images']['total'] ?? 0,
+                'image_hero_allowed' => (bool) (($status['steps']['images']['coverage']['hero_is_allowed'] ?? false)),
+                'image_missing_slots' => array_values(array_map(
+                    static fn (array $slot): string => (string) ($slot['slot_id'] ?? $slot['role'] ?? 'grafika'),
+                    (array) ($status['steps']['images']['coverage']['missing_slots'] ?? [])
+                )),
                 'retry_after_seconds' => $status['retry_after_seconds'] ?? null],
             'automation_report' => $status['latest_job_id'] === null ? ['events' => [], 'unresolved' => []] : repair_report_get((int) $status['latest_job_id']),
             'proposal_url' => $status['proposal_url'],
@@ -709,7 +714,8 @@ function generation_batch_item_is_retryable(array $item, array $draftValidation 
     $outcome = (string) ($item['outcome'] ?? '');
     return in_array($status, ['rate_limited', 'cancelled'], true)
         || ($status === 'failed'
-            && ((string) ($draftValidation['repair_scope'] ?? '') === 'titles' || $outcome !== 'validation_contract'))
+            && ((string) ($draftValidation['repair_scope'] ?? '') === 'titles'
+                || $outcome !== 'validation_contract' || $stage === 'images'))
         || (in_array($status, ['manual_review', 'waiting_review'], true) && $stage === 'images');
 }
 
@@ -778,7 +784,7 @@ function generation_workflow_statuses(mixed $rawTopicIds): array
                q.hard_blocks_json, q.human_review_status,
                COALESCE(img.total, 0) image_total, COALESCE(img.completed, 0) image_completed,
                COALESCE(img.manual, 0) image_manual, COALESCE(img.pending, 0) image_pending,
-               j.id job_id, j.batch_id, j.batch_action, j.status job_status, j.stage job_stage,
+               j.id job_id, j.batch_id, j.batch_action, j.status job_status, j.stage job_stage, j.updated_at job_updated_at,
                j.progress_percent, j.available_at, j.next_retry_at, j.quota_dimension, j.quota_model,
                j.wait_reason, j.error_message, j.outcome
         FROM editorial_topics t
@@ -861,6 +867,7 @@ function generation_workflow_statuses(mixed $rawTopicIds): array
             'latest_action' => $row['batch_action'] ? (string) $row['batch_action'] : null,
             'latest_outcome' => $row['outcome'] ? (string) $row['outcome'] : null,
             'latest_stage' => $row['job_stage'] ? (string) $row['job_stage'] : null,
+            'workflow_revision' => $row['job_id'] ? ((int) $row['job_id'] . ':' . (string) ($row['job_updated_at'] ?? '')) : '0',
             'retryable' => generation_batch_item_is_retryable($row, $draftValidation),
             'repair_scope' => (string) ($draftValidation['repair_scope'] ?? ''),
             'repair' => $draftValidation,
@@ -1437,6 +1444,56 @@ function generation_batch_reconcile_autonomous_items(?array $itemIds = null): ar
     return $results;
 }
 
+/**
+ * Converts legacy fixture-only safe-composer stops into an auditable manual
+ * decision. This function is deliberately provider-free and idempotent.
+ */
+function generation_batch_reconcile_safe_composer_manual_items(?array $itemIds = null): array
+{
+    $params = [];
+    $filter = '';
+    if (is_array($itemIds) && $itemIds !== []) {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $itemIds), static fn (int $id): bool => $id > 0)));
+        if ($ids === []) return [];
+        $filter = ' AND items.id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')';
+        $params = $ids;
+    }
+    $statement = bueno_database()->prepare(
+        'SELECT items.* FROM generation_batch_items items
+         WHERE items.status="manual_review" AND items.outcome="safe_composer_blocked"' . $filter . ' ORDER BY items.id'
+    );
+    $statement->execute($params);
+    $results = [];
+    foreach ($statement->fetchAll() as $item) {
+        $classification = salvage_classify_manual_review((int) ($item['draft_version_id'] ?? 0));
+        $quality = is_array($classification['quality'] ?? null) ? $classification['quality'] : null;
+        $eligible = ($classification['eligible'] ?? false) === true;
+        generation_batch_update_item((int) $item['id'], [
+            'stage' => 'quality_check',
+            'outcome' => $eligible ? 'human_risk_review_required' : 'safe_composer_evidence_insufficient',
+            'quality_operation_id' => $eligible ? (int) $quality['generation_operation_id'] : null,
+            'quality_check_id' => $eligible ? (int) $quality['id'] : null,
+            'wait_reason' => $eligible
+                ? 'Wymagana jest ręczna decyzja dla ryzyka potwierdzonego przez rzeczywiste QC; żadna nowa treść ani wywołanie modelu nie powstały.'
+                : 'Brak wystarczających, audytowalnych danych do automatycznego salvage; wymagany ręczny przegląd.',
+        ]);
+        repair_report_append((int) $item['id'], 'final_package', 'safe_composer_manual_router', [
+            'reconciled' => true, 'eligible' => $eligible,
+            'quality_check_id' => $eligible ? (int) $quality['id'] : null,
+            'reason' => $classification['reason'] ?? 'high_risk_without_human_approval',
+            'provider_calls_created' => 0, 'publication_recommended' => false,
+        ]);
+        generation_batch_audit((int) $item['batch_id'], (int) $item['id'], 'safe_composer_manual_router', 'system', [
+            'reconciled' => true, 'eligible' => $eligible,
+            'quality_check_id' => $eligible ? (int) $quality['id'] : null, 'provider_calls_created' => 0,
+        ]);
+        generation_batch_refresh_status((int) $item['batch_id']);
+        $results[] = ['item_id' => (int) $item['id'], 'eligible' => $eligible,
+            'quality_check_id' => $eligible ? (int) $quality['id'] : null];
+    }
+    return $results;
+}
+
 function generation_batch_research_allows_auto_approval(array $package): bool
 {
     $validation = json_decode((string) $package['validation_json'], true) ?: [];
@@ -1707,12 +1764,28 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
             generation_batch_update_item($itemId, ['status' => 'quality_check', 'progress_percent' => 72]);
             if (generation_batch_is_autonomous($item) && (string) ($item['outcome'] ?? '') === 'safe_composer_queued') {
                 if (!generation_explicit_test_mode()) {
+                    $classification = salvage_classify_manual_review((int) ($item['draft_version_id'] ?? 0));
+                    $quality = is_array($classification['quality'] ?? null) ? $classification['quality'] : null;
+                    $eligible = ($classification['eligible'] ?? false) === true;
                     generation_batch_update_item($itemId, [
-                        'status' => 'manual_review', 'stage' => 'quality_check', 'outcome' => 'safe_composer_blocked',
+                        'status' => 'manual_review', 'stage' => 'quality_check',
+                        'outcome' => $eligible ? 'human_risk_review_required' : 'safe_composer_evidence_insufficient',
                         'progress_percent' => 84, 'completed_at' => gmdate('Y-m-d H:i:s'),
-                        'wait_reason' => 'Automatyczna atrapa safe composer jest zablokowana poza trybem testowym; wymagany ręczny przegląd.',
+                        'quality_operation_id' => $eligible ? (int) $quality['generation_operation_id'] : null,
+                        'quality_check_id' => $eligible ? (int) $quality['id'] : null,
+                        'wait_reason' => $eligible
+                            ? 'Wymagana jest wyłącznie ręczna decyzja dla ryzyka wskazanego przez rzeczywiste QC; nie utworzono nowej treści ani wywołania modelu.'
+                            : 'Brak wystarczających, audytowalnych danych do automatycznego salvage; wymagany ręczny przegląd.',
                     ]);
-                    generation_batch_audit((int) $item['batch_id'], $itemId, 'safe_composer_blocked', 'worker', ['reason' => 'fixture_not_allowed_outside_test_mode']);
+                    repair_report_append($itemId, 'final_package', 'safe_composer_manual_router', [
+                        'eligible' => $eligible, 'quality_check_id' => $eligible ? (int) $quality['id'] : null,
+                        'reason' => $classification['reason'] ?? 'high_risk_without_human_approval',
+                        'provider_calls_created' => 0, 'publication_recommended' => false,
+                    ]);
+                    generation_batch_audit((int) $item['batch_id'], $itemId, 'safe_composer_manual_router', 'worker', [
+                        'eligible' => $eligible, 'quality_check_id' => $eligible ? (int) $quality['id'] : null,
+                        'provider_calls_created' => 0,
+                    ]);
                     return;
                 }
                 $salvaged = salvage_execute_safe_composer($item);
@@ -2018,7 +2091,7 @@ function generation_batch_process_item(int $itemId, string $leaseToken, ?callabl
                 && $finalQcReadiness === 'ready_for_manual_publish';
             $finalQcRequiredReview = !$requiresReview && !$finalQcPassed;
             $imageWaitReason = $requiresReview
-                ? 'Gotowa propozycja jest dostępna. Brakujące lub niezweryfikowane ilustracje oznaczono jako wymagające uwagi; publikacja pozostaje zablokowana.'
+                ? 'Nie ukończono zestawu wymaganych ilustracji; publikacja pozostaje zablokowana do czasu prawidłowego hero i pełnego coverage.'
                 : 'Legalne ilustracje źródłowe zostały użyte automatycznie; gotowa propozycja jest dostępna.';
             generation_batch_update_item($itemId, [
                 'status' => ($heroRecoveryFailed || $requiresReview || $finalQcRequiredReview) ? 'manual_review' : ((string) ($item['requested_stage'] ?? '') === 'images' ? 'completed'
@@ -2276,8 +2349,9 @@ function retry_generation_batch_item_from_ui(int $itemId, string $actor = 'admin
         return $result;
     }
 
-    $imageReviewRetry = in_array((string) ($item['status'] ?? ''), ['manual_review', 'waiting_review'], true)
-        && (string) ($item['stage'] ?? '') === 'images';
+    $imageReviewRetry = (string) ($item['stage'] ?? '') === 'images'
+        && (in_array((string) ($item['status'] ?? ''), ['manual_review', 'waiting_review'], true)
+            || ((string) ($item['status'] ?? '') === 'failed' && (string) ($item['outcome'] ?? '') === 'validation_contract'));
     if ($imageReviewRetry) {
         $result = create_generation_workflow_batch(
             [(int) $item['topic_id']],

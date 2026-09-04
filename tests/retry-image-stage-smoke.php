@@ -80,4 +80,17 @@ retry_image_assert(is_array($freshNarrativeItem), 'Fresh NarrativePlan retry ite
 retry_image_assert((string) $freshNarrativeItem['status'] === 'queued' && (string) $freshNarrativeItem['stage'] === 'draft', 'NarrativePlan retry did not resume from the first incomplete stage.');
 retry_image_assert((int) $freshNarrativeItem['id'] !== $narrativeItemId, 'NarrativePlan retry reused the poisoned batch item.');
 
+$db->exec('UPDATE generation_batch_items SET status="cancelled", completed_at=CURRENT_TIMESTAMP WHERE topic_id=' . $topicId . ' AND status IN ("queued","research","draft","auto_repair","quality_check","images","rate_limited","auto_retry_scheduled")');
+$db->exec("INSERT INTO generation_batches (batch_key,request_key,action,item_count,created_by,execution_mode,status) VALUES ('retry-invalid-replan-batch','retry-invalid-replan-request','generate_all',1,'test','api','completed')");
+$invalidReplanBatchId = (int) $db->lastInsertId();
+$db->prepare('INSERT INTO generation_batch_items (batch_id,topic_id,post_id,status,stage,progress_percent,outcome,wait_reason,error_message,completed_at) VALUES (:batch,:topic,:post,"failed","images",85,"validation_contract","Nieprawidłowy recovery replan wymaga świeżej próby grafik.","Nieprawidłowa odpowiedź Gemini API: Recovery replan.",CURRENT_TIMESTAMP)')
+    ->execute([':batch'=>$invalidReplanBatchId, ':topic'=>$topicId, ':post'=>$postId]);
+$invalidReplanItemId = (int) $db->lastInsertId();
+retry_image_assert(generation_batch_item_is_retryable(['status'=>'failed','stage'=>'images','outcome'=>'validation_contract']), 'Błędny kontrakt replan nie jest widoczny jako ręcznie wznawialny.');
+$invalidReplanRetry = retry_generation_batch_item_from_ui($invalidReplanItemId, 'test');
+retry_image_assert(is_array($invalidReplanRetry['batch'] ?? null), 'Błędny kontrakt replan nie utworzył świeżej próby grafik.');
+$freshInvalidReplan = $db->query('SELECT * FROM generation_batch_items WHERE batch_id=' . (int) $invalidReplanRetry['batch']['id'])->fetch();
+retry_image_assert(is_array($freshInvalidReplan) && (string) $freshInvalidReplan['status'] === 'queued'
+    && (string) $freshInvalidReplan['stage'] === 'images', 'Fresh retry po błędnym replan nie zaczyna od etapu grafik: ' . generation_json($freshInvalidReplan ?: []));
+
 echo "RETRY_IMAGE_STAGE_SMOKE_OK\n";

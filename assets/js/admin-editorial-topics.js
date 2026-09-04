@@ -29,12 +29,17 @@
     var serverOffset = 0;
     var networkFailures = 0;
     var lastAnnouncement = '';
+    var syncErrorTopicIds = new Set();
     var activeStatuses = ['queued', 'research', 'draft', 'auto_repair', 'quality_check', 'images', 'rate_limited', 'auto_retry_scheduled'];
     var jobSignatures = new Map(topics.filter(function (topic) { return topic.job; }).map(function (topic) { return [topic.id, topic.job.status + '|' + topic.job.stage + '|' + topic.job.reason]; }));
+    var workflowRevisions = new Map(topics.map(function (topic) { return [topic.id, String(topic.workflow_revision || '0')]; }));
 
     function topicById(id) { return topics.find(function (topic) { return topic.id === Number(id); }); }
     function visibleCards() { return cards.filter(function (card) { return !card.hidden; }); }
     function key() { return window.crypto && crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(16).slice(2); }
+    function syncDebug(message, details) {
+        if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') console.debug('[topics-sync] ' + message, details || '');
+    }
     function announce(message) { if (message !== lastAnnouncement) { live.textContent = message; lastAnnouncement = message; } }
     function cardMessage(topicId, message, isError) {
         var card = document.querySelector('[data-topic-id="' + Number(topicId) + '"]');
@@ -44,7 +49,33 @@
         box.textContent = message; box.hidden = !message; box.classList.toggle('is-error', Boolean(isError));
     }
     function cardMessages(ids, message, isError) { ids.forEach(function (id) { cardMessage(id, message, isError); }); }
+    function clearSyncWarnings() {
+        syncErrorTopicIds.forEach(function (id) { cardMessage(id, '', false); });
+        syncErrorTopicIds.clear();
+    }
     function hasActiveJobs() { return topics.some(function (topic) { return topic.job && activeStatuses.includes(topic.job.status); }); }
+    function acceptsTopicState(topic) {
+        var incoming = String(topic.workflow_revision || '0');
+        var current = workflowRevisions.get(topic.id);
+        if (!current || incoming === '0' || current === '0') return true;
+        var incomingParts = incoming.split(':');
+        var currentParts = current.split(':');
+        var incomingJob = Number(incomingParts[0] || 0);
+        var currentJob = Number(currentParts[0] || 0);
+        return incomingJob > currentJob || (incomingJob === currentJob && incomingParts.slice(1).join(':') >= currentParts.slice(1).join(':'));
+    }
+    function mergeTopicStates(incomingTopics) {
+        var updates = new Map();
+        incomingTopics.forEach(function (topic) {
+            if (!acceptsTopicState(topic)) return;
+            workflowRevisions.set(topic.id, String(topic.workflow_revision || '0'));
+            updates.set(topic.id, topic);
+        });
+        topics = topics.map(function (topic) { return updates.get(topic.id) || topic; });
+        updates.forEach(function (topic, id) {
+            if (!topics.some(function (known) { return known.id === id; })) topics.push(topic);
+        });
+    }
     function secondsUntil(job) { var canonical = job && (job.next_retry_at || job.available_at); return canonical ? Math.max(0, Math.ceil((Date.parse(canonical) - (Date.now() + serverOffset)) / 1000)) : null; }
     function jobPresentation(job) {
         var remaining = secondsUntil(job);
@@ -52,12 +83,13 @@
         labels.paused_by_operator = 'Wstrzymany — uruchom ręcznie';
         var imageWarnings = job.outcome === 'completed_with_warnings';
         if (imageWarnings) labels[job.status] = 'Wymaga uwagi — grafiki';
+        if (job.stage === 'images' && job.image_hero_allowed === false) labels[job.status] = 'Wymagany poprawny hero';
         var reconciledLimit = job.action === 'generate_all' && job.outcome === 'auto_repair_limit' && job.status === 'waiting_review';
         if (reconciledLimit) labels.waiting_review = 'Wznawiam automatyczne przygotowanie';
         var recoveringSource = job.reason === 'Ponawiam weryfikację źródła.';
         var repairMessage = job.repair_scope === 'titles' ? ['Niepoparte: ' + ((job.repair.unsupported_elements || []).join(', ') || job.reason), 'Tekst artykułu został zachowany.', job.repair.new_title ? 'Nowy tytuł: ' + job.repair.new_title : 'Naprawa tytułu oczekuje na próbę.'].join(' ') : '';
         var budgetMessage = job.status === 'auto_repair' ? 'Ulepszanie ' + Number(job.gemini_calls_used || 0) + '/' + Number(job.gemini_call_budget || 15) + ' · strategia: ' + (job.outcome || 'repair_router') + '.' : '';
-        var action = reconciledLimit ? 'Wznawiam router naprawczy i bezpieczny kompozytor.' : repairMessage || ((job.status === 'rate_limited' || job.status === 'auto_retry_scheduled') ? (remaining > 0 ? 'Automatyczne wznowienie za ' + remaining + ' s.' : 'Wznawianie automatyczne…') : job.status === 'queued' ? 'Zadanie uruchomi się automatycznie po zwolnieniu workera.' : (job.status === 'waiting_review' || job.status === 'manual_review') ? (recoveringSource ? '' : 'Otwórz propozycję i podejmij decyzję redakcyjną.') : job.status === 'failed' ? (job.retryable ? 'Spróbuj ponownie przyciskiem poniżej.' : 'Sprawdź szczegóły; ten błąd wymaga poprawy danych lub konfiguracji.') : '');
+        var action = reconciledLimit ? 'Wznawiam router naprawczy i bezpieczny kompozytor.' : repairMessage || ((job.status === 'rate_limited' || job.status === 'auto_retry_scheduled') ? (remaining > 0 ? 'Automatyczne wznowienie za ' + remaining + ' s.' : 'Wznawianie automatyczne…') : job.status === 'queued' ? 'Zadanie uruchomi się automatycznie po zwolnieniu workera.' : (job.status === 'waiting_review' || job.status === 'manual_review') ? (job.stage === 'images' && job.image_hero_allowed === false ? 'Wybierz lub ponów prawidłowy hero; bez niego artykuł nie może zostać ukończony ani opublikowany.' : (recoveringSource ? '' : 'Otwórz propozycję i podejmij decyzję redakcyjną.')) : job.status === 'failed' ? (job.retryable ? 'Spróbuj ponownie przyciskiem poniżej.' : 'Sprawdź szczegóły; ten błąd wymaga poprawy danych lub konfiguracji.') : '');
         if (job.status === 'paused_by_operator') action = 'Kliknij „Wygeneruj całość” przy wybranym temacie.';
         var reason = reconciledLimit ? 'Poprzedni limit korekt został wycofany.' : job.reason;
         return { label: labels[job.status] || job.status, message: [budgetMessage, reason, action].filter(Boolean).join(' ') };
@@ -113,8 +145,9 @@
     }
 
     function workflowLabel(topic) {
-        function mark(step, version) { return step.done ? (version ? 'v' + version + ' ✓' : '✓') : '—'; }
-        return ['Research ' + mark(topic.workflow.research), 'Szkic ' + mark(topic.workflow.draft, topic.workflow.draft.version), 'QC ' + mark(topic.workflow.quality), 'Grafiki ' + mark(topic.workflow.images), 'Gotowe ' + (topic.workflow.ready ? '✓' : '—')];
+        var stage = topic.job && activeStatuses.includes(topic.job.status) ? topic.job.stage : '';
+        function mark(name, step, version, activeStage) { return stage === activeStage ? name + ' · w toku…' : name + ' ' + (step.done ? (version ? 'v' + version + ' ✓' : '✓') : '—'); }
+        return [mark('Research', topic.workflow.research, null, 'research'), mark('Szkic', topic.workflow.draft, topic.workflow.draft.version, 'draft'), mark('QC', topic.workflow.quality, null, 'quality_check'), mark('Grafiki', topic.workflow.images, null, 'images'), 'Gotowe ' + (topic.workflow.ready ? '✓' : '—')];
     }
 
     function applyTopicState(topic) {
@@ -125,14 +158,15 @@
         card.dataset.queueState = topic.queue_state || 'work';
         card.dataset.selectable = topic.selectable ? '1' : '0';
         card.classList.toggle('is-ready', topic.workflow.ready);
-        var checkbox = card.querySelector('.topic-checkbox'); checkbox.disabled = !topic.selectable;
+        var checkbox = card.querySelector('.topic-checkbox'); if (checkbox) checkbox.disabled = !topic.selectable;
         var badge = card.querySelector('.topic-ready-badge');
         if (topic.workflow.ready && !badge) { badge = document.createElement('span'); badge.className = 'topic-ready-badge'; badge.textContent = 'Gotowe'; card.querySelector('.topic-card-selector').appendChild(badge); }
         if (!topic.workflow.ready && badge) badge.remove();
         var labels = workflowLabel(topic);
-        card.querySelectorAll('.topic-workflow-path li').forEach(function (item, index) { item.textContent = labels[index]; item.classList.toggle('is-done', labels[index].includes('✓')); });
+        card.querySelectorAll('.topic-workflow-path li').forEach(function (item, index) { item.textContent = labels[index]; item.classList.toggle('is-done', labels[index].includes('✓')); item.classList.toggle('is-active', labels[index].includes('w toku…')); });
         card.querySelectorAll('.topic-card-actions button[data-workflow-action]').forEach(function (button) {
-            var state = topic.actions[button.value]; button.disabled = !state.enabled; button.title = state.enabled ? button.textContent : state.reason;
+            var state = (topic.actions || {})[button.value] || { enabled: false, reason: 'Stan akcji jest chwilowo aktualizowany.' };
+            button.disabled = !state.enabled; button.title = state.enabled ? button.textContent : state.reason;
         });
         var pauseButton = card.querySelector('.topic-pause-item');
         var resumeItemButton = card.querySelector('.topic-resume-item');
@@ -162,11 +196,21 @@
             card.querySelector('.topic-card-actions').before(jobBox);
         }
         if (topic.job && jobBox) {
+            if (!jobBox.querySelector('strong')) jobBox.appendChild(document.createElement('strong'));
+            if (!jobBox.querySelector('progress')) { var progress = document.createElement('progress'); progress.max = 100; jobBox.appendChild(progress); }
+            if (!jobBox.querySelector('span')) jobBox.appendChild(document.createElement('span'));
             var presentation = jobPresentation(topic.job);
             var imageCoverageLabel = topic.job.stage === 'images' && Number(topic.job.image_total || 0) > 0
                 ? 'Grafiki: ' + Number(topic.job.image_completed || 0) + '/' + Number(topic.job.image_total) + (activeStatuses.includes(topic.job.status) ? ' · wyszukiwanie trwa' : ' · wyszukiwanie zakończone')
                 : null;
             jobBox.querySelector('strong').textContent = imageCoverageLabel || (presentation.label + ' · ' + topic.job.stage + ' · ' + topic.job.progress + '%');
+            if (imageCoverageLabel) {
+                imageCoverageLabel = 'Hero: ' + (topic.job.image_hero_allowed ? 'OK' : 'wymagany')
+                    + ' / Grafiki: ' + Number(topic.job.image_completed || 0) + '/' + Number(topic.job.image_total || 0)
+                    + ((topic.job.image_missing_slots || []).length ? ' / brakuje: ' + topic.job.image_missing_slots.join(', ') : '')
+                    + (activeStatuses.includes(topic.job.status) ? ' / wyszukiwanie trwa' : ' / wyszukiwanie zakończone');
+                jobBox.querySelector('strong').textContent = imageCoverageLabel;
+            }
             jobBox.querySelector('progress').value = topic.job.progress;
             jobBox.querySelector('span').textContent = presentation.message;
             jobBox.classList.toggle('is-error', topic.job.status === 'failed');
@@ -197,11 +241,18 @@
         if (document.hidden) { schedulePoll(); return; }
         try {
             var response = await fetch(api + '?action=status&filter=' + encodeURIComponent(toolbar.dataset.filter), { headers: { Accept: 'application/json' }, credentials: 'same-origin', cache: 'no-store' });
-            var payload = await response.json();
+            var rawPayload = await response.text();
+            var payload;
+            try { payload = JSON.parse(rawPayload); } catch (parseError) { throw new Error('Status serwera nie jest poprawnym JSON-em (' + response.status + ').'); }
+            if (!response.ok && payload.error === 'worker_busy') {
+                announce('Worker zapisuje etap; stan pozostaje widoczny i odświeżę go ponownie za chwilę.');
+                schedulePoll();
+                return;
+            }
             if (!response.ok) throw new Error(payload.error || 'Nie udało się odświeżyć tematów.');
             if (payload.server_time) serverOffset = Date.parse(payload.server_time) - Date.now();
             if (typeof payload.automatic_dispatch_paused === 'boolean') toolbar.dataset.dispatchPaused = payload.automatic_dispatch_paused ? '1' : '0';
-            networkFailures = 0; topics = payload.topics || topics;
+            networkFailures = 0; clearSyncWarnings(); mergeTopicStates(payload.topics || []);
             if (payload.status_dispatch_warning === 'worker_busy') announce('Stan jest odświeżany; worker nadal przetwarza zadanie.');
             if (payload.status_dispatch_warning === 'dispatch_unavailable') announce('Stan jest odświeżany, ale automatyczne uruchomienie workera jest chwilowo niedostępne.');
             var changes = [];
@@ -211,13 +262,26 @@
                 if (jobSignatures.has(topic.id) && jobSignatures.get(topic.id) !== signature) changes.push({ id: topic.id, message: jobPresentation(topic.job).label + '. ' + (topic.job.reason || ''), error: topic.job.status === 'failed' });
                 jobSignatures.set(topic.id, signature);
             });
-            topics.forEach(applyTopicState); filterCards();
+            topics.forEach(function (topic) {
+                try { applyTopicState(topic); }
+                catch (renderError) {
+                    syncDebug('render failed for topic ' + topic.id, renderError && renderError.message ? renderError.message : renderError);
+                    cardMessage(topic.id, 'Nie udało się odświeżyć tej karty. Ponawiam automatycznie.', true);
+                }
+            });
+            filterCards();
             changes.forEach(function (change) { cardMessage(change.id, change.message, change.error); });
             schedulePoll();
-        } catch (error) { networkFailures++; var affected = topics.filter(function (topic) { return topic.job && activeStatuses.includes(topic.job.status); }).map(function (topic) { return topic.id; }); cardMessages(affected, 'Utracono synchronizację. Ponawiam automatycznie; stan tego tematu może być nieaktualny.', true); schedulePoll(); }
+        } catch (error) { networkFailures++; syncDebug('poll failure retry=' + networkFailures, error && error.message ? error.message : error); var affected = topics.filter(function (topic) { return topic.job && activeStatuses.includes(topic.job.status); }).map(function (topic) { return topic.id; }); affected.forEach(function (id) { syncErrorTopicIds.add(id); }); cardMessages(affected, 'Utracono synchronizację. Ponawiam automatycznie; stan tego tematu może być nieaktualny.', true); schedulePoll(); }
     }
 
-    function schedulePoll() { window.clearTimeout(pollTimer); var delay = hasActiveJobs() ? 3000 : 15000; if (networkFailures) delay = Math.min(30000, 2000 * Math.pow(2, Math.min(networkFailures, 4))); pollTimer = window.setTimeout(refresh, delay); }
+    function schedulePoll() {
+        window.clearTimeout(pollTimer);
+        if (!hasActiveJobs() && !networkFailures) return;
+        var delay = hasActiveJobs() ? 3000 : 15000;
+        if (networkFailures) delay = Math.min(30000, 2000 * Math.pow(2, Math.min(networkFailures, 4)));
+        pollTimer = window.setTimeout(refresh, delay);
+    }
     function updateCountdowns() { if (document.hidden) return; topics.filter(function (topic) { return topic.job && (topic.job.status === 'rate_limited' || topic.job.status === 'auto_retry_scheduled'); }).forEach(applyTopicState); }
 
     async function run(action, ids, buttons) {
@@ -233,7 +297,9 @@
             var skipped = payload.skipped || [];
             var report = skipped.map(function (item) { return '#' + item.topic_id + ': ' + item.reason; }).join(' | ');
             ids.forEach(function (id) { var skippedItem = skipped.find(function (item) { return Number(item.topic_id) === Number(id); }); cardMessage(id, skippedItem ? skippedItem.reason : 'Uruchomiono wybrany etap. Aktualny stan pojawi się przy pasku postępu.', Boolean(skippedItem)); });
-            selected.clear(); updateSelection(); schedulePoll();
+            selected.clear(); updateSelection();
+            ids.forEach(function (id) { cardMessage(id, 'Workflow uruchomiony. Aktualizuję kolejne etapy bez odświeżania strony.', false); });
+            window.clearTimeout(pollTimer); refresh();
         } catch (error) { cardMessages(ids, error.message, true); }
         finally { buttons.forEach(function (button) { button.removeAttribute('aria-busy'); }); updateSelection(); }
     }
@@ -308,7 +374,7 @@
         var retry = event.target.closest('[data-retry-item]'); if (!retry) return;
         retry.disabled = true; var data = new FormData(); data.set('csrf', csrf); data.set('action', 'retry_item'); data.set('item_id', retry.dataset.retryItem);
         var retryCard = retry.closest('.topic-control-card'); var retryTopicId = Number(retryCard.dataset.topicId);
-        try { var response = await fetch(api, { method: 'POST', body: data, credentials: 'same-origin' }); var payload = await response.json(); if (!response.ok) throw new Error(payload.error); cardMessage(retryTopicId, 'Ponowiono etap. Aktualny stan pojawi się przy pasku postępu.', false); schedulePoll(); } catch (error) { cardMessage(retryTopicId, error.message, true); retry.disabled = false; }
+        try { var response = await fetch(api, { method: 'POST', body: data, credentials: 'same-origin' }); var payload = await response.json(); if (!response.ok) throw new Error(payload.error); cardMessage(retryTopicId, 'Ponowiono etap. Aktualny stan pojawi się przy pasku postępu.', false); window.clearTimeout(pollTimer); refresh(); } catch (error) { cardMessage(retryTopicId, error.message, true); retry.disabled = false; }
     });
     document.querySelectorAll('.topic-trash-form').forEach(function (form) {
         form.addEventListener('submit', async function (event) {
@@ -327,8 +393,9 @@
         });
     });
     filterCards();
-    schedulePoll();
+    refresh();
     countdownTimer = window.setInterval(updateCountdowns, 1000);
     document.addEventListener('visibilitychange', function () { if (!document.hidden) { window.clearTimeout(pollTimer); refresh(); } });
     window.addEventListener('online', function () { networkFailures = 0; refresh(); });
+    window.addEventListener('pagehide', function () { window.clearTimeout(pollTimer); window.clearInterval(countdownTimer); });
 }());

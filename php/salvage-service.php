@@ -43,6 +43,58 @@ function salvage_prepare_safe_composer(int $sourceDraftId): int
     } catch (Throwable $exception) { if ($database->inTransaction()) $database->rollBack(); throw $exception; }
 }
 
+/** A real QC result may be routed to a human, but never manufactured locally. */
+function salvage_is_provider_proven_quality_check(array $check): bool
+{
+    $operationId = (int) ($check['generation_operation_id'] ?? 0);
+    if ($operationId <= 0 || (string) ($check['execution_mode'] ?? '') !== 'api') return false;
+    $operation = find_generation_operation($operationId);
+    if (!is_array($operation) || (int) ($operation['live_request_count'] ?? 0) <= 0) return false;
+    $responseId = trim((string) ($operation['provider_response_id'] ?? ''));
+    return $responseId !== ''
+        && !str_starts_with($responseId, 'deterministic-')
+        && !str_starts_with($responseId, 'resp_local_mock');
+}
+
+/**
+ * Classifies the only production-safe use of the old safe-composer route.
+ * It preserves a provider-proven QC and asks for the existing human decision;
+ * it never creates draft/QC/image artifacts or changes publication readiness.
+ */
+function salvage_classify_manual_review(int $draftId): array
+{
+    $draft = find_article_draft_by_id($draftId);
+    if (!is_array($draft) || !in_array((string) ($draft['status'] ?? ''), ['completed', 'frozen'], true)) {
+        return ['eligible' => false, 'reason' => 'Brak ukończonego szkicu źródłowego.'];
+    }
+    $package = find_research_package((int) ($draft['research_package_id'] ?? 0));
+    if (!is_array($package) || (string) ($package['status'] ?? '') !== 'approved') {
+        return ['eligible' => false, 'reason' => 'Brak zatwierdzonego researchu.'];
+    }
+    $statement = bueno_database()->prepare(
+        'SELECT q.* FROM quality_check_runs q
+         INNER JOIN generation_operations o ON o.id=q.generation_operation_id
+         WHERE q.draft_version_id=:draft AND q.status="completed" AND q.execution_mode="api"
+           AND o.live_request_count>0 AND o.provider_response_id<>""
+           AND o.provider_response_id NOT LIKE "deterministic-%"
+           AND o.provider_response_id NOT LIKE "resp_local_mock%"
+         ORDER BY q.id DESC LIMIT 1'
+    );
+    $statement->execute([':draft' => $draftId]);
+    $check = $statement->fetch();
+    if (!is_array($check) || !salvage_is_provider_proven_quality_check($check)) {
+        return ['eligible' => false, 'reason' => 'Brak kompletnego, rzeczywiście wykonanego QC dla aktywnego szkicu.'];
+    }
+    $blocks = json_decode((string) ($check['hard_blocks_json'] ?? '[]'), true);
+    $blocks = is_array($blocks) ? $blocks : [];
+    if ($blocks === [] || count(array_filter($blocks, static fn (mixed $block): bool => !is_array($block)
+        || (string) ($block['code'] ?? '') !== 'high_risk_without_human_approval')) > 0) {
+        return ['eligible' => false, 'quality' => $check,
+            'reason' => 'QC zawiera blokadę, której nie wolno przekazać do samej decyzji redakcyjnej.'];
+    }
+    return ['eligible' => true, 'draft' => $draft, 'quality' => $check, 'blocks' => $blocks];
+}
+
 function salvage_execute_safe_composer(array $item): array
 {
     if (!generation_explicit_test_mode()) {

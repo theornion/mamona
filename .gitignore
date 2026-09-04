@@ -1,0 +1,29 @@
+
+# Runtime and generated application data
+_handoff/
+backups/
+subagent-exports/
+data/backups/
+data/archives/
+data/logs/
+data/sessions/
+images/posts/
+pages/post-*.html
+
+# Generated QA output
+qa/**/*.png
+qa/**/*.log
+qa/**/*.json
+qa/article-preview.html
+
+# Legacy local-agent configuration
+.kilo/
+.roo/
+.kilocode/
+.roomodes
+kilo.jsonc
+
+# Local databases
+*.sqlite
+*.sqlite-*
+*.db

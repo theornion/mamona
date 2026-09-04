@@ -46,15 +46,27 @@ if ($method === 'GET') {
     $filter = trim((string) ($_GET['filter'] ?? 'active'));
     if (!in_array($filter, ['active', 'profile-rejected', 'all'], true)) $filter = 'active';
     $dispatchWarning = topics_api_try_dispatch_due_items();
-    topics_api_json([
-        'ok' => true,
-        'server_time' => gmdate('c'),
-        'status_dispatch_warning' => $dispatchWarning,
-        'automatic_dispatch_paused' => generation_automatic_dispatch_paused(),
-        'topics' => generation_topics_workflow_payload(list_editorial_topics(1000, $filter)),
-        'batch_limit' => (int) app_config('batch_max_topics'),
-        'recommended_batch_size' => 10,
-    ]);
+    try {
+        topics_api_json([
+            'ok' => true,
+            'server_time' => gmdate('c'),
+            'status_dispatch_warning' => $dispatchWarning,
+            'automatic_dispatch_paused' => generation_automatic_dispatch_paused(),
+            'topics' => generation_topics_workflow_payload(list_editorial_topics(1000, $filter)),
+            'batch_limit' => (int) app_config('batch_max_topics'),
+            'recommended_batch_size' => 10,
+        ]);
+    } catch (PDOException $exception) {
+        $message = mb_strtolower($exception->getMessage());
+        if (str_contains($message, 'database is locked') || str_contains($message, 'database is busy')) {
+            topics_api_json(['ok' => false, 'error' => 'worker_busy', 'server_time' => gmdate('c'), 'retry_after_seconds' => 2], 503);
+        }
+        error_log('Editorial topics status read failed: ' . $exception->getMessage());
+        topics_api_json(['ok' => false, 'error' => 'status_unavailable', 'server_time' => gmdate('c')], 503);
+    } catch (Throwable $exception) {
+        error_log('Editorial topics status read failed: ' . $exception->getMessage());
+        topics_api_json(['ok' => false, 'error' => 'status_unavailable', 'server_time' => gmdate('c')], 503);
+    }
 }
 
 if ($method !== 'POST') {

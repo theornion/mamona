@@ -1,9 +1,0 @@
-MAMONA V4.6.2 — COORDINATOR SEPARATION
-
-Delta from V4.6.1:
-- mamona-coordinator is now strictly non-writing: edit=deny.
-- coordinator shell is deterministic/read-test only; no generic shell mutations.
-- every code/test/config write is routed to quick-worker / worker / heavy-coder.
-- CURRENT_WORK and checkpoints are routed to checkpoint-writer.
-- executor runtime/tool failure falls back only to the same deterministic command on coordinator; never to a writer proxy.
-- parallel scheduler, Task-only delegation, models, indexing, Ollama and server init remain unchanged.

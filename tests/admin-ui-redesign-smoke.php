@@ -16,6 +16,11 @@ $login = (string) file_get_contents($root . '/php/admin-login.php');
 $nav = (string) file_get_contents($root . '/php/admin-nav.php');
 $panelJs = (string) file_get_contents($root . '/assets/js/admin-panel.js');
 
+admin_ui_assert(str_contains($layout, '<html lang="pl" class="admin-ui">'), 'Admin layout does not enable compact UI scaling.');
+admin_ui_assert(str_contains($login, '<html lang="pl" class="admin-ui">'), 'Admin login does not enable compact UI scaling.');
+admin_ui_assert(str_contains($css, 'html.admin-ui') && str_contains($css, 'font-size:90%'), 'Admin UI scale is not 90%.');
+admin_ui_assert(str_contains($layout, 'admin.css?v=admin-density-20260904a') && str_contains($login, 'admin.css?v=admin-density-20260904a'), 'Admin layouts do not share the current CSS cache version.');
+
 admin_ui_assert(str_contains($layout, 'assets/css/admin.css'), 'Layout admina nie ładuje osobnego arkusza.');
 admin_ui_assert(str_contains($login, 'assets/css/admin.css'), 'Logowanie nie ładuje osobnego arkusza.');
 admin_ui_assert(str_contains($css, 'width:100%!important') && str_contains($css, 'max-width:none!important'), 'Workspace admina nie wykorzystuje pełnej szerokości.');

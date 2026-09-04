@@ -43,7 +43,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 ?>
 <!doctype html>
-<html lang="pl">
+<html lang="pl" class="admin-ui">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -51,7 +51,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <title>Logowanie administratora | CMS</title>
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="stylesheet" href="../assets/css/main.css?v=bueno-release-20260721c">
-    <link rel="stylesheet" href="../assets/css/admin.css?v=admin-redesign-20260731a">
+    <link rel="stylesheet" href="../assets/css/admin.css?v=admin-density-20260904a">
 </head>
 <body class="is-preload admin-page admin-login-page">
     <div id="wrapper" class="fade-in">

@@ -8,6 +8,8 @@ $css = file_get_contents(__DIR__ . '/../assets/css/admin.css');
 $service = file_get_contents(__DIR__ . '/../php/generation-batch-service.php');
 $filterState = file_get_contents(__DIR__ . '/../assets/js/topic-filter-state.js');
 $panel = file_get_contents(__DIR__ . '/../assets/js/admin-panel.js');
+$adminUi = file_get_contents(__DIR__ . '/../php/admin-ui.php');
+check(str_contains($adminUi, 'admin-editorial-topics.js?v=topics-live-sync-20260904e'), 'Admin UI nie wymusza pobrania aktualnego klienta pollingu tematów.');
 check(strpos($page, 'topic-card-selector') < strpos($page, 'editorial-status'), 'Checkbox nie jest bezpośrednio przed badge’em.');
 check(strpos($page, 'topic-bulk-toolbar') < strpos($page, 'topic-list-heading'), 'Toolbar zbiorczy ma być nad nagłówkiem listy.');
 check(str_contains($page, 'aria-label="Przenieś temat do Kosza:') && str_contains($page, 'topic-trash'), 'Brak kontraktu kosza.');

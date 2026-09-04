@@ -111,8 +111,14 @@ function list_action_required_proposals(?int $postId = null, int $limit = 100): 
 function proposal_latest_quality_check(int $draftId): ?array
 {
     $statement = bueno_database()->prepare(
-        'SELECT * FROM quality_check_runs WHERE draft_version_id = :draft_id
-         AND status = "completed" ORDER BY id DESC LIMIT 1'
+        'SELECT q.* FROM quality_check_runs q
+         LEFT JOIN generation_operations o ON o.id=q.generation_operation_id
+         WHERE q.draft_version_id = :draft_id AND q.status = "completed"
+         ORDER BY CASE WHEN q.execution_mode="api" AND o.live_request_count>0
+                            AND o.provider_response_id<>""
+                            AND o.provider_response_id NOT LIKE "deterministic-%"
+                            AND o.provider_response_id NOT LIKE "resp_local_mock%" THEN 1 ELSE 0 END DESC,
+                  q.id DESC LIMIT 1'
     );
     $statement->execute([':draft_id' => $draftId]);
     $check = $statement->fetch();

@@ -246,6 +246,9 @@ p6_assert(article_image_search_audit_has_pending_recovery([[
 p6_assert(article_image_search_audit_has_pending_recovery([[
     'result'=>'rejected','local_reject'=>true,'reason'=>'Source image returned HTTP 429.',
 ]]), 'Provider rate limiting keeps recovery pending instead of triggering a semantic replan.');
+p6_assert(article_image_search_audit_has_pending_recovery([[
+    'result'=>'deferred','reason'=>'vision_transport_retryable: Gemini Vision returned HTTP 503.',
+]]), 'Temporary Vision 503 is incorrectly treated as exhausted image evidence.');
 p6_assert(!article_image_search_audit_has_pending_recovery([
     ['result'=>'rejected','local_reject'=>true,'reason'=>'Source image returned HTTP 429.'],
     ['result'=>'missing','reason'=>'all_legal_candidates_exhausted; local_fallback_required'],
